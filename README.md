@@ -9,9 +9,10 @@ It scans a repository, captures evidence rather than guesses, and generates the 
 ```bash
 npm ci
 npm run build
-./dist/index.js init /path/to/MySwiftApp
-# Review shiplayer.yml; confirm privacy/legal facts yourself.
 ./dist/index.js analyze /path/to/MySwiftApp
+# If no manifest exists, create a deliberately incomplete editable draft.
+./dist/index.js init /path/to/MySwiftApp
+# Confirm privacy/legal and other unresolved facts yourself.
 ./dist/index.js prepare /path/to/MySwiftApp
 ./dist/index.js check /path/to/MySwiftApp
 ./dist/index.js plan /path/to/MySwiftApp
@@ -27,7 +28,7 @@ Use `npx shiplayer ...` after publishing the package or link the local executabl
 | `analyze <repo> [--json]` | Read-only Swift/Xcode scan with evidence, confidence, contradictions, and questions. |
 | `prepare <repo> [--out DIR]` | Generates a deterministic release package. Does not upload or submit. |
 | `check <repo> [--json]` | Preflight. Returns exit status 2 when blockers remain. |
-| `plan <repo> [--remote]` | Offline App Store Connect plan, or explicit authenticated read/compare only. |
+| `plan <repo> [--remote]` | Offline App Store Connect plan, or explicit authenticated read/discovery only. |
 | `capture <repo>` | Produces a deterministic screenshot-harness hand-off; v0.1 never fabricates or runs a generic capture command. |
 | `apply <repo>` | Dry-run by default. `--apply --yes-i-understand` remains manual-only in v0.1. |
 | `submit <repo>` | Separate final gate. v0.1 deliberately keeps final submission manual. |

@@ -116,3 +116,5 @@ confirmations:
   legal: confirmed
   trader: confirmed
   paidAgreements: confirmed
+  ageRating: confirmed
+  contentRights: confirmed

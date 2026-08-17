@@ -61,7 +61,7 @@ export interface SubscriptionProduct {
   level: number;
   localizations: Record<string, { displayName: string; description: string }>;
   pricePointReference: string;
-  introductoryOffer?: { type: "free-trial" | "pay-up-front" | "pay-as-you-go"; duration: string; pricePointReference?: string };
+  introductoryOffer?: { type: "free-trial" | "pay-up-front" | "pay-as-you-go"; duration: "P3D" | "P1W" | "P2W" | "P1M" | "P2M" | "P3M" | "P6M" | "P1Y"; pricePointReference?: string; numberOfPeriods?: number };
   familySharing: boolean;
   reviewNotes: string;
   reviewScreenshot: string;
@@ -109,7 +109,7 @@ export interface ShipLayerManifest {
   monetization: Monetization;
   build: { signing: "automatic" | "manual" | "unknown"; exportCompliance?: "exempt" | "documentation-required" | "unknown"; testFlightUpload?: boolean };
   sync: { mode: "dry-run" | "apply"; appStoreConnectKeyIdEnv?: string; issuerIdEnv?: string; privateKeyPathEnv?: string };
-  confirmations: { privacy: Confirmation; legal: Confirmation; trader: Confirmation; paidAgreements: Confirmation };
+  confirmations: { privacy: Confirmation; legal: Confirmation; trader: Confirmation; paidAgreements: Confirmation; ageRating: Confirmation; contentRights: Confirmation };
 }
 
 export type CheckSeverity = "pass" | "warn" | "block";

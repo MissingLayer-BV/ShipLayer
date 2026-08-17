@@ -40,3 +40,16 @@ test("subscription offer semantics reject invalid price combinations and missing
   manifest.monetization.products[0].localizations["de-DE"] = { displayName: "Pro", description: "Monatlich" };
   validateManifest(manifest);
 });
+
+test("Apple script locales and modeled introductory offers validate precisely", () => {
+  const manifest = defaultManifest({ name: "Example", bundleId: "com.example.app", locales: ["zh-Hans"] });
+  manifest.app.primaryLocale = "zh-Hans"; manifest.metadata.localizations = { "zh-Hans": {} };
+  manifest.monetization = { type: "subscriptions", group: { referenceName: "Pro" }, baseTerritory: "USA", paywallNavigation: "Tap Upgrade", restorePath: "Tap Restore", termsUrl: "https://example.com/terms", privacyUrl: "https://example.com/privacy", disclosureConfirmation: "confirmed", confirmation: "confirmed", products: [{ productId: "com.example.pro", referenceName: "Pro", duration: "P1M", level: 1, pricePointReference: "P1", familySharing: false, reviewNotes: "Tap Upgrade", reviewScreenshot: "review/pro.png", introductoryOffer: { type: "free-trial", duration: "P3D" }, localizations: { "zh-Hans": { displayName: "Pro", description: "Monthly" } } }] };
+  validateManifest(manifest);
+  manifest.monetization.products[0].introductoryOffer = { type: "pay-as-you-go", duration: "P2W", pricePointReference: "P1", numberOfPeriods: 3 };
+  validateManifest(manifest);
+  manifest.monetization.products[0].introductoryOffer = { type: "pay-as-you-go", duration: "P2W", pricePointReference: "P1" };
+  assert.throws(() => validateManifest(manifest), /numberOfPeriods/);
+  const badUrl = defaultManifest({ name: "Example", bundleId: "com.example.app" }); badUrl.contacts.supportUrl = "https://";
+  assert.throws(() => validateManifest(badUrl), /Invalid shiplayer/);
+});

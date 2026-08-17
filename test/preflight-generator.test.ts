@@ -9,6 +9,7 @@ import { generateReleasePackage } from "../src/generator.js";
 import { preflight } from "../src/preflight.js";
 import { validateManifest } from "../src/manifest.js";
 import type { ShipLayerManifest } from "../src/types.js";
+import { readyManifest, writeReadyAssets } from "./helpers.js";
 
 test("preflight and generated release package are deterministic", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-test-"));
@@ -27,4 +28,12 @@ test("preflight and generated release package are deterministic", async () => {
   assert.equal(firstAnalysis, secondAnalysis);
   assert.ok(generated.files.includes("privacy/questionnaire-draft.md"));
   assert.ok(first.toLowerCase().includes("subscription"));
+});
+
+test("complete free, paid, lifetime, and subscription fixtures pass preflight", async () => {
+  for (const type of ["free", "paid-app", "non-consumables", "subscriptions"] as const) {
+    const root = await mkdtemp(path.join(tmpdir(), `shiplayer-ready-${type}-`)); const manifest = readyManifest(type); await writeReadyAssets(root, manifest);
+    const report = await preflight(root, manifest);
+    assert.equal(report.summary.block, 0, `${type}: ${report.results.filter((item) => item.severity === "block").map((item) => item.message).join("; ")}`);
+  }
 });

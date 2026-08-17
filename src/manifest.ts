@@ -11,7 +11,7 @@ const validateSchema = ajv.compile(schema);
 export function manifestPath(repo: string): string { return path.join(repo, "shiplayer.yml"); }
 export function defaultManifest(input: Partial<ShipLayerManifest["app"]> = {}): ShipLayerManifest {
   const app = { name: input.name || "", bundleId: input.bundleId || "", deviceFamilies: input.deviceFamilies || ["iphone", "ipad"], locales: input.locales || ["en-US"], primaryLocale: input.primaryLocale || "en-US", availability: input.availability || "all", releaseMode: input.releaseMode || "manual", ...input } as ShipLayerManifest["app"];
-  return { schemaVersion: 1, app, contacts: {}, metadata: { localizations: { [app.primaryLocale]: {} } }, permissions: [], dataProcessing: [], externalProcessors: [], review: { demoAccount: { required: false }, recordingScenarios: [] }, screenshots: { scenarios: [], configurations: screenshotConfigs(app.primaryLocale, app.deviceFamilies), rawOutputDir: "release/raw-screenshots", marketingProjectPath: "design/app-store-screenshots" }, monetization: { type: "free" }, build: { signing: "unknown", exportCompliance: "unknown", testFlightUpload: false }, sync: { mode: "dry-run", appStoreConnectKeyIdEnv: "APP_STORE_CONNECT_KEY_ID", issuerIdEnv: "APP_STORE_CONNECT_ISSUER_ID", privateKeyPathEnv: "APP_STORE_CONNECT_PRIVATE_KEY_PATH" }, confirmations: { privacy: "needs-human-confirmation", legal: "needs-human-confirmation", trader: "needs-human-confirmation", paidAgreements: "needs-human-confirmation" } };
+  return { schemaVersion: 1, app, contacts: {}, metadata: { localizations: { [app.primaryLocale]: {} } }, permissions: [], dataProcessing: [], externalProcessors: [], review: { demoAccount: { required: false }, recordingScenarios: [] }, screenshots: { scenarios: [], configurations: screenshotConfigs(app.primaryLocale, app.deviceFamilies), rawOutputDir: "release/raw-screenshots", marketingProjectPath: "design/app-store-screenshots" }, monetization: { type: "free" }, build: { signing: "unknown", exportCompliance: "unknown", testFlightUpload: false }, sync: { mode: "dry-run", appStoreConnectKeyIdEnv: "APP_STORE_CONNECT_KEY_ID", issuerIdEnv: "APP_STORE_CONNECT_ISSUER_ID", privateKeyPathEnv: "APP_STORE_CONNECT_PRIVATE_KEY_PATH" }, confirmations: { privacy: "needs-human-confirmation", legal: "needs-human-confirmation", trader: "needs-human-confirmation", paidAgreements: "needs-human-confirmation", ageRating: "needs-human-confirmation", contentRights: "needs-human-confirmation" } };
 }
 
 function screenshotConfigs(locale: string, families: Array<"iphone" | "ipad">): ShipLayerManifest["screenshots"]["configurations"] {
@@ -49,8 +49,10 @@ export function validateManifest(candidate: unknown): asserts candidate is ShipL
       for (const locale of manifest.app.locales) if (!product.localizations[locale]) errors.push(`subscription ${product.productId} needs ${locale} localization`);
       try { safeRelativePath(product.reviewScreenshot, `review screenshot for ${product.productId}`); } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
       const offer = product.introductoryOffer;
-      if (offer && offer.type === "free-trial" && offer.pricePointReference) errors.push(`free-trial ${product.productId} cannot have a pricePointReference`);
+      if (offer && offer.type === "free-trial" && (offer.pricePointReference || offer.numberOfPeriods)) errors.push(`free-trial ${product.productId} cannot have a pricePointReference or numberOfPeriods`);
       if (offer && offer.type !== "free-trial" && !offer.pricePointReference) errors.push(`paid introductory offer ${product.productId} needs a pricePointReference`);
+      if (offer?.type === "pay-as-you-go" && (!offer.numberOfPeriods || offer.numberOfPeriods < 1 || offer.numberOfPeriods > 12)) errors.push(`pay-as-you-go ${product.productId} needs numberOfPeriods between 1 and 12`);
+      if (offer?.type === "pay-up-front" && offer.numberOfPeriods) errors.push(`pay-up-front ${product.productId} cannot have numberOfPeriods`);
     }
   }
   if (!manifest.app.locales.includes(manifest.app.primaryLocale)) errors.push("app.primaryLocale must appear in app.locales");

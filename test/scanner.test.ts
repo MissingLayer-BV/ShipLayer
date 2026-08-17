@@ -20,7 +20,7 @@ test("scanner extracts Swift/Xcode evidence without declaring legal truth", asyn
 test("scanner ignores test bundle identities and records bounded-file omissions", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer scanner "));
   await mkdir(path.join(root, "App.xcodeproj"));
-  await writeFile(path.join(root, "App.xcodeproj/project.pbxproj"), "PRODUCT_BUNDLE_IDENTIFIER = com.example.app;\nPRODUCT_BUNDLE_IDENTIFIER = com.example.app.Tests;");
+  await writeFile(path.join(root, "App.xcodeproj/project.pbxproj"), "PRODUCT_BUNDLE_IDENTIFIER = com.example.app;\nPRODUCT_BUNDLE_IDENTIFIER = com.example.AppTests;\nPRODUCT_BUNDLE_IDENTIFIER = com.example.AppUITests;");
   await writeFile(path.join(root, "oversized.swift"), "x".repeat(1_000_001));
   const report = await analyzeRepository(root);
   assert.equal(findValue(report, "bundleId"), "com.example.app");

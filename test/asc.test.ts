@@ -19,8 +19,27 @@ test("JWT uses verifiable ES256 claims and does not expose private key material"
   assert.ok(verify("sha256", Buffer.from(`${header}.${payload}`), { key: publicKey, dsaEncoding: "ieee-p1363" }, Buffer.from(signature, "base64url")));
   assert.ok(!token.includes("BEGIN PRIVATE"));
 });
-test("remote discovery is read-only and mockable", async () => { const privateKeyPath = await keyPath(); const paths: string[] = []; const client = new AppStoreConnectClient({ issuerId: "issuer", keyId: "kid", privateKeyPath }, async (url, init) => { paths.push(url); assert.match(String(init?.headers && (init.headers as Record<string, string>).Authorization), /^Bearer /); return { ok: true, status: 200, text: async () => url.includes("/apps?") ? JSON.stringify({ data: [{ id: "app-id" }] }) : JSON.stringify({ data: [] }) }; }); const result = await client.discover("com.example.app"); assert.equal(result.appId, "app-id"); assert.equal(paths.length, 6); });
+test("remote discovery selects IOS version and reads screenshot sets through version localizations", async () => {
+  const privateKeyPath = await keyPath(); const paths: string[] = [];
+  const client = new AppStoreConnectClient({ issuerId: "issuer", keyId: "kid", privateKeyPath }, async (url, init) => {
+    paths.push(url); assert.match(String(init?.headers && (init.headers as Record<string, string>).Authorization), /^Bearer /);
+    const body = url.includes("/apps?") ? { data: [{ id: "app-id" }] }
+      : url.includes("/appStoreVersions?") ? { data: [{ id: "mac", attributes: { platform: "MAC_OS", versionString: "1.0" } }, { id: "ios", attributes: { platform: "IOS", versionString: "1.0" } }] }
+      : url.includes("/appStoreVersions/ios/appStoreVersionLocalizations") ? { data: [{ id: "localization" }] }
+      : url.includes("/appStoreVersionLocalizations/localization/appScreenshotSets") ? { data: [{ id: "set" }] }
+      : { data: [] };
+    return { ok: true, status: 200, text: async () => JSON.stringify(body) };
+  });
+  const result = await client.discover("com.example.app", { version: "1.0" });
+  assert.equal(result.versions.length, 1); assert.ok(paths.some((item) => item.includes("/appStoreVersionLocalizations/localization/appScreenshotSets"))); assert.ok(!paths.some((item) => item.includes("/appStoreVersions/ios/appScreenshotSets")));
+});
 test("remote plan reports read-only discovery", async () => { const manifest = parse(await (await import("node:fs/promises")).readFile(path.resolve("fixtures/subscription-shiplayer.yml"), "utf8")) as ShipLayerManifest; const privateKeyPath = await keyPath(); const plan = await appStorePlan(manifest, true, { APP_STORE_CONNECT_KEY_ID: "kid", APP_STORE_CONNECT_ISSUER_ID: "issuer", APP_STORE_CONNECT_PRIVATE_KEY_PATH: privateKeyPath }, async (url) => ({ ok: true, status: 200, text: async () => url.includes("/apps?") ? JSON.stringify({ data: [] }) : JSON.stringify({ data: [] }) })); assert.equal(plan.mode, "remote"); assert.ok(plan.operations.some((item) => item.action === "manual")); });
+
+test("remote plan is explicitly unavailable without credentials", async () => {
+  const manifest = parse(await (await import("node:fs/promises")).readFile(path.resolve("fixtures/subscription-shiplayer.yml"), "utf8")) as ShipLayerManifest;
+  const plan = await appStorePlan(manifest, true, {});
+  assert.equal(plan.credentialsPresent, false); assert.match(plan.warnings.join(" "), /No request was made/);
+});
 
 test("ASC client follows bounded official pagination and retries 429 reads", async () => {
   const privateKeyPath = await keyPath(); let calls = 0;

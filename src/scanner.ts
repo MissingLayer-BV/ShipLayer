@@ -12,7 +12,7 @@ export async function analyzeRepository(repository: string): Promise<AnalysisRep
   const byName = (name: string): string[] => walked.files.filter((file) => path.basename(file) === name);
   const projectYml = byName("project.yml"); const xcodeProjects = walked.files.filter((file) => file.endsWith("project.pbxproj")).map((file) => relative(root, path.dirname(file))); const workspaces = walked.files.filter((file) => file.endsWith("contents.xcworkspacedata")).map((file) => relative(root, path.dirname(file)));
   const settings: Record<string, Array<{ value: string; evidence: Evidence }>> = {};
-  const push = (key: string, value: string, evidence: Evidence): void => { const normalized = value.trim().replace(/^["']|["']$/g, ""); const detectedKey = key === "bundleId" && /\.(?:tests|uitests)$/i.test(normalized) ? "testBundleId" : key; (settings[detectedKey] ||= []).push({ value: normalized, evidence }); };
+  const push = (key: string, value: string, evidence: Evidence): void => { const normalized = value.trim().replace(/^["']|["']$/g, ""); const finalSegment = normalized.split(".").at(-1) || ""; const detectedKey = key === "bundleId" && /(?:ui)?tests$/i.test(finalSegment) ? "testBundleId" : key; (settings[detectedKey] ||= []).push({ value: normalized, evidence }); };
   const scanText = async (file: string): Promise<void> => {
     const content = await readText(file); const source = relative(root, file);
     const kind: Evidence["kind"] = file.endsWith("Info.plist") ? "plist" : file.endsWith(".entitlements") ? "entitlement" : file.endsWith("PrivacyInfo.xcprivacy") ? "privacy-manifest" : file.endsWith(".storekit") ? "storekit" : file.endsWith("project.yml") || file.endsWith(".pbxproj") ? "project-setting" : "source-heuristic";

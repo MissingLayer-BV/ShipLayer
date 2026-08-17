@@ -24,19 +24,20 @@ export class AppStoreConnectClient {
     ]);
     const appInfos = dataOf(appInfosResponse);
     const allVersions = dataOf(versionsResponse);
-    const versions = selection.version ? allVersions.filter((value) => attribute(value, "versionString") === selection.version) : allVersions;
+    const iosVersions = allVersions.filter((value) => attribute(value, "platform") === "IOS");
+    const versions = selection.version ? iosVersions.filter((value) => attribute(value, "versionString") === selection.version) : iosVersions;
     const allBuilds = dataOf(buildsResponse);
     const builds = selection.build ? allBuilds.filter((value) => attribute(value, "version") === selection.build) : allBuilds;
     const appInfoId = idOf(appInfos[0]);
     // Do not inspect an arbitrary version when a requested version is absent.
     const versionId = idOf(versions[0]);
-    const [appInfoLocalizations, versionLocalizations, reviewDetails, screenshots] = await Promise.all([
+    const [appInfoLocalizations, versionLocalizations, reviewDetails] = await Promise.all([
       appInfoId ? this.get(`/appInfos/${appInfoId}/appInfoLocalizations?limit=200`).then(dataOf) : Promise.resolve([]),
       versionId ? this.get(`/appStoreVersions/${versionId}/appStoreVersionLocalizations?limit=200`).then(dataOf) : Promise.resolve([]),
-      versionId ? this.get(`/appStoreVersions/${versionId}/appStoreVersionAppReviewDetail`).then(dataOf) : Promise.resolve([]),
-      // This reads screenshot *sets* and their included screenshots. v0.1 does not compare or upload assets.
-      versionId ? this.get(`/appStoreVersions/${versionId}/appScreenshotSets?include=appScreenshots&limit=200`).then(dataOf) : Promise.resolve([])
+      versionId ? this.get(`/appStoreVersions/${versionId}/appStoreVersionAppReviewDetail`).then(dataOf) : Promise.resolve([])
     ]);
+    const screenshotSets = await Promise.all(versionLocalizations.map((localization) => { const localizationId = idOf(localization); return localizationId ? this.get(`/appStoreVersionLocalizations/${localizationId}/appScreenshotSets?include=appScreenshots&limit=200`).then(dataOf) : Promise.resolve([]); }));
+    const screenshots = screenshotSets.flat();
     return { appId, app: appResponse.data?.[0], appInfos, appInfoLocalizations, versions, versionLocalizations, builds, reviewDetails, screenshots, inAppPurchases: dataOf(inAppPurchases), subscriptionGroups: dataOf(subscriptionGroups) };
   }
 }

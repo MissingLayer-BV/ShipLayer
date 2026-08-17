@@ -27,4 +27,6 @@ test("CLI uses stable JSON errors, force is explicit, and blockers use exit code
   assert.equal(force.status, 0, force.stderr);
   const blocked = spawnSync(command, ["src/index.ts", "check", root, "--json"], { encoding: "utf8" });
   assert.equal(blocked.status, 2); assert.equal(JSON.parse(blocked.stdout).summary.block > 0, true);
+  const remotePlan = spawnSync(command, ["src/index.ts", "plan", root, "--remote", "--json"], { encoding: "utf8", env: { ...process.env, APP_STORE_CONNECT_KEY_ID: "", APP_STORE_CONNECT_ISSUER_ID: "", APP_STORE_CONNECT_PRIVATE_KEY_PATH: "" } });
+  assert.equal(remotePlan.status, 2); const remotePayload = JSON.parse(remotePlan.stdout); assert.equal(remotePayload.credentialsPresent, false);
 });
