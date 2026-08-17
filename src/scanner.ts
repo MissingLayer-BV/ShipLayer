@@ -149,47 +149,103 @@ function scanXcodeGenProject(content: string, source: string, push: ScannerFindi
   if (appName) push("appName", appName, { source, excerpt: "XcodeGen project name", confidence: "high", kind: "project-setting" });
 
   const ignoredConfigurations = new Set<string>();
-  const collectKnownSettings = (candidate: unknown, label: string): void => {
-    const settings = asRecord(candidate); if (!settings) return;
-    for (const [setting, rawValue] of Object.entries(settings).sort(([left], [right]) => left.localeCompare(right))) {
-      const value = scalarSettingValue(rawValue);
-      if (value === undefined || /\$\([^)]*\)/.test(value)) continue;
-      const evidence: Evidence = { source, excerpt: `XcodeGen ${label}.${setting}`, confidence: "high", kind: "project-setting" };
-      const finding = XCODEGEN_SETTINGS[setting];
-      if (finding) { push(finding, value, evidence); continue; }
-      if (setting === "ITSAppUsesNonExemptEncryption" || setting === "INFOPLIST_KEY_ITSAppUsesNonExemptEncryption") {
-        if (/^(?:yes|true)$/i.test(value)) push("encryption", "true", evidence);
-        else if (/^(?:no|false)$/i.test(value)) push("encryption", "false", evidence);
-        else push("encryption", "declared", { ...evidence, confidence: "medium" });
-        continue;
-      }
-      for (const permission of PERMISSION_KEYS) {
-        if (setting === `INFOPLIST_KEY_${permission}` && value.trim()) push(`permission:${permission}`, value.trim(), evidence);
-      }
-    }
-  };
-  const collectSettings = (candidate: unknown, label: string): void => {
-    const settings = asRecord(candidate); if (!settings) return;
-    // Some XcodeGen files place setting keys directly under settings; most use
-    // base/configs. Treat both forms deterministically.
-    const direct = Object.fromEntries(Object.entries(settings).filter(([key]) => key !== "base" && key !== "configs"));
-    collectKnownSettings(direct, label);
-    collectKnownSettings(settings.base, `${label}.base`);
+  const variants = (candidate: unknown, label: string): XcodeGenSettingsVariant[] => {
+    const settings = asRecord(candidate);
+    if (!settings) return [];
+    const base = scalarSettings(Object.fromEntries(Object.entries(settings).filter(([key]) => key !== "base" && key !== "configs")), label);
+    mergeSettings(base, scalarSettings(settings.base, `${label}.base`));
     const configurations = asRecord(settings.configs);
-    if (!configurations) return;
-    for (const [configuration, configurationSettings] of Object.entries(configurations).sort(([left], [right]) => left.localeCompare(right))) {
-      if (isAlternateConfigurationName(configuration)) { ignoredConfigurations.add(`${label}.${configuration}`); continue; }
-      collectKnownSettings(configurationSettings, `${label}.configs.${configuration}`);
+    if (!configurations) return [{ values: base }];
+    const candidates = Object.entries(configurations)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .filter(([configuration]) => {
+        if (!isAlternateConfigurationName(configuration)) return true;
+        ignoredConfigurations.add(`${label}.${configuration}`);
+        return false;
+      });
+    if (!candidates.length) return [{ values: base }];
+    // Release is the conventional archive configuration. If it is present,
+    // select it rather than merging multiple independent release variants.
+    const release = candidates.find(([configuration]) => /^release$/i.test(configuration));
+    return (release ? [release] : candidates).map(([configuration, value]) => ({
+      configuration,
+      values: mergeSettings(new Map(base), scalarSettings(value, `${label}.configs.${configuration}`)),
+    }));
+  };
+  const emit = (items: XcodeGenSettingsVariant[], secondaryTarget: boolean): void => {
+    for (const item of items) for (const [setting, details] of [...item.values.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+      if (secondaryTarget && setting !== "PRODUCT_BUNDLE_IDENTIFIER" && setting !== "ITSAppUsesNonExemptEncryption" && setting !== "INFOPLIST_KEY_ITSAppUsesNonExemptEncryption" && !PERMISSION_KEYS.some((permission) => setting === `INFOPLIST_KEY_${permission}`)) continue;
+      emitXcodeGenSetting(setting, details, source, push);
     }
   };
-
-  collectSettings(project.settings, "settings");
+  const rootVariants = variants(project.settings, "settings");
   const targets = asRecord(project.targets);
+  const applicationTargets: Array<{ label: string; variants: XcodeGenSettingsVariant[] }> = [];
+  const secondaryTargets: Array<{ label: string; variants: XcodeGenSettingsVariant[] }> = [];
   if (targets) for (const [target, targetValue] of Object.entries(targets).sort(([left], [right]) => left.localeCompare(right))) {
     const targetDefinition = asRecord(targetValue);
-    if (targetDefinition) collectSettings(targetDefinition.settings, `targets.${target}.settings`);
+    if (!targetDefinition) continue;
+    const type = stringValue(targetDefinition.type)?.toLowerCase();
+    if (!type) { questions.add(`XcodeGen target ${target} has no declared type; do not infer its release identity manually.`); continue; }
+    const effective = mergeRootAndTargetVariants(rootVariants, variants(targetDefinition.settings, `targets.${target}.settings`));
+    if (type === "application") applicationTargets.push({ label: target, variants: effective });
+    else secondaryTargets.push({ label: target, variants: effective });
   }
+
+  // Target settings override root settings in XcodeGen. When application
+  // targets exist, their effective release settings are the production
+  // evidence—not a conflicting union with root defaults.
+  if (applicationTargets.length) for (const target of applicationTargets) emit(target.variants, false);
+  else emit(rootVariants, false);
+  for (const target of secondaryTargets) emit(target.variants, true);
   if (ignoredConfigurations.size) questions.add(`Excluded alternate XcodeGen build configuration(s) ${[...ignoredConfigurations].sort().join(", ")} from production release-setting inference.`);
+}
+
+interface XcodeGenSettingValue { value: string; label: string; }
+interface XcodeGenSettingsVariant { configuration?: string; values: Map<string, XcodeGenSettingValue>; }
+
+function scalarSettings(candidate: unknown, label: string): Map<string, XcodeGenSettingValue> {
+  const settings = asRecord(candidate); const values = new Map<string, XcodeGenSettingValue>();
+  if (!settings) return values;
+  for (const [setting, rawValue] of Object.entries(settings).sort(([left], [right]) => left.localeCompare(right))) {
+    const value = scalarSettingValue(rawValue);
+    if (value !== undefined && !/\$\([^)]*\)/.test(value)) values.set(setting, { value, label });
+  }
+  return values;
+}
+function mergeSettings(target: Map<string, XcodeGenSettingValue>, source: Map<string, XcodeGenSettingValue>): Map<string, XcodeGenSettingValue> {
+  for (const [key, value] of source) target.set(key, value);
+  return target;
+}
+function mergeRootAndTargetVariants(root: XcodeGenSettingsVariant[], target: XcodeGenSettingsVariant[]): XcodeGenSettingsVariant[] {
+  if (!target.length) return root.map((item) => ({ configuration: item.configuration, values: new Map(item.values) }));
+  const defaults = root.filter((item) => item.configuration === undefined);
+  const merged: XcodeGenSettingsVariant[] = [];
+  for (const targetVariant of target) {
+    // Xcode configuration names are conventional labels rather than strict
+    // identifiers. Treat `release` and `Release` as the same configuration
+    // when applying the normal target-over-project precedence.
+    const roots = root.filter((item) => item.configuration?.toLowerCase() === targetVariant.configuration?.toLowerCase());
+    const inherited = roots.length ? roots : defaults.length ? defaults : root.length === 1 ? root : [];
+    if (!inherited.length) { merged.push({ configuration: targetVariant.configuration, values: new Map(targetVariant.values) }); continue; }
+    for (const rootVariant of inherited) merged.push({
+      configuration: targetVariant.configuration || rootVariant.configuration,
+      values: mergeSettings(new Map(rootVariant.values), targetVariant.values),
+    });
+  }
+  return merged;
+}
+function emitXcodeGenSetting(setting: string, details: XcodeGenSettingValue, source: string, push: ScannerFindingPush): void {
+  const evidence: Evidence = { source, excerpt: `XcodeGen ${details.label}.${setting}`, confidence: "high", kind: "project-setting" };
+  const finding = XCODEGEN_SETTINGS[setting];
+  if (finding) { push(finding, details.value, evidence); return; }
+  if (setting === "ITSAppUsesNonExemptEncryption" || setting === "INFOPLIST_KEY_ITSAppUsesNonExemptEncryption") {
+    if (/^(?:yes|true)$/i.test(details.value)) push("encryption", "true", evidence);
+    else if (/^(?:no|false)$/i.test(details.value)) push("encryption", "false", evidence);
+    else push("encryption", "declared", { ...evidence, confidence: "medium" });
+    return;
+  }
+  for (const permission of PERMISSION_KEYS) if (setting === `INFOPLIST_KEY_${permission}` && details.value.trim()) push(`permission:${permission}`, details.value.trim(), evidence);
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined; }
@@ -202,12 +258,135 @@ function productionSettingText(file: string, content: string, source: string, qu
     return "";
   }
   if (!file.endsWith(".pbxproj")) return stripProjectSettingComments(content);
+  const scoped = scopedPbxReleaseSettings(content, source, questions);
+  if (scoped !== undefined) return scoped;
   const configurations = [...content.matchAll(/\/\*\s*([^*]+?)\s*\*\/\s*=\s*\{[\s\S]*?buildSettings\s*=\s*\{([\s\S]*?)\};[\s\S]*?name\s*=\s*([^;]+);/g)];
   if (!configurations.length) return stripProjectSettingComments(content);
   const alternate = configurations.filter((match) => isAlternateConfigurationName(match[3].trim()) || isAlternateConfigurationName(match[1].trim()));
   if (alternate.length) questions.add(`Excluded alternate Xcode build configuration(s) ${alternate.map((match) => match[3].trim() || match[1].trim()).sort().join(", ")} from production release-setting inference.`);
   return stripProjectSettingComments(configurations.filter((match) => !alternate.includes(match)).map((match) => match[2]).join("\n"));
 }
+
+interface PbxObjectBlock { id: string; body: string; }
+interface PbxConfiguration { id: string; name: string; settings: Map<string, string>; }
+
+/**
+ * Returns effective Release settings when a conventional pbxproj contains
+ * enough target/configuration-list structure to scope them safely. Target
+ * values override PBXProject values; extensions contribute only their bundle,
+ * permission, and encryption evidence. Undefined deliberately falls back to
+ * the legacy single-target reader for small/plain project fixtures.
+ */
+function scopedPbxReleaseSettings(content: string, source: string, questions: Set<string>): string | undefined {
+  const objects = pbxObjectBlocks(content);
+  const configurations = new Map<string, PbxConfiguration>();
+  const configurationLists = new Map<string, string[]>();
+  const nativeTargets: Array<{ listId?: string; application: boolean }> = [];
+  const projectLists: string[] = [];
+  for (const object of objects) {
+    const isa = pbxAssignment(object.body, "isa");
+    if (isa === "XCBuildConfiguration") {
+      const name = pbxAssignment(object.body, "name");
+      const settingsBlock = pbxAssignmentBlock(object.body, "buildSettings", "{", "}");
+      if (name && settingsBlock !== undefined) configurations.set(object.id, { id: object.id, name: unquotePbx(name), settings: pbxSettings(settingsBlock) });
+      continue;
+    }
+    if (isa === "XCConfigurationList") {
+      const members = pbxAssignmentBlock(object.body, "buildConfigurations", "(", ")") || "";
+      configurationLists.set(object.id, [...members.matchAll(/\b[A-Za-z0-9_]{8,}\b/g)].map((match) => match[0]).filter((id) => configurations.has(id)));
+      continue;
+    }
+    if (isa === "PBXNativeTarget") {
+      const listId = pbxReference(pbxAssignment(object.body, "buildConfigurationList"));
+      const productType = unquotePbx(pbxAssignment(object.body, "productType") || "");
+      nativeTargets.push({ listId, application: productType === "com.apple.product-type.application" });
+      continue;
+    }
+    if (isa === "PBXProject") {
+      const listId = pbxReference(pbxAssignment(object.body, "buildConfigurationList"));
+      if (listId) projectLists.push(listId);
+    }
+  }
+  // A target-aware map is available only when at least one real native target
+  // points at a recognized configuration list. Otherwise the historic
+  // single-target parsing remains the least surprising read-only fallback.
+  const associatedTargets = nativeTargets.filter((target) => target.listId && configurationLists.has(target.listId));
+  if (!associatedTargets.length) return undefined;
+
+  const selected = (listId: string | undefined): PbxConfiguration[] => {
+    if (!listId) return [];
+    const candidates = (configurationLists.get(listId) || []).map((id) => configurations.get(id)).filter((item): item is PbxConfiguration => Boolean(item))
+      .filter((item) => !isAlternateConfigurationName(item.name));
+    const release = candidates.filter((item) => /^release$/i.test(item.name));
+    return (release.length ? release : candidates).sort((left, right) => left.id.localeCompare(right.id));
+  };
+  const rootByName = new Map<string, Map<string, string>>();
+  for (const listId of projectLists.sort()) for (const configuration of selected(listId)) rootByName.set(configuration.name.toLowerCase(), configuration.settings);
+  const inherited = (configuration: PbxConfiguration): Map<string, string> => mergePbxSettings(new Map(rootByName.get(configuration.name.toLowerCase()) || []), configuration.settings);
+  const primary: Map<string, string>[] = [];
+  const secondary: Map<string, string>[] = [];
+  for (const target of associatedTargets) {
+    const effective = selected(target.listId).map(inherited);
+    if (target.application) primary.push(...effective);
+    else secondary.push(...effective);
+  }
+  const effectivePrimary = primary.length ? primary : [...rootByName.values()].map((settings) => new Map(settings));
+  if (!effectivePrimary.length) {
+    questions.add("Could not identify a primary application Release configuration in " + source + "; verify target selection manually.");
+    return "";
+  }
+  const output: string[] = [];
+  for (const settings of effectivePrimary) output.push(pbxSettingsText(settings));
+  for (const settings of secondary) output.push(pbxSettingsText(settings, true));
+  return output.filter(Boolean).join("\n");
+}
+
+function pbxObjectBlocks(content: string): PbxObjectBlock[] {
+  const blocks: PbxObjectBlock[] = []; const header = /(?:^|[\n\r\t ])([A-Za-z0-9_]{8,})(?:\s*\/\*[^*]*\*\/)?\s*=\s*\{/g;
+  for (const match of content.matchAll(header)) {
+    const open = content.indexOf("{", (match.index || 0) + match[0].length - 1); const close = pbxClosingDelimiter(content, open, "{", "}");
+    if (close === undefined) continue;
+    blocks.push({ id: match[1], body: content.slice(open + 1, close) });
+    header.lastIndex = close + 1;
+  }
+  return blocks;
+}
+function pbxClosingDelimiter(content: string, open: number, opening: string, closing: string): number | undefined {
+  if (open < 0 || content[open] !== opening) return undefined;
+  let depth = 0; let quote = false;
+  for (let index = open; index < content.length; index++) {
+    const character = content[index];
+    if (quote) { if (character === "\\" && index + 1 < content.length) { index++; continue; } if (character === "\"") quote = false; continue; }
+    if (character === "\"") { quote = true; continue; }
+    if (character === "/" && content[index + 1] === "*") { const closeComment = content.indexOf("*/", index + 2); if (closeComment < 0) return undefined; index = closeComment + 1; continue; }
+    if (character === opening) depth++;
+    else if (character === closing && --depth === 0) return index;
+  }
+  return undefined;
+}
+function pbxAssignment(body: string, key: string): string | undefined { return body.match(new RegExp("\\b" + key + "\\s*=\\s*([^;]+);"))?.[1]?.trim(); }
+function pbxReference(value: string | undefined): string | undefined { return value?.match(/[A-Za-z0-9_]{8,}/)?.[0]; }
+function pbxAssignmentBlock(body: string, key: string, opening: string, closing: string): string | undefined {
+  const match = body.match(new RegExp("\\b" + key + "\\s*=\\s*\\" + opening));
+  if (!match || match.index === undefined) return undefined;
+  const open = body.indexOf(opening, match.index + match[0].length - 1); const end = pbxClosingDelimiter(body, open, opening, closing);
+  return end === undefined ? undefined : body.slice(open + 1, end);
+}
+function unquotePbx(value: string): string { return value.trim().replace(/^"|"$/g, ""); }
+function pbxSettings(body: string): Map<string, string> {
+  const settings = new Map<string, string>();
+  for (const match of body.matchAll(/\b([A-Za-z][A-Za-z0-9_]+)\s*=\s*([^;]+);/g)) settings.set(match[1], match[2].trim());
+  return settings;
+}
+function mergePbxSettings(target: Map<string, string>, source: Map<string, string>): Map<string, string> {
+  for (const [key, value] of source) target.set(key, value);
+  return target;
+}
+function pbxSettingsText(settings: Map<string, string>, secondaryTarget = false): string {
+  const permitted = (setting: string): boolean => !secondaryTarget || setting === "PRODUCT_BUNDLE_IDENTIFIER" || setting === "ITSAppUsesNonExemptEncryption" || setting === "INFOPLIST_KEY_ITSAppUsesNonExemptEncryption" || PERMISSION_KEYS.some((permission) => setting === "INFOPLIST_KEY_" + permission);
+  return [...settings.entries()].filter(([setting]) => permitted(setting)).sort(([left], [right]) => left.localeCompare(right)).map(([setting, value]) => setting + " = " + value + ";").join("\n");
+}
+
 function isAlternateConfigurationName(name: string): boolean { return /(?:^|[ _.-])(?:debug|staging|development|dev)(?:$|[ _.-])/i.test(name) || /^(?:debug|staging|development|dev)$/i.test(name); }
 function stripProjectSettingComments(content: string): string { return content.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|\s)\/\/.*$/gm, "$1"); }
 function normalizeEndpoint(value: string): string {

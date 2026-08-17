@@ -133,7 +133,7 @@ test("round-9 does not infer Xcode settings from runtime copy and selects releas
 });
 
 test("round-10 structurally selects XcodeGen release settings without hiding real target bundles", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-xcodegen-round10-")); const manifest = readyManifest(); await writeReadyAssets(root, manifest);
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-xcodegen-round10-")); const manifest = readyManifest(); manifest.app.version = "2.0"; manifest.app.build = "2"; manifest.app.deploymentTarget = "17.0"; await writeReadyAssets(root, manifest);
   await writeFile(path.join(root, "project.yml"), `name: Example
 settings:
   configs:
@@ -144,7 +144,7 @@ settings:
       PRODUCT_BUNDLE_IDENTIFIER: com.example.app
       MARKETING_VERSION: 1.0
       CURRENT_PROJECT_VERSION: 1
-      IPHONEOS_DEPLOYMENT_TARGET: 17.0
+      IPHONEOS_DEPLOYMENT_TARGET: 16.0
       TARGETED_DEVICE_FAMILY: 1
       ITSAppUsesNonExemptEncryption: false
 targets:
@@ -156,6 +156,10 @@ targets:
           PRODUCT_BUNDLE_IDENTIFIER: com.example.app.debug
         Release:
           PRODUCT_BUNDLE_IDENTIFIER: com.example.app
+          MARKETING_VERSION: 2.0
+          CURRENT_PROJECT_VERSION: 2
+          IPHONEOS_DEPLOYMENT_TARGET: 17.0
+          TARGETED_DEVICE_FAMILY: 1
   ExampleWidget:
     type: app-extension
     settings:
@@ -164,14 +168,90 @@ targets:
           PRODUCT_BUNDLE_IDENTIFIER: com.example.app.widget.debug
         Release:
           PRODUCT_BUNDLE_IDENTIFIER: com.example.app.widget
+          MARKETING_VERSION: 3.0
+          CURRENT_PROJECT_VERSION: 3
+          IPHONEOS_DEPLOYMENT_TARGET: 18.0
+          TARGETED_DEVICE_FAMILY: 1,2
 `);
   manifest.secondaryTargetConfirmations = [{ bundleId: "com.example.app.widget", classification: "widget", evidence: ["project.yml"], confirmation: "confirmed" }];
   const analysis = await analyzeRepository(root);
   assert.equal(findValue(analysis, "bundleId"), "com.example.app");
+  assert.equal(findValue(analysis, "version"), "2.0"); assert.equal(findValue(analysis, "build"), "2"); assert.equal(findValue(analysis, "deploymentTarget"), "17.0");
   assert.equal(analysis.findings.some((item) => String(item.value).includes("com.example.app.debug")), false);
   assert.equal(analysis.contradictions.some((item) => item.includes("debug") || item.includes("999")), false);
+  assert.equal(analysis.contradictions.some((item) => item.includes("1.0") || item.includes("3.0") || item.includes("18.0")), false);
   assert.deepEqual(analysis.findings.find((item) => item.key === "secondaryBundleId")?.value, ["com.example.app.widget"]);
   const report = await preflight(root, manifest);
   assert.equal(report.summary.block, 0);
   assert.equal(report.canSubmit, true);
+});
+
+test("round-11 scopes native Xcode extension settings and honors application target overrides", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-pbx-target-round11-")); const manifest = readyManifest(); manifest.app.version = "2.0"; manifest.app.build = "2"; manifest.app.deploymentTarget = "17.0"; await writeReadyAssets(root, manifest); await rm(path.join(root, "project.yml")); await mkdir(path.join(root, "Example.xcodeproj"));
+  await writeFile(path.join(root, "Example.xcodeproj/project.pbxproj"), `APPPROJREL /* Release */ = {
+  isa = XCBuildConfiguration;
+  buildSettings = {
+    PRODUCT_BUNDLE_IDENTIFIER = com.example.app;
+    MARKETING_VERSION = 1.0;
+    CURRENT_PROJECT_VERSION = 1;
+    IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+    TARGETED_DEVICE_FAMILY = 1;
+    INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+  };
+  name = Release;
+};
+APPRELEASE /* Release */ = {
+  isa = XCBuildConfiguration;
+  buildSettings = {
+    PRODUCT_BUNDLE_IDENTIFIER = com.example.app;
+    MARKETING_VERSION = 2.0;
+    CURRENT_PROJECT_VERSION = 2;
+    IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+    TARGETED_DEVICE_FAMILY = 1;
+  };
+  name = Release;
+};
+WIDGETREL /* Release */ = {
+  isa = XCBuildConfiguration;
+  buildSettings = {
+    PRODUCT_BUNDLE_IDENTIFIER = com.example.app.widget;
+    MARKETING_VERSION = 3.0;
+    CURRENT_PROJECT_VERSION = 3;
+    IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+    TARGETED_DEVICE_FAMILY = 1,2;
+  };
+  name = Release;
+};
+PROJECTLIST /* Build configuration list for PBXProject */ = {
+  isa = XCConfigurationList;
+  buildConfigurations = (APPPROJREL /* Release */);
+};
+APPLIST01 /* Build configuration list for PBXNativeTarget */ = {
+  isa = XCConfigurationList;
+  buildConfigurations = (APPRELEASE /* Release */);
+};
+WIDGETLIST /* Build configuration list for PBXNativeTarget */ = {
+  isa = XCConfigurationList;
+  buildConfigurations = (WIDGETREL /* Release */);
+};
+PROJECTOBJ /* Project object */ = {
+  isa = PBXProject;
+  buildConfigurationList = PROJECTLIST /* Build configuration list */;
+};
+APPTARGET /* Example */ = {
+  isa = PBXNativeTarget;
+  buildConfigurationList = APPLIST01 /* Build configuration list */;
+  productType = "com.apple.product-type.application";
+};
+WIDGETTGT /* Example Widget */ = {
+  isa = PBXNativeTarget;
+  buildConfigurationList = WIDGETLIST /* Build configuration list */;
+  productType = "com.apple.product-type.app-extension";
+};
+`);
+  manifest.secondaryTargetConfirmations = [{ bundleId: "com.example.app.widget", classification: "widget", evidence: ["Example.xcodeproj/project.pbxproj"], confirmation: "confirmed" }];
+  const analysis = await analyzeRepository(root);
+  assert.equal(findValue(analysis, "bundleId"), "com.example.app"); assert.equal(findValue(analysis, "version"), "2.0"); assert.equal(findValue(analysis, "build"), "2"); assert.equal(findValue(analysis, "deploymentTarget"), "17.0"); assert.equal(findValue(analysis, "deviceFamily"), "1");
+  assert.equal(analysis.contradictions.length, 0); assert.deepEqual(analysis.findings.find((item) => item.key === "secondaryBundleId")?.value, ["com.example.app.widget"]);
+  const report = await preflight(root, manifest); assert.equal(report.summary.block, 0); assert.equal(report.canSubmit, true);
 });
