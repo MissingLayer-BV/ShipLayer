@@ -7,8 +7,8 @@
 | Build release artifacts | `shiplayer prepare <repo>` | Local files only |
 | Gate release readiness | `shiplayer check <repo>` | None |
 | Compare with Apple | `shiplayer plan <repo> --remote` | Read-only API |
-| Print capture commands | `shiplayer capture <repo>` | None |
-| Run reviewed local capture | `shiplayer capture <repo> --execute --yes-execute` | Local simulator only |
+| Produce screenshot harness hand-off | `shiplayer capture <repo>` | None |
+| Direct local capture | Repository-owned UI-test harness only | Local simulator only |
 | Preview application | `shiplayer apply <repo>` | None by default |
 | Final review gate | `shiplayer submit <repo>` | None by default |
 

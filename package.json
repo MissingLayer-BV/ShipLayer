@@ -2,6 +2,7 @@
   "name": "shiplayer",
   "version": "0.1.0",
   "private": true,
+  "files": ["dist", "README.md", "docs", "skills", ".env.example"],
   "description": "A safe, local-first App Store release preparation CLI for native Swift apps.",
   "type": "module",
   "bin": {

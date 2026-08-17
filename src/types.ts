@@ -25,7 +25,7 @@ export interface AnalysisReport {
   findings: Finding[];
   contradictions: string[];
   unresolvedQuestions: string[];
-  ignored: { directories: string[]; filesOverLimit: number; filesScanned: number };
+  ignored: { directories: string[]; filesOverLimit: number; filesScanned: number; unreadable: string[]; symlinksIgnored: string[]; truncated: boolean };
 }
 
 export interface LocaleCopy {
@@ -60,18 +60,18 @@ export interface SubscriptionProduct {
   duration: "P1W" | "P1M" | "P2M" | "P3M" | "P6M" | "P1Y";
   level: number;
   localizations: Record<string, { displayName: string; description: string }>;
-  pricePointReference?: string;
+  pricePointReference: string;
   introductoryOffer?: { type: "free-trial" | "pay-up-front" | "pay-as-you-go"; duration: string; pricePointReference?: string };
-  familySharing?: boolean;
-  reviewNotes?: string;
-  reviewScreenshot?: string;
+  familySharing: boolean;
+  reviewNotes: string;
+  reviewScreenshot: string;
 }
 
 export type Monetization =
   | { type: "free" }
   | { type: "paid-app"; pricePointReference: string }
-  | { type: "non-consumables"; products: Array<{ productId: string; referenceName: string; localizations: Record<string, { displayName: string; description: string }>; pricePointReference?: string; familySharing?: boolean; reviewNotes?: string; reviewScreenshot?: string }> }
-  | { type: "subscriptions"; group: { referenceName: string; subscriptionGroupId?: string }; baseTerritory: string; products: SubscriptionProduct[]; paywallNavigation: string; restorePath: string; confirmation: Confirmation };
+  | { type: "non-consumables"; products: Array<{ productId: string; referenceName: string; localizations: Record<string, { displayName: string; description: string }>; pricePointReference: string; familySharing: boolean; reviewNotes: string; reviewScreenshot: string }>; paywallNavigation: string; restorePath: string; confirmation: Confirmation }
+  | { type: "subscriptions"; group: { referenceName: string; subscriptionGroupId?: string }; baseTerritory: string; products: SubscriptionProduct[]; paywallNavigation: string; restorePath: string; termsUrl: string; privacyUrl: string; disclosureConfirmation: Confirmation; confirmation: Confirmation };
 
 export interface ScreenshotScenario {
   id: string;

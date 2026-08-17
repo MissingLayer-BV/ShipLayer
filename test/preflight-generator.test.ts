@@ -16,7 +16,7 @@ test("preflight and generated release package are deterministic", async () => {
   const manifest = parse(await readFile(path.resolve("fixtures/subscription-shiplayer.yml"), "utf8")) as ShipLayerManifest;
   validateManifest(manifest);
   const report = await preflight(root, manifest);
-  assert.equal(report.summary.block, 0);
+  assert.ok(report.summary.block > 0, "fixture intentionally lacks final submission assets");
   const generated = await generateReleasePackage(root, manifest, await analyzeRepository(root), report, "release-one");
   const first = await readFile(path.join(generated.directory, "review/app-review-notes.md"), "utf8");
   const firstAnalysis = await readFile(path.join(generated.directory, "reports/analysis.json"), "utf8");

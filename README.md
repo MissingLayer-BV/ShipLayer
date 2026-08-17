@@ -7,7 +7,7 @@ It scans a repository, captures evidence rather than guesses, and generates the 
 ## Quick start
 
 ```bash
-npm install
+npm ci
 npm run build
 ./dist/index.js init /path/to/MySwiftApp
 # Review shiplayer.yml; confirm privacy/legal facts yourself.
@@ -28,7 +28,7 @@ Use `npx shiplayer ...` after publishing the package or link the local executabl
 | `prepare <repo> [--out DIR]` | Generates a deterministic release package. Does not upload or submit. |
 | `check <repo> [--json]` | Preflight. Returns exit status 2 when blockers remain. |
 | `plan <repo> [--remote]` | Offline App Store Connect plan, or explicit authenticated read/compare only. |
-| `capture <repo>` | Prints exact simulator capture commands; use `--execute --yes-execute` to run them. |
+| `capture <repo>` | Produces a deterministic screenshot-harness hand-off; v0.1 never fabricates or runs a generic capture command. |
 | `apply <repo>` | Dry-run by default. `--apply --yes-i-understand` remains manual-only in v0.1. |
 | `submit <repo>` | Separate final gate. v0.1 deliberately keeps final submission manual. |
 
@@ -36,14 +36,14 @@ No command creates a GitHub Action, triggers cloud CI, or uses a paid service.
 
 ## Release package
 
-`prepare` writes `shiplayer-release/` (or `--out`) containing a normalized manifest, analysis/preflight reports, per-locale metadata drafts, App Privacy draft and evidence matrix, privacy/support page drafts, App Review notes, physical-device recording script, screenshot capture plan, app-store-screenshots compatible project JSON, StoreKit checklist, dry-run ASC plan, and remaining human actions.
+`prepare` writes a managed `shiplayer-release/` package (or a safe relative `--out`) containing a normalized manifest, analysis/preflight reports, per-locale metadata drafts, App Privacy draft and evidence matrix, privacy/support page drafts, App Review notes, physical-device recording script, screenshot capture plan, neutral marketing-composition hand-off, StoreKit checklist, dry-run ASC plan, and remaining human actions. It refuses traversal, symlinks, the repository root, and unmanaged output directories; managed packages regenerate from staging.
 
 ## Safety model
 
 - `shiplayer.yml` contains environment-variable names, never credentials or `.p8` contents.
 - Heuristics are proposals. Privacy, legal, tax, agreements, trader status, and regulated-content declarations require human confirmation.
 - Remote mode uses an App Store Connect ES256 JWT from `APP_STORE_CONNECT_ISSUER_ID`, `APP_STORE_CONNECT_KEY_ID`, and `APP_STORE_CONNECT_PRIVATE_KEY_PATH`. It never logs private key material.
-- v0.1 implements authenticated discovery/read comparison only. It does not claim it created an app, uploaded an asset, or submitted for review.
+- v0.1 implements authenticated discovery reads only. It selects the requested version/build when supplied, follows bounded API pagination, and does not claim it computed a full diff, created an app, uploaded an asset, or submitted for review.
 - Apple UI/human actions remain required for initial app-record creation, agreements, tax/banking, trader declarations, privacy/legal confirmation, final asset review, and final App Review submission.
 
 ## Manifest
@@ -54,7 +54,7 @@ See [fixtures/subscription-shiplayer.yml](fixtures/subscription-shiplayer.yml) f
 
 ## Architecture and development
 
-Read [docs/architecture.md](docs/architecture.md) and [docs/automation-boundaries.md](docs/automation-boundaries.md). The Codex skill is at [skills/ship-app-store](skills/ship-app-store); it orchestrates the CLI instead of hiding nondeterministic behavior in prompt text.
+Read [docs/architecture.md](docs/architecture.md) and [docs/automation-boundaries.md](docs/automation-boundaries.md). The Codex skill is at [skills/ship-app-store](skills/ship-app-store); it orchestrates the CLI instead of hiding nondeterministic behavior in prompt text. The separate `app-store-screenshots` editor must be installed/scaffolded independently; ShipLayer emits only a neutral asset hand-off plan.
 
 ```bash
 npm install

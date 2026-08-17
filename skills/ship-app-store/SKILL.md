@@ -22,7 +22,7 @@ Use the repository's `shiplayer` CLI for all deterministic work. Do not recreate
 - Never put credentials, `.p8` contents, login passwords, banking data, or tax details in `shiplayer.yml` or generated artifacts.
 - Never make or imply legal/privacy compliance. Require explicit human confirmation.
 - Do not create initial app records, accept agreements, alter tax/banking/trader declarations, or submit an app without direct user approval.
-- Use `shiplayer capture` without `--execute` first. Execute simulator commands only on macOS/Xcode after the user approves the exact plan.
+- Use `shiplayer capture` to inspect the deterministic harness hand-off. v0.1 does not execute generic Simulator capture commands; only run a repository-owned, reviewed UI-test harness on macOS/Xcode.
 
 ## Reference
 

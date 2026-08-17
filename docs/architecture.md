@@ -9,6 +9,6 @@ Codex skill → shiplayer CLI → scanner / schema / generators / preflight / AS
 - **Generators** derive drafts only from confirmed manifest fields.
 - **Preflight** distinguishes pass, warning, and blocker. A blocker returns exit code 2.
 - **ASC adapter** separates auth/discovery from future write adapters. Discovery is read-only.
-- **Capture** creates exact local `xcodebuild` commands. Execution requires an Xcode-capable host and two confirmation flags.
+- **Capture** creates a deterministic hand-off for a repository-declared screenshot UI-test harness. It deliberately does not invent generic `xcodebuild` commands or fabricate screenshots.
 
-The CLI supports local analysis/generation on macOS or Linux. Direct Simulator capture requires macOS/Xcode. Marketing composition is delegated through a compatible project/config for the installed `app-store-screenshots` workflow, rather than duplicating its editor.
+The CLI supports local analysis/generation on macOS or Linux. Direct Simulator capture needs macOS/Xcode plus a repository-declared harness. Marketing composition is handed off as a neutral plan to a separately installed/scaffolded `app-store-screenshots` editor; ShipLayer does not claim the hand-off JSON is itself an editor project.

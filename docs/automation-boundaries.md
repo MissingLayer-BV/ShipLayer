@@ -6,7 +6,7 @@ ShipLayer can prepare facts, drafts, asset plans, and an idempotent remote chang
 |---|---|
 | Swift/Xcode facts | Detect with evidence; report contradictions and unknowns. |
 | Privacy and legal copy | Draft from confirmed facts; human reviews and publishes. |
-| Screenshot capture | Plan locally; execute only with Xcode and explicit confirmation. |
+| Screenshot capture | Produce a deterministic harness hand-off. A repository must declare and test its own UI-test capture adapter; v0.1 executes no generic capture command. |
 | App Store Connect | JWT-based read/compare. Writes are reported as manual until independently tested. |
 | Subscriptions/IAP | Validate manifest and generate checklist/review notes; human verifies StoreKit/App Store Connect state. |
 | Initial app record, agreements, tax/banking, trader | Human/App Store Connect UI only. |

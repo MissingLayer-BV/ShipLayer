@@ -98,6 +98,9 @@ monetization:
       reviewScreenshot: review/yearly.png
   paywallNavigation: Open Settings, tap Upgrade, then select a plan.
   restorePath: Open Settings, tap Upgrade, then tap Restore Purchases.
+  termsUrl: https://example.com/terms
+  privacyUrl: https://example.com/privacy
+  disclosureConfirmation: confirmed
   confirmation: confirmed
 build:
   signing: automatic

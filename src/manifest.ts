@@ -1,7 +1,7 @@
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { parse, stringify } from "yaml";
 import path from "node:path";
-import { readText, writeText } from "./fs.js";
+import { readText, safeRelativePath, writeText } from "./fs.js";
 import schema from "./schema.json" with { type: "json" };
 import type { ShipLayerManifest } from "./types.js";
 
@@ -29,13 +29,30 @@ export async function readManifest(repo: string): Promise<ShipLayerManifest> {
 export async function writeManifest(repo: string, manifest: ShipLayerManifest): Promise<void> { validateManifest(manifest); await writeText(manifestPath(repo), stringify(manifest, { sortMapEntries: true })); }
 export function validateManifest(candidate: unknown): asserts candidate is ShipLayerManifest {
   if (!validateSchema(candidate)) throw new Error(`Invalid shiplayer.yml:\n${(validateSchema.errors || []).map((error: { instancePath?: string; message?: string }) => `- ${error.instancePath || "/"} ${error.message || "is invalid"}`).join("\n")}`);
-  const manifest = candidate as unknown as ShipLayerManifest; const ids = new Set<string>();
-  const add = (id: string, field: string): void => { if (ids.has(id)) throw new Error(`Invalid shiplayer.yml: duplicate product ID '${id}' in ${field}.`); ids.add(id); };
-  if (manifest.monetization.type === "non-consumables") for (const product of manifest.monetization.products) add(product.productId, "non-consumables");
-  if (manifest.monetization.type === "subscriptions") {
-    const levels = new Set<number>();
-    for (const product of manifest.monetization.products) { add(product.productId, "subscriptions"); if (levels.has(product.level)) throw new Error(`Invalid shiplayer.yml: subscription level ${product.level} is duplicated.`); levels.add(product.level); if (!product.localizations[manifest.app.primaryLocale]) throw new Error(`Invalid shiplayer.yml: subscription ${product.productId} needs ${manifest.app.primaryLocale} localization.`); }
-    if (!manifest.monetization.paywallNavigation.trim() || !manifest.monetization.restorePath.trim()) throw new Error("Invalid shiplayer.yml: subscriptions require paywallNavigation and restorePath.");
+  const manifest = candidate as unknown as ShipLayerManifest;
+  const errors: string[] = [];
+  const ids = new Set<string>();
+  const add = (id: string, field: string): void => { if (ids.has(id)) errors.push(`duplicate product ID '${id}' in ${field}`); ids.add(id); };
+  for (const locale of manifest.app.locales) if (!manifest.metadata.localizations[locale]) errors.push(`metadata.localizations is missing configured locale ${locale}`);
+  for (const [label, candidatePath] of [["screenshots.rawOutputDir", manifest.screenshots.rawOutputDir], ["screenshots.marketingProjectPath", manifest.screenshots.marketingProjectPath]] as const) {
+    if (!candidatePath) continue;
+    try { safeRelativePath(candidatePath, label); } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
   }
-  if (!manifest.app.locales.includes(manifest.app.primaryLocale)) throw new Error("Invalid shiplayer.yml: app.primaryLocale must appear in app.locales.");
+  if (manifest.monetization.type === "non-consumables") for (const product of manifest.monetization.products) {
+    add(product.productId, "non-consumables");
+    for (const locale of manifest.app.locales) if (!product.localizations[locale]) errors.push(`non-consumable ${product.productId} needs ${locale} localization`);
+    try { safeRelativePath(product.reviewScreenshot, `review screenshot for ${product.productId}`); } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
+  }
+  if (manifest.monetization.type === "subscriptions") {
+    for (const product of manifest.monetization.products) {
+      add(product.productId, "subscriptions");
+      for (const locale of manifest.app.locales) if (!product.localizations[locale]) errors.push(`subscription ${product.productId} needs ${locale} localization`);
+      try { safeRelativePath(product.reviewScreenshot, `review screenshot for ${product.productId}`); } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
+      const offer = product.introductoryOffer;
+      if (offer && offer.type === "free-trial" && offer.pricePointReference) errors.push(`free-trial ${product.productId} cannot have a pricePointReference`);
+      if (offer && offer.type !== "free-trial" && !offer.pricePointReference) errors.push(`paid introductory offer ${product.productId} needs a pricePointReference`);
+    }
+  }
+  if (!manifest.app.locales.includes(manifest.app.primaryLocale)) errors.push("app.primaryLocale must appear in app.locales");
+  if (errors.length) throw new Error(`Invalid shiplayer.yml:\n${errors.map((error) => `- ${error}`).join("\n")}`);
 }
