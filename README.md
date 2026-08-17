@@ -18,7 +18,7 @@ npm run build
 ./dist/index.js plan /path/to/MySwiftApp
 ```
 
-Use `npx shiplayer ...` after publishing the package or link the local executable with `npm link` during development. ShipLayer targets Node 22+; this repository keeps syntax compatible with the current local environment for tests.
+This package is intentionally private in v0.1; it is not published to npm. Run `./dist/index.js`, use `npm link` from this checkout, or install from a reviewed local/Git checkout before using `shiplayer` in another repository. ShipLayer targets Node 22+.
 
 ## Commands
 
@@ -44,7 +44,7 @@ No command creates a GitHub Action, triggers cloud CI, or uses a paid service.
 - `shiplayer.yml` contains environment-variable names, never credentials or `.p8` contents. It rejects clear private-key/token/password assignment material in free text as a defense-in-depth guard.
 - Heuristics are proposals. Privacy, legal, tax, agreements, trader status, and regulated-content declarations require human confirmation.
 - Remote mode uses an App Store Connect ES256 JWT from `APP_STORE_CONNECT_ISSUER_ID`, `APP_STORE_CONNECT_KEY_ID`, and `APP_STORE_CONNECT_PRIVATE_KEY_PATH`. It never logs private key material.
-- v0.1 implements authenticated discovery reads only. It selects the requested iOS version/build when supplied, follows bounded official-API pagination, validates EC P-256 JWT keys, and does not claim it computed a full diff, created an app, uploaded an asset, or submitted for review.
+- v0.1 implements authenticated discovery reads only. It selects the requested iOS version/build when supplied, follows bounded official-API pagination, validates EC P-256 JWT keys, and does not claim it computed a full diff, created an app, uploaded an asset, or submitted for review. Modern Xcode Icon Composer `.icon` files are supported as a selected asset with an explicit human Xcode/archive verification gate; their private internal format is not parsed.
 - Apple UI/human actions remain required for initial app-record creation, agreements, tax/banking, trader declarations, privacy/legal confirmation, final asset review, and final App Review submission.
 
 ## Manifest

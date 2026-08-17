@@ -11,7 +11,7 @@ import { analyzeRepository, findValue } from "../src/scanner.js";
 import type { AnalysisReport, PreflightReport } from "../src/types.js";
 import { png, readyManifest, writeReadyAssets } from "./helpers.js";
 
-const emptyAnalysis = (repository: string): AnalysisReport => ({ schemaVersion: 1, repository, scannedAt: "x", project: { xcodeProjects: [], workspaces: [], projectYml: [] }, findings: [], contradictions: [], unresolvedQuestions: [], ignored: { directories: [], filesOverLimit: 0, filesScanned: 0, entriesVisited: 0, unreadable: [], symlinksIgnored: [], truncated: false } });
+const emptyAnalysis = (repository: string): AnalysisReport => ({ schemaVersion: 1, repository, scannedAt: "x", project: { xcodeProjects: [], workspaces: [], projectYml: [] }, findings: [], contradictions: [], unresolvedQuestions: [], ignored: { directories: [], filesOverLimit: 0, filesOverLimitPaths: [], filesScanned: 0, entriesVisited: 0, unreadable: [], symlinksIgnored: [], truncated: false } });
 const emptyPreflight: PreflightReport = { repository: ".", results: [], summary: { pass: 0, warn: 0, block: 0 }, canPrepare: true, canApply: false, canSubmit: false };
 
 test("scanner evidence cannot be silently omitted from a ready manifest", async () => {

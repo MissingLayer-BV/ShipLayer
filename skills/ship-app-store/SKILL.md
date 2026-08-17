@@ -5,7 +5,7 @@ description: Prepare a native Swift/SwiftUI iPhone and iPad repository for App S
 
 # Ship App Store
 
-Use the repository's `shiplayer` CLI for all deterministic work. Do not recreate release logic in prose.
+Use the repository's `shiplayer` CLI for all deterministic work. Do not recreate release logic in prose. Before starting, run `command -v shiplayer` or use the reviewed local checkout's `./dist/index.js`; this private v0.1 package is not assumed to be globally installed or published to npm.
 
 ## Workflow
 

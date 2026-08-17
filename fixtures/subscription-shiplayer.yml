@@ -76,6 +76,7 @@ monetization:
   type: subscriptions
   group: {referenceName: ReceiptLoop Pro, localizations: {en-US: {displayName: ReceiptLoop Pro}}}
   baseTerritory: USA
+  baseTerritoryConfirmation: confirmed
   products:
     - productId: com.example.receiptloop.monthly
       referenceName: ReceiptLoop Monthly

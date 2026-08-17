@@ -33,6 +33,24 @@ test("remote discovery selects IOS version and reads screenshot sets through ver
   const result = await client.discover("com.example.app", { version: "1.0" });
   assert.equal(result.versions.length, 1); assert.equal(result.screenshotSets.length, 1); assert.equal(result.screenshots.length, 1); assert.ok(paths.some((item) => item.includes("/appStoreVersionLocalizations/localization/appScreenshotSets"))); assert.ok(!paths.some((item) => item.includes("/appStoreVersions/ios/appScreenshotSets")));
 });
+test("discovery preserves included pagination, one review-detail objects, and subscription products", async () => {
+  const privateKeyPath = await keyPath(); const paths: string[] = [];
+  const client = new AppStoreConnectClient({ issuerId: "issuer", keyId: "kid", privateKeyPath }, async (url) => {
+    paths.push(url);
+    const body = url.includes("/apps?") ? { data: [{ id: "app" }] }
+      : url.includes("appStoreVersions?") ? { data: [{ id: "version", attributes: { platform: "IOS", versionString: "1.0" } }] }
+      : url.includes("/appStoreVersions/version/build") ? { data: { id: "build", attributes: { version: "9" } } }
+      : url.includes("appStoreVersionAppReviewDetail") ? { data: { id: "review-detail" } }
+      : url.includes("subscriptionGroups?") ? { data: [{ id: "group" }] }
+      : url.includes("subscriptionGroups/group/subscriptions") ? { data: [{ id: "subscription" }] }
+      : url.endsWith("/one") ? { data: [{ id: "second" }], included: [{ id: "second-image", type: "appScreenshots" }] }
+      : url.includes("appScreenshotSets") ? { data: [{ id: "set" }], included: [{ id: "first-image", type: "appScreenshots" }], links: { next: "https://api.appstoreconnect.apple.com/v1/one" } }
+      : url.includes("appStoreVersionLocalizations") ? { data: [{ id: "locale" }] } : { data: [] };
+    return { ok: true, status: 200, text: async () => JSON.stringify(body) };
+  });
+  const result = await client.discover("com.example.app", { version: "1.0", build: "9" });
+  assert.equal(result.reviewDetails.length, 1); assert.equal(result.subscriptions.length, 1); assert.equal(result.screenshots.length, 2); assert.equal(result.builds.length, 1); assert.ok(paths.some((entry) => entry.includes("subscriptionGroups/group/subscriptions")));
+});
 test("remote plan reports read-only discovery", async () => { const manifest = parse(await (await import("node:fs/promises")).readFile(path.resolve("fixtures/subscription-shiplayer.yml"), "utf8")) as ShipLayerManifest; const privateKeyPath = await keyPath(); const plan = await appStorePlan(manifest, true, { APP_STORE_CONNECT_KEY_ID: "kid", APP_STORE_CONNECT_ISSUER_ID: "issuer", APP_STORE_CONNECT_PRIVATE_KEY_PATH: privateKeyPath }, async (url) => ({ ok: true, status: 200, text: async () => url.includes("/apps?") ? JSON.stringify({ data: [] }) : JSON.stringify({ data: [] }) })); assert.equal(plan.mode, "remote"); assert.ok(plan.operations.some((item) => item.action === "manual")); });
 
 test("remote plan is explicitly unavailable without credentials", async () => {

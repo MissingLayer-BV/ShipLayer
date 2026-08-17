@@ -12,7 +12,9 @@ const validateSchema = ajv.compile(schema);
 // Update these allow-lists against the current App Store Connect localization and
 // availability reference before changing release policy.
 const APPLE_LOCALES = new Set("ar-SA ca hr cs da nl-NL en-AU en-CA en-GB en-US fi fr-CA fr-FR de-DE el he hi hu id it ja ko ms nb pl pt-BR pt-PT ro ru sk es-ES es-MX sv th tr uk vi zh-Hans zh-Hant".split(" "));
-const APPLE_TERRITORIES = new Set("AFG ALB DZA ASM AND AGO AIA ATA ATG ARG ARM ABW AUS AUT AZE BHS BHR BGD BRB BLR BEL BLZ BEN BMU BTN BOL BES BIH BWA BVT BRA IOT BRN BGR BFA BDI CPV KHM CMR CAN CYM CAF TCD CHL CHN CXR CCK COL COM COG COD COK CRI CIV HRV CUB CUW CYP CZE DNK DJI DMA DOM ECU EGY SLV GNQ ERI EST SWZ ETH FLK FRO FJI FIN FRA GUF PYF ATF GAB GMB GEO DEU GHA GIB GRC GRL GRD GLP GUM GTM GGY GIN GNB GUY HTI HMD VAT HND HKG HUN ISL IND IDN IRN IRQ IRL IMN ISR ITA JAM JPN JEY JOR KAZ KEN KIR PRK KOR KWT KGZ LAO LVA LBN LSO LBR LBY LIE LTU LUX MAC MDG MWI MYS MDV MLI MLT MHL MTQ MRT MUS MYT MEX FSM MDA MCO MNG MNE MSR MAR MOZ MMR NAM NRU NPL NLD NCL NZL NIC NER NGA NIU NFK MKD MNP NOR OMN PAK PLW PSE PAN PNG PRY PER PHL PCN POL PRT PRI QAT ROU RUS RWA REU BLM SHN KNA LCA MAF SPM VCT WSM SMR STP SAU SEN SRB SYC SLE SGP SXM SVK SVN SLB SOM ZAF SGS SSD ESP LKA SDN SUR SJM SWE CHE SYR TWN TJK TZA THA TLS TGO TKL TON TTO TUN TUR TKM TCA TUV UGA UKR ARE GBR USA UMI URY UZB VUT VEN VNM VGB VIR WLF ESH YEM ZMB ZWE XKX".split(" "));
+// ISO codes are only syntax validation. Storefront availability changes and must
+// be human-confirmed against the current App Store Connect territory picker.
+const ISO_TERRITORIES = new Set("AFG ALB DZA ASM AND AGO AIA ATA ATG ARG ARM ABW AUS AUT AZE BHS BHR BGD BRB BLR BEL BLZ BEN BMU BTN BOL BES BIH BWA BVT BRA IOT BRN BGR BFA BDI CPV KHM CMR CAN CYM CAF TCD CHL CHN CXR CCK COL COM COG COD COK COL COM COG COD COK CRI CIV HRV CUB CUW CYP CZE DNK DJI DMA DOM ECU EGY SLV GNQ ERI EST SWZ ETH FLK FRO FJI FIN FRA GUF PYF ATF GAB GMB GEO DEU GHA GIB GRC GRL GRD GLP GUM GTM GGY GIN GNB GUY HTI HMD VAT HND HKG HUN ISL IND IDN IRN IRQ IRL IMN ISR ITA JAM JPN JEY JOR KAZ KEN KIR PRK KOR KWT KGZ LAO LVA LBN LSO LBR LBY LIE LTU LUX MAC MDG MWI MYS MDV MLI MLT MHL MTQ MRT MUS MYT MEX FSM MDA MCO MNG MNE MSR MAR MOZ MMR NAM NRU NPL NLD NCL NZL NIC NER NGA NIU NFK MKD MNP NOR OMN PAK PLW PSE PAN PNG PRY PER PHL PCN POL PRT PRI QAT ROU RUS RWA REU BLM SHN KNA LCA MAF SPM VCT WSM SMR STP SAU SEN SRB SYC SLE SGP SXM SVK SVN SLB SOM ZAF SGS SSD ESP LKA SDN SUR SJM SWE CHE SYR TWN TJK TZA THA TLS TGO TKL TON TTO TUN TUR TKM TCA TUV UGA UKR ARE GBR USA UMI URY UZB VUT VEN VNM VGB VIR WLF ESH YEM ZMB ZWE XKX".split(" "));
 
 export function manifestPath(repo: string): string { return path.join(repo, "shiplayer.yml"); }
 export function defaultManifest(input: Partial<ShipLayerManifest["app"]> = {}): ShipLayerManifest {
@@ -77,6 +79,10 @@ export function validateManifest(candidate: unknown): asserts candidate is ShipL
     if (!candidatePath) continue;
     try { safeRelativePath(candidatePath, label); } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
   }
+  if (manifest.app.productionIconCatalog) try { safeRelativePath(manifest.app.productionIconCatalog, "app.productionIconCatalog"); } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
+  if (manifest.app.productionIconAsset) try { safeRelativePath(manifest.app.productionIconAsset, "app.productionIconAsset"); } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
+  if (manifest.app.productionIconAsset && !manifest.app.productionIconAssetConfirmation) errors.push("app.productionIconAsset requires productionIconAssetConfirmation");
+  if (manifest.app.productionIconCatalog && manifest.app.productionIconAsset) errors.push("app.productionIconCatalog and app.productionIconAsset are mutually exclusive");
   if (manifest.monetization.type === "non-consumables") for (const product of manifest.monetization.products) {
     add(product.productId, "non-consumables");
     validateLocalizationMap(`non-consumable ${product.productId} localizations`, product.localizations);
@@ -88,7 +94,7 @@ export function validateManifest(candidate: unknown): asserts candidate is ShipL
   if (manifest.monetization.type === "subscriptions") {
     requireHttpsUrl("subscriptions.termsUrl", manifest.monetization.termsUrl);
     requireHttpsUrl("subscriptions.privacyUrl", manifest.monetization.privacyUrl);
-    if (!APPLE_TERRITORIES.has(manifest.monetization.baseTerritory)) errors.push(`subscriptions.baseTerritory '${manifest.monetization.baseTerritory}' is not a supported ISO/App Store territory code`);
+    if (!ISO_TERRITORIES.has(manifest.monetization.baseTerritory)) errors.push(`subscriptions.baseTerritory '${manifest.monetization.baseTerritory}' is not a recognized ISO territory code; this does not prove App Store availability`);
     validateLocalizationMap("subscription group localizations", manifest.monetization.group.localizations);
     for (const locale of manifest.app.locales) if (!manifest.monetization.group.localizations[locale]?.displayName) errors.push(`subscription group needs ${locale} display-name localization`);
     for (const product of manifest.monetization.products) {
@@ -103,6 +109,15 @@ export function validateManifest(candidate: unknown): asserts candidate is ShipL
       if (offer?.type === "pay-as-you-go") { const maximum: Record<string, number> = { P1W: 12, P1M: 12, P2M: 6, P3M: 4, P6M: 2, P1Y: 1 }; if (offer.duration !== product.duration || !offer.numberOfPeriods || offer.numberOfPeriods > maximum[product.duration]) errors.push(`pay-as-you-go ${product.productId} must use the product duration with numberOfPeriods in the allowed range`); }
     }
   }
+  const unique = (label: string, values: string[]): void => { if (new Set(values).size !== values.length) errors.push(`${label} must not contain duplicates`); };
+  unique("dataProcessing categories", manifest.dataProcessing.map((item) => item.category));
+  unique("external processor names", manifest.externalProcessors.map((item) => item.name));
+  unique("external service decision findings", manifest.externalServiceDecisions.map((item) => item.finding));
+  unique("secondary target confirmations", manifest.secondaryTargetConfirmations.map((item) => item.bundleId));
+  for (const item of manifest.dataProcessing) { unique(`dataProcessing ${item.category} purposes`, item.purpose); unique(`dataProcessing ${item.category} evidence`, item.evidence || []); }
+  for (const item of manifest.externalProcessors) { unique(`external processor ${item.name} data categories`, item.dataCategories); unique(`external processor ${item.name} evidence`, item.evidence || []); }
+  for (const item of manifest.externalServiceDecisions) unique(`external service decision ${item.finding} evidence`, item.evidence);
+  for (const item of manifest.secondaryTargetConfirmations) unique(`secondary target ${item.bundleId} evidence`, item.evidence);
   collectSecrets(manifest, "", errors);
   if (!manifest.app.locales.includes(manifest.app.primaryLocale)) errors.push("app.primaryLocale must appear in app.locales");
   if (errors.length) throw new Error(`Invalid shiplayer.yml:\n${errors.map((error) => `- ${error}`).join("\n")}`);
