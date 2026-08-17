@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ship App Store"
+  short_description: "Prepare native iOS apps for App Store review safely."
+  default_prompt: "Use $ship-app-store to prepare this Swift app repository for App Store review."

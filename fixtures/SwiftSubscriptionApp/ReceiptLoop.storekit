@@ -1,0 +1,8 @@
+{
+  "identifier" : "D4F2D5A1-06F6-4C07-BB88-AAAA00000001",
+  "products" : [
+    {"displayPrice":"4.99","displayName":"ReceiptLoop Monthly","productID":"com.example.receiptloop.monthly","type":"Auto-Renewable Subscription"},
+    {"displayPrice":"39.99","displayName":"ReceiptLoop Yearly","productID":"com.example.receiptloop.yearly","type":"Auto-Renewable Subscription"}
+  ],
+  "version" : {"major": 1, "minor": 0}
+}

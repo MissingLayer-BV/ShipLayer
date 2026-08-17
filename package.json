@@ -1,0 +1,29 @@
+{
+  "name": "shiplayer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A safe, local-first App Store release preparation CLI for native Swift apps.",
+  "type": "module",
+  "bin": {
+    "shiplayer": "./dist/index.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && cp src/schema.json dist/schema.json && chmod +x dist/index.js",
+    "dev": "tsx src/index.ts",
+    "lint": "tsc --noEmit -p tsconfig.json",
+    "test": "tsx --test test/*.test.ts",
+    "check": "npm run lint && npm test && npm run build"
+  },
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "yaml": "^2.5.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

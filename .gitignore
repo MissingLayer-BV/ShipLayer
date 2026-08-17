@@ -1,0 +1,14 @@
+node_modules/
+dist/
+coverage/
+.DS_Store
+.env
+.env.*
+!.env.example
+*.p8
+*.mobileprovision
+*.xcarchive
+*.ipa
+release/
+shiplayer-release/
+DerivedData/
