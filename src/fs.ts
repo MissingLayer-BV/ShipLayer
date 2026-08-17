@@ -2,7 +2,7 @@ import { mkdir, readdir, readFile, lstat, stat, writeFile, cp, realpath } from "
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-export const IGNORED_DIRECTORIES = new Set([".git", "node_modules", "Pods", "Carthage", "DerivedData", "build", ".build", "dist", ".swiftpm", "vendor", "release", "shiplayer-release", ".shiplayer-staging", ".next", ".turbo", "coverage", ".cache", ".tools"]);
+export const IGNORED_DIRECTORIES = new Set([".git", "node_modules", "Pods", "Carthage", "DerivedData", "build", ".build", "dist", ".swiftpm", "vendor", "release", "shiplayer-release", ".shiplayer-staging", ".next", ".turbo", "coverage", ".cache", ".tools", ".wrangler", ".wrangler-dry-run"]);
 export const MAX_FILE_BYTES = 1_000_000;
 export const MAX_ENTRIES = 5_000;
 

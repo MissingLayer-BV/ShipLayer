@@ -14,7 +14,7 @@ export async function analyzeRepository(repository: string): Promise<AnalysisRep
   const byName = (name: string): string[] => walked.files.filter((file) => path.basename(file) === name);
   const projectYml = byName("project.yml"); const xcodeProjects = walked.files.filter((file) => file.endsWith("project.pbxproj")).map((file) => relative(root, path.dirname(file))); const workspaces = walked.files.filter((file) => file.endsWith("contents.xcworkspacedata")).map((file) => relative(root, path.dirname(file)));
   const settings: Record<string, Array<{ value: string; evidence: Evidence }>> = {};
-  const push = (key: string, value: string, evidence: Evidence): void => { const normalized = value.trim().replace(/^["']|["']$/g, ""); const finalSegment = normalized.split(".").at(-1) || ""; const detectedKey = key === "bundleId" && /(?:ui)?tests$/i.test(finalSegment) ? "testBundleId" : key; (settings[detectedKey] ||= []).push({ value: normalized, evidence }); };
+  const push = (key: string, value: string, evidence: Evidence): void => { const normalized = key === "endpoint" ? normalizeEndpoint(value) : value.trim().replace(/^["']|["']$/g, ""); const finalSegment = normalized.split(".").at(-1) || ""; const detectedKey = key === "endpoint" ? `endpoint:${normalized}` : key === "bundleId" && /(?:ui)?tests$/i.test(finalSegment) ? "testBundleId" : key; (settings[detectedKey] ||= []).push({ value: normalized, evidence }); };
   const scanText = async (file: string): Promise<void> => {
     const content = await readText(file); const source = relative(root, file);
     const kind: Evidence["kind"] = file.endsWith("Info.plist") ? "plist" : file.endsWith(".entitlements") ? "entitlement" : file.endsWith("PrivacyInfo.xcprivacy") ? "privacy-manifest" : file.endsWith(".storekit") ? "storekit" : file.endsWith("project.yml") || file.endsWith(".pbxproj") ? "project-setting" : "source-heuristic";
@@ -30,10 +30,14 @@ export async function analyzeRepository(repository: string): Promise<AnalysisRep
       for (const [name, tag] of [["bundleId", "CFBundleIdentifier"], ["version", "CFBundleShortVersionString"], ["build", "CFBundleVersion"]] as const) { const re = new RegExp(`<key>${tag}</key>\\s*<string>([^<]*)</string>`, "g"); for (const m of content.matchAll(re)) if (!m[1].includes("$(")) push(name, m[1], { source, excerpt: m[0], confidence: "confirmed", kind }); }
     }
     if (file.endsWith(".storekit")) { for (const match of content.matchAll(/"productID"\s*:\s*"([^"]+)"/g)) push("storekitProductId", match[1], { source, excerpt: match[0], confidence: "confirmed", kind }); }
-    if (/\.(swift|m|mm|h|ts|tsx|js|mjs|cjs)$/.test(file)) {
-      for (const framework of APPLE_FRAMEWORKS) if (new RegExp(`\\b(?:import\\s+${framework}|${framework})\\b`).test(content)) push(`framework:${framework}`, framework, { source, excerpt: framework, confidence: "medium", kind: "source-heuristic" });
-      for (const sdk of THIRD_PARTY_SDK_CANDIDATES) if (new RegExp(`\\b(?:import\\s+${sdk}|${sdk})\\b`).test(content)) push(`thirdPartySdkCandidate:${sdk}`, sdk, { source, excerpt: sdk, confidence: "medium", kind: "source-heuristic" });
-      for (const match of content.matchAll(/https:\/\/[^\s"'<>]+/g)) push("endpoint", match[0].replace(/[),.;]+$/, ""), { source, excerpt: match[0], confidence: "low", kind: "source-heuristic" });
+    const nativeSource = /\.(swift|m|mm|h)$/.test(file); const webRuntimeSource = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$/.test(file);
+    if (nativeSource || webRuntimeSource) {
+      if (nativeSource) for (const framework of APPLE_FRAMEWORKS) if (new RegExp(`\\bimport\\s+${framework}\\b|\\b${framework}\\s*\\.`).test(content)) push(`framework:${framework}`, framework, { source, excerpt: framework, confidence: "medium", kind: "source-heuristic" });
+      for (const sdk of THIRD_PARTY_SDK_CANDIDATES) {
+        const pattern = nativeSource ? new RegExp(`\\bimport\\s+${sdk}\\b|\\b${sdk}\\s*\\.`) : new RegExp(`(?:\\bimport\\s+(?:[^;\\n]*?\\s+from\\s+)?|\\brequire\\s*\\()?["']${sdk}["']|\\bfrom\\s+["']${sdk}["']`);
+        if (pattern.test(content)) push(`thirdPartySdkCandidate:${sdk}`, sdk, { source, excerpt: sdk, confidence: "medium", kind: "source-heuristic" });
+      }
+      for (const match of content.matchAll(/https?:\/\/[^\s"'<>]+/gi)) push("endpoint", match[0].replace(/[),.;]+$/, ""), { source, excerpt: match[0], confidence: "low", kind: "source-heuristic" });
     }
     if (file.endsWith(".entitlements")) for (const match of content.matchAll(/<key>([^<]+)<\/key>/g)) push("entitlement", match[1], { source, excerpt: match[0], confidence: "confirmed", kind });
     if (file.endsWith("PrivacyInfo.xcprivacy")) {
@@ -51,7 +55,8 @@ export async function analyzeRepository(repository: string): Promise<AnalysisRep
       if (!parsedEntries && /NSPrivacyCollectedDataType/.test(content)) questions.add(`PrivacyInfo.xcprivacy contains collected-data declarations ShipLayer could not parse; review them manually.`);
     }
   };
-  for (const file of walked.files.filter((file) => /(?:project\.yml|project\.pbxproj|Info\.plist|\.entitlements|PrivacyInfo\.xcprivacy|\.storekit|\.swift|\.m|\.mm|\.h|\.ts|\.tsx|\.js|\.mjs|\.cjs)$/.test(file))) {
+  for (const file of walked.files.filter((file) => /(?:project\.yml|project\.pbxproj|Info\.plist|\.entitlements|PrivacyInfo\.xcprivacy|\.storekit|\.swift|\.m|\.mm|\.h|\.ts|\.tsx|\.js|\.jsx|\.mjs|\.cjs|\.mts|\.cts)$/.test(file))) {
+    if (isScannerToolingSource(relative(root, file))) continue;
     if (isTestOnlySource(relative(root, file))) { questions.add(`Excluded conventional test-only source ${relative(root, file)} from production privacy heuristics.`); continue; }
     try { await scanText(file); } catch { questions.add(`Unable to read or parse ${relative(root, file)}; inspect it manually.`); }
   }
@@ -67,7 +72,7 @@ export async function analyzeRepository(repository: string): Promise<AnalysisRep
         questions.add(`Confirm whether secondary bundle IDs (${secondary.join(", ")}) are extensions/widgets rather than additional App Store apps.`); continue;
       }
     }
-    const processorCandidate = key.startsWith("thirdPartySdkCandidate:") || key === "endpoint";
+    const processorCandidate = key.startsWith("thirdPartySdkCandidate:") || key.startsWith("endpoint:");
     const appleFramework = key.startsWith("framework:");
     findings.push({ key, value: values.length === 1 ? primary : values, evidence: entries.map((entry) => entry.evidence), confidence: entries.some((entry) => entry.evidence.confidence === "confirmed") ? "confirmed" : entries.some((entry) => entry.evidence.confidence === "high") ? "high" : "medium", proposal: processorCandidate, message: processorCandidate ? "Heuristic finding only; confirm whether this is an external processor or declared data use." : appleFramework ? "Apple framework usage detected; this is not by itself an external processor or privacy declaration." : undefined });
   }
@@ -83,5 +88,7 @@ export async function analyzeRepository(repository: string): Promise<AnalysisRep
 }
 
 function isTestOnlySource(source: string): boolean { const parts = source.split("/"); const basename = parts.at(-1) || ""; return parts.some((component) => /(?:UI)?Tests$|^(?:scripts?|benchmarks?)$/i.test(component)) || /(?:\.test|\.spec)\.[cm]?[jt]sx?$/i.test(basename); }
+function isScannerToolingSource(source: string): boolean { const parts = source.split("/"); return parts.includes("app-store-screenshots") || (parts.at(-1) || "").endsWith(".d.ts"); }
+function normalizeEndpoint(value: string): string { const raw = value.trim().replace(/[),.;]+$/, ""); try { const url = new URL(raw); return `${url.protocol.toLowerCase()}//${url.host.toLowerCase()}${url.pathname}${url.search}${url.hash}`; } catch { return raw; } }
 
 export function findValue(report: AnalysisReport, key: string): string | undefined { const value = report.findings.find((finding) => finding.key === key)?.value; return typeof value === "string" ? value : undefined; }

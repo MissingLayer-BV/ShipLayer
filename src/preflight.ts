@@ -320,6 +320,8 @@ async function purchaseAssetChecks(repository: string, manifest: ShipLayerManife
 
 async function sourceConsistencyChecks(repository: string, manifest: ShipLayerManifest, add: Add): Promise<void> {
   const report = await analyzeRepository(repository);
+  if (!report.project.xcodeProjects.length && !report.project.workspaces.length && !report.project.projectYml.length) add("source.project", "block", "No Xcode project, workspace, or XcodeGen project.yml evidence was found.", "Run ShipLayer against the native app repository and retain a readable production project definition.");
+  else add("source.project", "pass", "Native project definition evidence was found.");
   for (const contradiction of report.contradictions) add("source.contradiction", "block", contradiction, "Resolve ambiguous production project settings.");
   const compare = (key: "bundleId" | "version" | "build" | "deploymentTarget", expected: string | undefined): void => {
     const detected = findValue(report, key);
@@ -328,19 +330,29 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
     else add(`consistency.${key}`, "block", `Manifest ${key} (${expected}) disagrees with source evidence (${detected}).`, "Update the manifest or source setting.");
   };
   compare("bundleId", manifest.app.bundleId); compare("version", manifest.app.version); compare("build", manifest.app.build);
+  for (const [key, value] of [["bundleId", manifest.app.bundleId], ["version", manifest.app.version], ["build", manifest.app.build]] as const) if (!findValue(report, key)) add(`source.${key}`, "block", `No production ${key} evidence was found for manifest value ${value || "MISSING"}.`, "Add/read the production Xcode setting or Info.plist; ShipLayer does not infer submission identity from the manifest.");
   const detectedFamilies = new Set(stringValues(report.findings.find((finding) => finding.key === "deviceFamily")?.value).flatMap((value) => value.split(",").map((part) => part.trim())));
   if (detectedFamilies.size) {
     const declaredFamilies = new Set(manifest.app.deviceFamilies.map((family) => family === "iphone" ? "1" : "2"));
     if (!sameSet(detectedFamilies, declaredFamilies)) add("consistency.device-family", "block", `Manifest device families (${[...declaredFamilies].join(",")}) disagree with production target evidence (${[...detectedFamilies].join(",")}).`, "Update app.deviceFamilies and screenshot coverage, or resolve target evidence ambiguity.");
     else add("consistency.device-family", "pass", "Manifest device families match production target evidence.");
   }
+  else add("source.device-family", "block", "No production TARGETED_DEVICE_FAMILY evidence was found.", "Add/read the production Xcode target setting; screenshot coverage cannot be inferred from the manifest.");
   compare("deploymentTarget", manifest.app.deploymentTarget);
+  if (manifest.app.deploymentTarget && !findValue(report, "deploymentTarget")) add("source.deployment-target", "block", "Manifest deployment target has no production Xcode evidence.", "Add/read IPHONEOS_DEPLOYMENT_TARGET from the production target.");
   const detectedEncryption = findValue(report, "encryption");
-  if (detectedEncryption === "false" && manifest.build.exportCompliance !== "exempt") add("consistency.encryption", "block", "Source declares ITSAppUsesNonExemptEncryption=false but manifest export compliance is not exempt.", "Align build.exportCompliance with the production Info.plist or resolve the declaration.");
+  // Multiple production declarations are not a harmless generic contradiction:
+  // export compliance is a submission gate, so surface it under the actionable
+  // encryption check as well. `findValue` deliberately declines ambiguous
+  // findings, which otherwise used to hide a true Info.plist declaration behind
+  // a project-setting default.
+  if (report.contradictions.some((item) => item.startsWith("encryption has conflicting values:"))) add("consistency.encryption", "block", "Production encryption declarations conflict across project settings or Info.plists.", "Resolve ITSAppUsesNonExemptEncryption to one production value, then confirm the matching export-compliance status.");
+  else if (detectedEncryption === "false" && manifest.build.exportCompliance !== "exempt") add("consistency.encryption", "block", "Source declares ITSAppUsesNonExemptEncryption=false but manifest export compliance is not exempt.", "Align build.exportCompliance with the production Info.plist or resolve the declaration.");
   else if (detectedEncryption === "false") add("consistency.encryption", "pass", "Manifest export compliance matches the source encryption declaration.");
   else if (detectedEncryption === "true" && manifest.build.exportCompliance !== "documentation-required") add("consistency.encryption", "block", "Source declares ITSAppUsesNonExemptEncryption=true but manifest export compliance is not documentation-required.", "Confirm export documentation with Apple and align build.exportCompliance.");
   else if (detectedEncryption === "true") add("consistency.encryption", "pass", "Manifest export compliance matches the source encryption declaration.");
   else if (detectedEncryption === "declared") add("consistency.encryption", "block", "Source declares export encryption but its value is ambiguous.", "Resolve the production Info.plist value and confirm export compliance.");
+  else if (!detectedEncryption) add("source.encryption", "block", "No production export-compliance/encryption evidence was found.", "Declare and verify ITSAppUsesNonExemptEncryption in the production target before submission.");
   for (const permission of manifest.permissions) {
     const evidence = permission.evidence || []; const valid = await validEvidencePaths(repository, evidence);
     if (evidence.length && valid.size !== evidence.length) add(`manifest.permission.${permission.key}.evidence`, "block", `${permission.key} references missing, symlinked, or out-of-repository evidence.`, "Use only exact contained, regular source files as evidence.");
@@ -367,8 +379,9 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
     else add(`source.permission.${key}.evidence`, "pass", `${key} manifest evidence matches source evidence.`);
   }
   for (const permission of manifest.permissions) if (!report.findings.some((finding) => finding.key === `permission:${permission.key}`) && !(permission.evidence || []).length) add(`manifest.permission.${permission.key}`, "warn", `${permission.key} has no scanner evidence or manifest evidence path.`, "Verify the purpose string and add source evidence if this permission is used.");
-  for (const finding of report.findings.filter((item) => item.key.startsWith("thirdPartySdkCandidate:") || item.key === "endpoint")) {
-    const findingId = `${finding.key}:${Array.isArray(finding.value) ? finding.value.join(",") : String(finding.value)}`;
+  for (const finding of report.findings.filter((item) => item.key.startsWith("thirdPartySdkCandidate:") || item.key.startsWith("endpoint:"))) {
+    const findingId = finding.key.startsWith("endpoint:") ? finding.key : `${finding.key}:${Array.isArray(finding.value) ? finding.value.join(",") : String(finding.value)}`;
+    if (finding.key.startsWith("endpoint:http://")) add(`source.insecure-endpoint.${findingId}`, "block", `Source declares insecure HTTP endpoint ${String(finding.value)}.`, "Use HTTPS or document an App Transport Security exception and resolve it with human review.");
     const decision = manifest.externalServiceDecisions.find((item) => item.finding === findingId);
     if (!decision || decision.confirmation !== "confirmed" || !decision.reason || !decision.evidence.length) { add(`source.external.${findingId}`, "block", `Source heuristic '${findingId}' has no confirmed processor/disposition decision.`, "Declare the processor or explicitly record why it is not an external processor, with source evidence."); continue; }
     const sourcePaths = new Set(finding.evidence.map((item) => item.source)); const decisionEvidence = await validEvidencePaths(repository, decision.evidence);
@@ -421,7 +434,7 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
 function stringValues(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : typeof value === "string" ? [value] : []; }
 function intersects(left: Set<string>, right: Set<string>): boolean { return [...left].some((item) => right.has(item)); }
 function sameSet(left: Set<string>, right: Set<string>): boolean { return left.size === right.size && [...left].every((item) => right.has(item)); }
-function isRelevantSourcePath(file: string): boolean { return /(?:^|\/)(?:project\.yml|project\.pbxproj|Info\.plist|PrivacyInfo\.xcprivacy|[^/]+\.(?:swift|m|mm|h|entitlements|storekit))$/i.test(file); }
+function isRelevantSourcePath(file: string): boolean { return /(?:^|\/)(?:project\.yml|project\.pbxproj|Info\.plist|PrivacyInfo\.xcprivacy|[^/]+\.(?:swift|m|mm|h|ts|tsx|js|jsx|mjs|cjs|mts|cts|entitlements|storekit))$/i.test(file) && !/\.d\.ts$/i.test(file); }
 async function validEvidencePaths(repository: string, evidence: string[]): Promise<Set<string>> {
   const valid = new Set<string>();
   for (const value of evidence) {

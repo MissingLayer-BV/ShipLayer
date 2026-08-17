@@ -8,6 +8,7 @@ import { generateReleasePackage } from "../src/generator.js";
 import { analyzeRepository } from "../src/scanner.js";
 import { preflight } from "../src/preflight.js";
 import { writeManifest } from "../src/manifest.js";
+import { readManifest } from "../src/manifest.js";
 import { png, readyManifest, writeReadyAssets } from "./helpers.js";
 
 test("round-5 rejects reserved nested output and keeps a custom package deterministic", async () => {
@@ -61,4 +62,30 @@ test("round-6 accepts an Xcode universal iOS icon slot and scans Worker endpoint
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-worker-round6-")); const manifest = readyManifest(); await writeReadyAssets(root, manifest);
   await writeFile(path.join(root, "Assets.xcassets/AppIcon.appiconset/Contents.json"), JSON.stringify({ images: [{ filename: "icon.png", idiom: "universal", platform: "ios", size: "1024x1024" }] })); await mkdir(path.join(root, "worker"), { recursive: true }); await writeFile(path.join(root, "worker/index.ts"), "fetch('https://openrouter.ai/api/v1/chat/completions')"); await mkdir(path.join(root, "design/.next/cache"), { recursive: true }); await writeFile(path.join(root, "design/.next/cache/chunk.js"), "fetch('https://ignore.example')");
   const report = await preflight(root, manifest); assert.ok(report.results.some((item) => item.id.includes("openrouter.ai") && item.severity === "block")); assert.equal(report.results.filter((item) => item.id.includes("ignore.example")).length, 0); assert.equal(report.results.filter((item) => item.id.startsWith("assets.app-icon") && item.severity === "block").length, 0);
+});
+
+test("round-7 treats first-party runtime JS/TS as coverage but ignores generated screenshot/editor tooling", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-scope-round7-")); const manifest = readyManifest(); await writeReadyAssets(root, manifest);
+  await writeFile(path.join(root, "worker.ts"), Buffer.alloc(1_000_001)); await symlink(path.join(root, "worker.ts"), path.join(root, "linked-worker.ts"));
+  let report = await preflight(root, manifest); assert.ok(report.results.some((item) => item.id === "source.scan-coverage" && item.severity === "block"));
+  await rm(path.join(root, "worker.ts")); await rm(path.join(root, "linked-worker.ts")); await mkdir(path.join(root, "worker/src"), { recursive: true }); await writeFile(path.join(root, "worker/src/index.ts"), "fetch('https://openrouter.ai/api/v1/chat/completions')"); await writeFile(path.join(root, "worker/src/pages.ts"), "const copy = 'StoreKit Photos Sentry';"); await mkdir(path.join(root, "worker/.wrangler-dry-run"), { recursive: true }); await writeFile(path.join(root, "worker/.wrangler-dry-run/index.js"), "fetch('https://generated.example')"); await mkdir(path.join(root, "design/app-store-screenshots"), { recursive: true }); await writeFile(path.join(root, "design/app-store-screenshots/next-env.d.ts"), "type X = 'https://nextjs.org/docs'");
+  const analysis = await analyzeRepository(root); const endpointValues = analysis.findings.filter((item) => item.key.startsWith("endpoint:")).flatMap((item) => Array.isArray(item.value) ? item.value : [item.value]); assert.ok(endpointValues.some((value) => String(value).includes("openrouter.ai"))); assert.ok(!endpointValues.some((value) => String(value).includes("generated.example") || String(value).includes("nextjs.org"))); assert.equal(analysis.findings.filter((item) => item.key === "framework:StoreKit" || item.key === "thirdPartySdkCandidate:Sentry").length, 0);
+});
+
+test("round-7 requires a separate evidence-backed disposition for every endpoint", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-endpoints-round7-")); const manifest = readyManifest(); await writeReadyAssets(root, manifest); await writeFile(path.join(root, "worker.ts"), "fetch('https://api.example.test/one'); fetch('https://links.example.test/privacy')");
+  manifest.externalServiceDecisions = [{ finding: "endpoint:https://api.example.test/one", disposition: "not-an-external-processor", reason: "Public fixture endpoint.", evidence: ["worker.ts"], confirmation: "confirmed" }];
+  let report = await preflight(root, manifest); assert.ok(report.results.some((item) => item.id.includes("links.example.test") && item.severity === "block"));
+  manifest.externalServiceDecisions.push({ finding: "endpoint:https://links.example.test/privacy", disposition: "not-an-external-processor", reason: "Public privacy link.", evidence: ["worker.ts"], confirmation: "confirmed" }); report = await preflight(root, manifest); assert.equal(report.results.filter((item) => item.id.startsWith("source.external.") && item.severity === "block").length, 0);
+});
+
+test("round-7 init maps TARGETED_DEVICE_FAMILY tokens without inventing iPhone support", async () => {
+  for (const [value, expected] of [["1", ["iphone"]], ["2", ["ipad"]], ["1,2", ["iphone", "ipad"]]] as const) {
+    const root = await mkdtemp(path.join(tmpdir(), "shiplayer-init-family-")); await writeFile(path.join(root, "project.yml"), `name: Family\nsettings:\n  base:\n    PRODUCT_BUNDLE_IDENTIFIER: com.example.family\n    TARGETED_DEVICE_FAMILY: ${value}\n`);
+    const run = spawnSync("./node_modules/.bin/tsx", ["src/index.ts", "init", root, "--json"], { cwd: path.resolve("."), encoding: "utf8" }); assert.equal(run.status, 0, run.stderr); const manifest = await readManifest(root); assert.deepEqual(manifest.app.deviceFamilies, expected); assert.deepEqual(manifest.screenshots.configurations.map((item) => item.family), expected);
+  }
+});
+
+test("round-7 detects runtime sidecar extensions and insecure HTTP endpoints", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-runtime-round7-")); const manifest = readyManifest(); await writeReadyAssets(root, manifest); await writeFile(path.join(root, "sidecar.mts"), "fetch('HTTP://api.example.test/v1')"); const report = await preflight(root, manifest); assert.ok(report.results.some((item) => item.id.includes("insecure-endpoint") && item.severity === "block"));
 });
