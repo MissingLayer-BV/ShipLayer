@@ -30,7 +30,7 @@ export async function analyzeRepository(repository: string): Promise<AnalysisRep
       for (const [name, tag] of [["bundleId", "CFBundleIdentifier"], ["version", "CFBundleShortVersionString"], ["build", "CFBundleVersion"]] as const) { const re = new RegExp(`<key>${tag}</key>\\s*<string>([^<]*)</string>`, "g"); for (const m of content.matchAll(re)) if (!m[1].includes("$(")) push(name, m[1], { source, excerpt: m[0], confidence: "confirmed", kind }); }
     }
     if (file.endsWith(".storekit")) { for (const match of content.matchAll(/"productID"\s*:\s*"([^"]+)"/g)) push("storekitProductId", match[1], { source, excerpt: match[0], confidence: "confirmed", kind }); }
-    if (/\.(swift|m|mm|h)$/.test(file)) {
+    if (/\.(swift|m|mm|h|ts|tsx|js|mjs|cjs)$/.test(file)) {
       for (const framework of APPLE_FRAMEWORKS) if (new RegExp(`\\b(?:import\\s+${framework}|${framework})\\b`).test(content)) push(`framework:${framework}`, framework, { source, excerpt: framework, confidence: "medium", kind: "source-heuristic" });
       for (const sdk of THIRD_PARTY_SDK_CANDIDATES) if (new RegExp(`\\b(?:import\\s+${sdk}|${sdk})\\b`).test(content)) push(`thirdPartySdkCandidate:${sdk}`, sdk, { source, excerpt: sdk, confidence: "medium", kind: "source-heuristic" });
       for (const match of content.matchAll(/https:\/\/[^\s"'<>]+/g)) push("endpoint", match[0].replace(/[),.;]+$/, ""), { source, excerpt: match[0], confidence: "low", kind: "source-heuristic" });
@@ -42,16 +42,16 @@ export async function analyzeRepository(repository: string): Promise<AnalysisRep
       for (const dictionary of content.matchAll(/<dict>([\s\S]*?)<\/dict>/g)) {
         const entry = dictionary[1]; const dataType = entry.match(/<key>NSPrivacyCollectedDataType<\/key>\s*<string>([^<]+)<\/string>/)?.[1];
         if (!dataType) continue;
-        const category = PRIVACY_DATA_TYPE_MAP[dataType]; if (!category) { questions.add(`PrivacyInfo.xcprivacy declares ${dataType}; map it to an App Privacy category manually.`); continue; }
+        const category = PRIVACY_DATA_TYPE_MAP[dataType]; if (!category) { push("privacyManifestUnparsed", dataType, { source, excerpt: dictionary[0].slice(0, 220), confidence: "confirmed", kind }); questions.add(`PrivacyInfo.xcprivacy declares ${dataType}; map it to an App Privacy category manually.`); continue; }
         const linked = entry.match(/<key>NSPrivacyCollectedDataTypeLinked<\/key>\s*<(true|false)\/>/)?.[1]; const tracking = entry.match(/<key>NSPrivacyCollectedDataTypeTracking<\/key>\s*<(true|false)\/>/)?.[1];
         const purposes = [...entry.matchAll(/<string>(NSPrivacyCollectedDataTypePurpose[^<]+)<\/string>/g)].map((match) => PRIVACY_PURPOSE_MAP[match[1]]).filter((value): value is string => Boolean(value));
-        if (!linked || !tracking || !purposes.length) { questions.add(`PrivacyInfo.xcprivacy collected-data entry for ${category} is incomplete or unsupported; review it manually.`); continue; }
+        if (!linked || !tracking || !purposes.length) { push("privacyManifestUnparsed", `${category}:incomplete`, { source, excerpt: dictionary[0].slice(0, 220), confidence: "confirmed", kind }); questions.add(`PrivacyInfo.xcprivacy collected-data entry for ${category} is incomplete or unsupported; review it manually.`); continue; }
         push(`privacyManifestData:${category}`, JSON.stringify({ linkedToIdentity: linked === "true", usedForTracking: tracking === "true", purposes: [...new Set(purposes)].sort() }), { source, excerpt: dictionary[0].slice(0, 220), confidence: "confirmed", kind }); parsedEntries++;
       }
       if (!parsedEntries && /NSPrivacyCollectedDataType/.test(content)) questions.add(`PrivacyInfo.xcprivacy contains collected-data declarations ShipLayer could not parse; review them manually.`);
     }
   };
-  for (const file of walked.files.filter((file) => /(?:project\.yml|project\.pbxproj|Info\.plist|\.entitlements|PrivacyInfo\.xcprivacy|\.storekit|\.swift|\.m|\.mm|\.h)$/.test(file))) {
+  for (const file of walked.files.filter((file) => /(?:project\.yml|project\.pbxproj|Info\.plist|\.entitlements|PrivacyInfo\.xcprivacy|\.storekit|\.swift|\.m|\.mm|\.h|\.ts|\.tsx|\.js|\.mjs|\.cjs)$/.test(file))) {
     if (isTestOnlySource(relative(root, file))) { questions.add(`Excluded conventional test-only source ${relative(root, file)} from production privacy heuristics.`); continue; }
     try { await scanText(file); } catch { questions.add(`Unable to read or parse ${relative(root, file)}; inspect it manually.`); }
   }
@@ -82,6 +82,6 @@ export async function analyzeRepository(repository: string): Promise<AnalysisRep
   return { schemaVersion: 1, repository: root, scannedAt: new Date().toISOString(), project: { xcodeProjects: xcodeProjects.sort(), workspaces: workspaces.sort(), projectYml: projectYml.map((file) => relative(root, file)).sort() }, findings: findings.sort((a, b) => a.key.localeCompare(b.key)), contradictions: contradictions.sort(), unresolvedQuestions: [...questions].sort(), ignored: { directories: walked.ignoredDirectories, filesOverLimit: walked.filesOverLimit, filesOverLimitPaths: walked.filesOverLimitPaths, filesScanned: walked.files.length, entriesVisited: walked.entriesVisited, unreadable: walked.unreadable, symlinksIgnored: walked.symlinksIgnored, truncated: walked.truncated } };
 }
 
-function isTestOnlySource(source: string): boolean { return source.split("/").some((component) => /(?:UI)?Tests$/i.test(component)); }
+function isTestOnlySource(source: string): boolean { const parts = source.split("/"); const basename = parts.at(-1) || ""; return parts.some((component) => /(?:UI)?Tests$|^(?:scripts?|benchmarks?)$/i.test(component)) || /(?:\.test|\.spec)\.[cm]?[jt]sx?$/i.test(basename); }
 
 export function findValue(report: AnalysisReport, key: string): string | undefined { const value = report.findings.find((finding) => finding.key === key)?.value; return typeof value === "string" ? value : undefined; }

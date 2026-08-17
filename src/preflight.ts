@@ -41,6 +41,7 @@ export async function preflight(repository: string, manifest: ShipLayerManifest,
   addRequired(add, "contacts.support-url", isHttps(manifest.contacts.supportUrl), "A public HTTPS Support URL is required.", "Set contacts.supportUrl.");
   addRequired(add, "contacts.privacy-url", isHttps(manifest.contacts.privacyUrl), "A public HTTPS Privacy Policy URL is required.", "Set contacts.privacyUrl after legal review.");
   addRequired(add, "contacts.copyright", manifest.contacts.copyright, "Copyright is missing.", "Set contacts.copyright.");
+  if (manifest.contacts.copyright && !/^\d{4}\s+\S/.test(manifest.contacts.copyright.trim())) add("contacts.copyright.format", "block", "Copyright must begin with a four-digit year followed by the rights-holder name.", "Use a human-confirmed value such as '2026 Example, Inc.'; do not fabricate the rights holder.");
   if (app.availability === "selected") add("availability.selected", "block", "Selected-territory availability is not modeled in v0.1.", "Choose territories manually in App Store Connect and record the decision before submission.");
   else add("availability", "pass", "Availability is configured for all territories.");
   if (app.releaseMode === "scheduled") add("release.scheduled", "block", "Scheduled release requires a human-confirmed date/time and is not modeled in v0.1.", "Set the release schedule manually in App Store Connect before submission.");
@@ -248,7 +249,7 @@ async function iconChecks(repository: string, manifest: ShipLayerManifest, add: 
     try {
       const icon = await resolveContained(repository, manifest.app.productionIconAsset, "app.productionIconAsset");
       const details = await lstat(icon);
-      if (!details.isFile() || details.size === 0 || path.extname(icon) !== ".icon") add("assets.icon-composer", "block", "app.productionIconAsset must select a non-empty contained .icon file.", "Select the Icon Composer .icon file in the Xcode project and keep the manifest path exact.");
+      if (path.extname(icon) !== ".icon" || (!(details.isFile() && details.size > 0) && !(details.isDirectory() && await nonEmptySafeIconBundle(icon)))) add("assets.icon-composer", "block", "app.productionIconAsset must select a non-empty contained .icon file or package without symlinks.", "Select the Icon Composer .icon asset in the Xcode project and keep the manifest path exact.");
       else if (manifest.app.productionIconAssetConfirmation !== "confirmed") add("assets.icon-composer", "block", "Icon Composer .icon exists but Project Editor/archive verification has not been human-confirmed.", "Confirm the Project Editor selects this .icon asset and inspect the archived build, then set productionIconAssetConfirmation: confirmed.");
       else add("assets.icon-composer", "pass", "Selected Icon Composer .icon exists and Xcode/archive selection was human-confirmed.");
     } catch { add("assets.icon-composer", "block", "app.productionIconAsset is missing, unsafe, or unreadable.", "Select a contained regular .icon file."); }
@@ -280,7 +281,7 @@ async function validateIconCatalog(repository: string, files: string[], iconCata
   const rasterFiles = files.filter((file) => path.dirname(file) === folder && /\.(png|jpe?g)$/i.test(file));
   if (!rasterFiles.length) { add(`assets.app-icon-images.${catalogId}`, "block", "The AppIcon asset catalog has no raster image files.", "Add and verify app icon raster assets before upload."); return; }
   try {
-    const contents = JSON.parse(await readFile(iconCatalog, "utf8")) as { images?: Array<{ filename?: unknown; idiom?: unknown; size?: unknown; scale?: unknown }> };
+    const contents = JSON.parse(await readFile(iconCatalog, "utf8")) as { images?: Array<{ filename?: unknown; idiom?: unknown; platform?: unknown; size?: unknown; scale?: unknown }> };
     const declared = (contents.images || []).map((image) => image.filename).filter((file): file is string => typeof file === "string" && file.length > 0);
     if (!declared.length) add(`assets.app-icon-declarations.${catalogId}`, "block", "AppIcon Contents.json does not declare any raster icon filename.", "Generate/assign the required app icon image assets.");
     let validMarketingIcon = false;
@@ -292,12 +293,14 @@ async function validateIconCatalog(repository: string, files: string[], iconCata
       const details = await inspectImage(raster);
       if (!details) { add(`assets.app-icon.${filename}`, "block", `App icon ${filename} is corrupt or unreadable.`, "Export a valid flattened 1024×1024 PNG."); continue; }
       if (details.alpha) add(`assets.app-icon.${filename}.alpha`, "block", `App icon ${filename} has transparency.`, "Export a flattened app icon without alpha.");
-      if (image.idiom === "ios-marketing" && image.size === "1024x1024" && image.scale === "1x") {
+      const legacyMarketing = image.idiom === "ios-marketing" && image.size === "1024x1024" && image.scale === "1x";
+      const universalIos = image.idiom === "universal" && image.platform === "ios" && image.size === "1024x1024";
+      if (legacyMarketing || universalIos) {
         if (details.format !== "png") add(`assets.app-icon.${filename}.format`, "block", `App Store marketing icon ${filename} must be a PNG.`, "Export a flattened 1024×1024 PNG.");
         else if (details.width === 1024 && details.height === 1024 && !details.alpha) validMarketingIcon = true;
       }
     }
-    if (!validMarketingIcon) add(`assets.app-icon-marketing.${catalogId}`, "block", "No declared ios-marketing 1024×1024 opaque PNG App Store icon was found.", "Declare a valid ios-marketing 1024×1024 flattened PNG in AppIcon Contents.json.");
+    if (!validMarketingIcon) add(`assets.app-icon-marketing.${catalogId}`, "block", "No declared 1024×1024 opaque PNG App Store icon was found in an ios-marketing or universal iOS slot.", "Declare a valid ios-marketing or universal/platform iOS 1024×1024 flattened PNG in AppIcon Contents.json.");
   } catch { add(`assets.app-icon-contents.${catalogId}`, "block", "AppIcon Contents.json is unreadable or malformed.", "Regenerate the app icon asset catalog."); }
 }
 
@@ -335,6 +338,9 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
   const detectedEncryption = findValue(report, "encryption");
   if (detectedEncryption === "false" && manifest.build.exportCompliance !== "exempt") add("consistency.encryption", "block", "Source declares ITSAppUsesNonExemptEncryption=false but manifest export compliance is not exempt.", "Align build.exportCompliance with the production Info.plist or resolve the declaration.");
   else if (detectedEncryption === "false") add("consistency.encryption", "pass", "Manifest export compliance matches the source encryption declaration.");
+  else if (detectedEncryption === "true" && manifest.build.exportCompliance !== "documentation-required") add("consistency.encryption", "block", "Source declares ITSAppUsesNonExemptEncryption=true but manifest export compliance is not documentation-required.", "Confirm export documentation with Apple and align build.exportCompliance.");
+  else if (detectedEncryption === "true") add("consistency.encryption", "pass", "Manifest export compliance matches the source encryption declaration.");
+  else if (detectedEncryption === "declared") add("consistency.encryption", "block", "Source declares export encryption but its value is ambiguous.", "Resolve the production Info.plist value and confirm export compliance.");
   for (const permission of manifest.permissions) {
     const evidence = permission.evidence || []; const valid = await validEvidencePaths(repository, evidence);
     if (evidence.length && valid.size !== evidence.length) add(`manifest.permission.${permission.key}.evidence`, "block", `${permission.key} references missing, symlinked, or out-of-repository evidence.`, "Use only exact contained, regular source files as evidence.");
@@ -391,6 +397,7 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
       } catch { add(`privacy.manifest.${category}`, "block", `PrivacyInfo.xcprivacy evidence for ${category} could not be interpreted safely.`, "Review and explicitly model this data category before submission."); }
     }
   }
+  for (const finding of report.findings.filter((item) => item.key === "privacyManifestUnparsed")) add("privacy.manifest.unparsed", "block", `PrivacyInfo.xcprivacy contains unsupported or incomplete collected-data declaration(s): ${stringValues(finding.value).join(", ")}.`, "Map each declaration to the exact App Privacy category/purpose or obtain a human-reviewed manual disposition before submission.");
   const secondary = report.findings.find((finding) => finding.key === "secondaryBundleId");
   if (secondary) {
     const sourcePaths = new Set(secondary.evidence.map((item) => item.source));
@@ -423,5 +430,19 @@ async function validEvidencePaths(repository: string, evidence: string[]): Promi
   return valid;
 }
 function isFamilyScreenshotDimensions(family: "iphone" | "ipad", width: number, height: number): boolean { const supported = family === "iphone" ? IPHONE_SCREENSHOT_DIMENSIONS : IPAD_SCREENSHOT_DIMENSIONS; return supported.has(`${width}x${height}`) || supported.has(`${height}x${width}`); }
-function isReviewScreenshotDimension(manifest: ShipLayerManifest, width: number, height: number): boolean { return manifest.app.deviceFamilies.some((family) => { const supported = family === "iphone" ? IPHONE_REVIEW_SCREENSHOT_DIMENSIONS : IPAD_REVIEW_SCREENSHOT_DIMENSIONS; return supported.has(`${width}x${height}`); }); }
+async function nonEmptySafeIconBundle(directory: string): Promise<boolean> {
+  const pending = [directory]; let entries = 0; let contentFiles = 0;
+  while (pending.length) {
+    const current = pending.pop() as string; let children;
+    try { children = await readdir(current, { withFileTypes: true }); } catch { return false; }
+    for (const child of children) {
+      if (++entries > 256 || child.isSymbolicLink()) return false;
+      const target = path.join(current, child.name);
+      if (child.isDirectory()) pending.push(target);
+      else if (child.isFile()) { const details = await lstat(target); if (details.size > 0) contentFiles++; }
+    }
+  }
+  return contentFiles > 0;
+}
+function isReviewScreenshotDimension(manifest: ShipLayerManifest, width: number, height: number): boolean { return manifest.app.deviceFamilies.some((family) => { const supported = family === "iphone" ? IPHONE_REVIEW_SCREENSHOT_DIMENSIONS : IPAD_REVIEW_SCREENSHOT_DIMENSIONS; return supported.has(`${width}x${height}`) || supported.has(`${height}x${width}`); }); }
 function sameOrientationOrReverse(width: number, height: number, expectedWidth: number, expectedHeight: number): boolean { return (width === expectedWidth && height === expectedHeight) || (width === expectedHeight && height === expectedWidth); }
