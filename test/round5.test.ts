@@ -131,3 +131,47 @@ test("round-9 does not infer Xcode settings from runtime copy and selects releas
   await rm(path.join(root, "project.yml")); await mkdir(path.join(root, "Example.xcodeproj")); await writeFile(path.join(root, "Example.xcodeproj/project.pbxproj"), `/* Debug */ = {\n  isa = XCBuildConfiguration;\n  buildSettings = {\n    PRODUCT_BUNDLE_IDENTIFIER = com.example.app.debug;\n    MARKETING_VERSION = 999;\n  };\n  name = Debug;\n};\n/* Release */ = {\n  isa = XCBuildConfiguration;\n  buildSettings = {\n    PRODUCT_BUNDLE_IDENTIFIER = com.example.app;\n    MARKETING_VERSION = 1.0;\n    CURRENT_PROJECT_VERSION = 1;\n    IPHONEOS_DEPLOYMENT_TARGET = 17.0;\n    TARGETED_DEVICE_FAMILY = 1;\n    INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;\n  };\n  name = Release;\n};\n`);
   analysis = await analyzeRepository(root); assert.equal(analysis.findings.some((item) => item.key === "secondaryBundleId"), false); assert.equal(analysis.contradictions.some((item) => item.includes("com.example.app.debug")), false); report = await preflight(root, manifest); assert.equal(report.summary.block, 0);
 });
+
+test("round-10 structurally selects XcodeGen release settings without hiding real target bundles", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-xcodegen-round10-")); const manifest = readyManifest(); await writeReadyAssets(root, manifest);
+  await writeFile(path.join(root, "project.yml"), `name: Example
+settings:
+  configs:
+    Debug:
+      PRODUCT_BUNDLE_IDENTIFIER: com.example.app.debug
+      MARKETING_VERSION: 999
+    Release:
+      PRODUCT_BUNDLE_IDENTIFIER: com.example.app
+      MARKETING_VERSION: 1.0
+      CURRENT_PROJECT_VERSION: 1
+      IPHONEOS_DEPLOYMENT_TARGET: 17.0
+      TARGETED_DEVICE_FAMILY: 1
+      ITSAppUsesNonExemptEncryption: false
+targets:
+  Example:
+    type: application
+    settings:
+      configs:
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: com.example.app.debug
+        Release:
+          PRODUCT_BUNDLE_IDENTIFIER: com.example.app
+  ExampleWidget:
+    type: app-extension
+    settings:
+      configs:
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: com.example.app.widget.debug
+        Release:
+          PRODUCT_BUNDLE_IDENTIFIER: com.example.app.widget
+`);
+  manifest.secondaryTargetConfirmations = [{ bundleId: "com.example.app.widget", classification: "widget", evidence: ["project.yml"], confirmation: "confirmed" }];
+  const analysis = await analyzeRepository(root);
+  assert.equal(findValue(analysis, "bundleId"), "com.example.app");
+  assert.equal(analysis.findings.some((item) => String(item.value).includes("com.example.app.debug")), false);
+  assert.equal(analysis.contradictions.some((item) => item.includes("debug") || item.includes("999")), false);
+  assert.deepEqual(analysis.findings.find((item) => item.key === "secondaryBundleId")?.value, ["com.example.app.widget"]);
+  const report = await preflight(root, manifest);
+  assert.equal(report.summary.block, 0);
+  assert.equal(report.canSubmit, true);
+});

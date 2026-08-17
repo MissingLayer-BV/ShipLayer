@@ -27,9 +27,12 @@ export async function analyzeRepository(repository: string): Promise<AnalysisRep
     const content = await readText(file); const source = relative(root, file);
     const projectSettingSource = file.endsWith("project.yml") || file.endsWith(".pbxproj") || file.endsWith(".xcconfig");
     const kind: Evidence["kind"] = file.endsWith("Info.plist") ? "plist" : file.endsWith(".entitlements") ? "entitlement" : file.endsWith("PrivacyInfo.xcprivacy") ? "privacy-manifest" : file.endsWith(".storekit") ? "storekit" : projectSettingSource ? "project-setting" : "source-heuristic";
-    const productionSettings = projectSettingSource ? productionSettingText(file, content, source, questions) : content;
+    // XcodeGen's project.yml is structured data: scanning all text would mix
+    // Debug/Staging values with the release configuration. Other setting
+    // sources use the focused text parser below.
+    const productionSettings = projectSettingSource && !file.endsWith("project.yml") ? productionSettingText(file, content, source, questions) : content;
     const matched = (regex: RegExp, key: string, input = content): void => { for (const match of input.matchAll(regex)) push(key, match[1].trim(), { source, excerpt: match[0].slice(0, 220), confidence: kind === "source-heuristic" ? "medium" : "high", kind }); };
-    if (projectSettingSource) {
+    if (projectSettingSource && !file.endsWith("project.yml")) {
       matched(/PRODUCT_BUNDLE_IDENTIFIER\s*=\s*([^;\n]+)/g, "bundleId", productionSettings);
       matched(/MARKETING_VERSION\s*=\s*([^;\n]+)/g, "version", productionSettings); matched(/CURRENT_PROJECT_VERSION\s*=\s*([^;\n]+)/g, "build", productionSettings); matched(/IPHONEOS_DEPLOYMENT_TARGET\s*=\s*([^;\n]+)/g, "deploymentTarget", productionSettings); matched(/TARGETED_DEVICE_FAMILY\s*=\s*([^;\n]+)/g, "deviceFamily", productionSettings);
       for (const permission of PERMISSION_KEYS) {
@@ -45,9 +48,7 @@ export async function analyzeRepository(repository: string): Promise<AnalysisRep
         push("encryption", declared, { source, excerpt: "INFOPLIST_KEY_ITSAppUsesNonExemptEncryption", confidence: "high", kind });
       }
     }
-    if (file.endsWith("project.yml")) {
-      try { const yaml = parse(content) as Record<string, unknown>; const appName = typeof yaml.name === "string" ? yaml.name : undefined; if (appName) push("appName", appName, { source, excerpt: `name: ${appName}`, confidence: "high", kind: "project-setting" }); for (const key of ["PRODUCT_BUNDLE_IDENTIFIER", "MARKETING_VERSION", "CURRENT_PROJECT_VERSION", "IPHONEOS_DEPLOYMENT_TARGET"]) { const regex = new RegExp(`${key}["']?\\s*:\\s*["']?([^,}\\n"']+)`, "g"); matched(regex, ({ PRODUCT_BUNDLE_IDENTIFIER: "bundleId", MARKETING_VERSION: "version", CURRENT_PROJECT_VERSION: "build", IPHONEOS_DEPLOYMENT_TARGET: "deploymentTarget" } as Record<string, string>)[key], productionSettings); } matched(/TARGETED_DEVICE_FAMILY["']?\s*:\s*["']?([0-9,]+)/g, "deviceFamily", productionSettings); const encryption = productionSettings.match(/(?:INFOPLIST_KEY_)?ITSAppUsesNonExemptEncryption\s*:\s*(true|false|YES|NO)\b/i)?.[1]; if (encryption) push("encryption", /^(?:true|YES)$/i.test(encryption) ? "true" : "false", { source, excerpt: "ITSAppUsesNonExemptEncryption", confidence: "high", kind: "project-setting" }); else if (productionSettings.includes("ITSAppUsesNonExemptEncryption")) push("encryption", "declared", { source, confidence: "medium", kind: "project-setting" }); } catch { questions.add(`Could not parse ${source}; verify project settings manually.`); }
-    }
+    if (file.endsWith("project.yml")) scanXcodeGenProject(content, source, push, questions);
     if (file.endsWith("Info.plist")) {
       for (const key of PERMISSION_KEYS) { const regex = new RegExp(`<key>${key}</key>\\s*<string>([^<]*)</string>`, "g"); for (const match of content.matchAll(regex)) push(`permission:${key}`, match[1], { source, excerpt: match[0], confidence: "confirmed", kind }); }
       for (const match of content.matchAll(/<key>ITSAppUsesNonExemptEncryption<\/key>\s*<(true|false)\s*\/>/g)) push("encryption", match[1], { source, excerpt: match[0], confidence: "confirmed", kind });
@@ -120,6 +121,81 @@ export async function analyzeRepository(repository: string): Promise<AnalysisRep
 
 function isTestOnlySource(source: string): boolean { const parts = source.split("/"); const basename = parts.at(-1) || ""; return parts.some((component) => /(?:UI)?Tests$|^(?:scripts?|benchmarks?)$/i.test(component)) || /(?:\.test|\.spec)\.[cm]?[jt]sx?$/i.test(basename) || /(?:UI)?Tests?\.xcconfig$/i.test(basename); }
 function isScannerToolingSource(source: string): boolean { const parts = source.split("/"); return parts.includes("app-store-screenshots") || (parts.at(-1) || "").endsWith(".d.ts"); }
+
+type ScannerFindingPush = (key: string, value: string, evidence: Evidence) => void;
+
+const XCODEGEN_SETTINGS: Record<string, string> = {
+  PRODUCT_BUNDLE_IDENTIFIER: "bundleId",
+  MARKETING_VERSION: "version",
+  CURRENT_PROJECT_VERSION: "build",
+  IPHONEOS_DEPLOYMENT_TARGET: "deploymentTarget",
+  TARGETED_DEVICE_FAMILY: "deviceFamily",
+};
+
+/**
+ * XcodeGen configuration maps are not source text. In particular, a Debug
+ * bundle identifier is an alternate build configuration, not an app
+ * extension. Parse the YAML shape so release settings remain evidence while
+ * settings from genuine target entries retain their own bundle identities.
+ */
+function scanXcodeGenProject(content: string, source: string, push: ScannerFindingPush, questions: Set<string>): void {
+  let document: unknown;
+  // Build settings are semantically strings to Xcode. The failsafe schema
+  // preserves values such as 1.0 and 17.0 rather than coercing them to 1/17.
+  try { document = parse(content, { schema: "failsafe" }); } catch { questions.add(`Could not parse ${source}; verify project settings manually.`); return; }
+  const project = asRecord(document);
+  if (!project) { questions.add(`Could not parse ${source}; verify project settings manually.`); return; }
+  const appName = stringValue(project.name);
+  if (appName) push("appName", appName, { source, excerpt: "XcodeGen project name", confidence: "high", kind: "project-setting" });
+
+  const ignoredConfigurations = new Set<string>();
+  const collectKnownSettings = (candidate: unknown, label: string): void => {
+    const settings = asRecord(candidate); if (!settings) return;
+    for (const [setting, rawValue] of Object.entries(settings).sort(([left], [right]) => left.localeCompare(right))) {
+      const value = scalarSettingValue(rawValue);
+      if (value === undefined || /\$\([^)]*\)/.test(value)) continue;
+      const evidence: Evidence = { source, excerpt: `XcodeGen ${label}.${setting}`, confidence: "high", kind: "project-setting" };
+      const finding = XCODEGEN_SETTINGS[setting];
+      if (finding) { push(finding, value, evidence); continue; }
+      if (setting === "ITSAppUsesNonExemptEncryption" || setting === "INFOPLIST_KEY_ITSAppUsesNonExemptEncryption") {
+        if (/^(?:yes|true)$/i.test(value)) push("encryption", "true", evidence);
+        else if (/^(?:no|false)$/i.test(value)) push("encryption", "false", evidence);
+        else push("encryption", "declared", { ...evidence, confidence: "medium" });
+        continue;
+      }
+      for (const permission of PERMISSION_KEYS) {
+        if (setting === `INFOPLIST_KEY_${permission}` && value.trim()) push(`permission:${permission}`, value.trim(), evidence);
+      }
+    }
+  };
+  const collectSettings = (candidate: unknown, label: string): void => {
+    const settings = asRecord(candidate); if (!settings) return;
+    // Some XcodeGen files place setting keys directly under settings; most use
+    // base/configs. Treat both forms deterministically.
+    const direct = Object.fromEntries(Object.entries(settings).filter(([key]) => key !== "base" && key !== "configs"));
+    collectKnownSettings(direct, label);
+    collectKnownSettings(settings.base, `${label}.base`);
+    const configurations = asRecord(settings.configs);
+    if (!configurations) return;
+    for (const [configuration, configurationSettings] of Object.entries(configurations).sort(([left], [right]) => left.localeCompare(right))) {
+      if (isAlternateConfigurationName(configuration)) { ignoredConfigurations.add(`${label}.${configuration}`); continue; }
+      collectKnownSettings(configurationSettings, `${label}.configs.${configuration}`);
+    }
+  };
+
+  collectSettings(project.settings, "settings");
+  const targets = asRecord(project.targets);
+  if (targets) for (const [target, targetValue] of Object.entries(targets).sort(([left], [right]) => left.localeCompare(right))) {
+    const targetDefinition = asRecord(targetValue);
+    if (targetDefinition) collectSettings(targetDefinition.settings, `targets.${target}.settings`);
+  }
+  if (ignoredConfigurations.size) questions.add(`Excluded alternate XcodeGen build configuration(s) ${[...ignoredConfigurations].sort().join(", ")} from production release-setting inference.`);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined; }
+function stringValue(value: unknown): string | undefined { return typeof value === "string" && value.trim() ? value.trim() : undefined; }
+function scalarSettingValue(value: unknown): string | undefined { return typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? String(value).trim() : undefined; }
+
 function productionSettingText(file: string, content: string, source: string, questions: Set<string>): string {
   if (file.endsWith(".xcconfig") && isAlternateConfigurationName(path.basename(file))) {
     questions.add(`Excluded alternate build configuration ${source} from production release-setting inference.`);
