@@ -420,8 +420,8 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
       else add(`source.secondary-target.${bundleId}`, "pass", `Secondary target ${bundleId} is confirmed as a ${confirmation.classification}.`);
     }
   }
-  const relevantOmissions = report.ignored.filesOverLimitPaths.filter(isRelevantSourcePath); const relevantSymlinks = report.ignored.symlinksIgnored.filter(isRelevantSourcePath); const relevantUnreadable = report.ignored.unreadable.filter(isRelevantSourcePath);
-  if (report.ignored.truncated || relevantOmissions.length || relevantUnreadable.length || relevantSymlinks.length) add("source.scan-coverage", "block", `Source scan omitted ${[report.ignored.truncated ? "a truncated entry set" : "", relevantOmissions.length ? `${relevantOmissions.length} relevant oversized source/config file(s)` : "", relevantUnreadable.length ? `${relevantUnreadable.length} relevant unreadable source/config path(s)` : "", relevantSymlinks.length ? `${relevantSymlinks.length} relevant symlinked source/config path(s)` : ""].filter(Boolean).join(", ")}.`, "Inspect omitted source manually and remove/resolve exclusions before claiming submission readiness.");
+  const relevantOmissions = report.ignored.filesOverLimitPaths.filter(isRelevantSourcePath); const relevantSymlinks = report.ignored.symlinkFilesIgnored.filter(isRelevantSourcePath); const relevantUnreadable = report.ignored.unreadable.filter(isRelevantSourcePath); const omittedSourceDirectories = report.ignored.symlinkDirectoriesIgnored.filter((directory) => !isNonProductionSourcePath(directory));
+  if (report.ignored.truncated || relevantOmissions.length || relevantUnreadable.length || relevantSymlinks.length || omittedSourceDirectories.length) add("source.scan-coverage", "block", `Source scan omitted ${[report.ignored.truncated ? "a truncated entry set" : "", relevantOmissions.length ? `${relevantOmissions.length} relevant oversized source/config file(s)` : "", relevantUnreadable.length ? `${relevantUnreadable.length} relevant unreadable source/config path(s)` : "", relevantSymlinks.length ? `${relevantSymlinks.length} relevant symlinked source/config path(s)` : "", omittedSourceDirectories.length ? `${omittedSourceDirectories.length} symlinked directory tree(s)` : ""].filter(Boolean).join(", ")}.`, "Inspect omitted source manually and remove/resolve exclusions before claiming submission readiness.");
   else if (report.ignored.filesOverLimit || report.ignored.unreadable.length || report.ignored.symlinksIgnored.length) add("source.scan-coverage", "warn", "Source scan ignored only non-source binary, documentation, or unrelated paths.", "Review ignored paths if they become release-relevant.");
   for (const [index, question] of report.unresolvedQuestions.entries()) add(`source.question.${index + 1}`, "warn", question, "Resolve or record this scanner question during human release review.");
   const storeKit = report.findings.find((finding) => finding.key === "storekitProductId")?.value;
@@ -434,7 +434,11 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
 function stringValues(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : typeof value === "string" ? [value] : []; }
 function intersects(left: Set<string>, right: Set<string>): boolean { return [...left].some((item) => right.has(item)); }
 function sameSet(left: Set<string>, right: Set<string>): boolean { return left.size === right.size && [...left].every((item) => right.has(item)); }
-function isRelevantSourcePath(file: string): boolean { return /(?:^|\/)(?:project\.yml|project\.pbxproj|Info\.plist|PrivacyInfo\.xcprivacy|[^/]+\.(?:swift|m|mm|h|ts|tsx|js|jsx|mjs|cjs|mts|cts|entitlements|storekit))$/i.test(file) && !/\.d\.ts$/i.test(file); }
+function isRelevantSourcePath(file: string): boolean {
+  const normalized = file.replace(/\\/g, "/");
+  return !isNonProductionSourcePath(normalized) && /(?:^|\/)(?:project\.yml|project\.pbxproj|Info\.plist|\.xcconfig|PrivacyInfo\.xcprivacy|[^/]+\.(?:swift|m|mm|h|ts|tsx|js|jsx|mjs|cjs|mts|cts|entitlements|storekit))$/i.test(normalized);
+}
+function isNonProductionSourcePath(file: string): boolean { const parts = file.replace(/\\/g, "/").split("/"); const basename = parts.at(-1) || ""; return parts.includes("app-store-screenshots") || /\.d\.ts$/i.test(basename) || parts.some((component) => /(?:UI)?Tests$|^(?:scripts?|benchmarks?)$/i.test(component)) || /(?:\.test|\.spec)\.[cm]?[jt]sx?$/i.test(basename) || /(?:UI)?Tests?\.xcconfig$/i.test(basename); }
 async function validEvidencePaths(repository: string, evidence: string[]): Promise<Set<string>> {
   const valid = new Set<string>();
   for (const value of evidence) {

@@ -12,9 +12,9 @@ export async function readText(filePath: string): Promise<string> { return readF
 export async function writeText(filePath: string, content: string): Promise<void> { await ensureDirectory(path.dirname(filePath)); await writeFile(filePath, content, "utf8"); }
 export async function copyFileTree(from: string, to: string): Promise<void> { await cp(from, to, { recursive: true }); }
 
-export interface WalkResult { files: string[]; assetFiles: string[]; ignoredDirectories: string[]; filesOverLimit: number; filesOverLimitPaths: string[]; unreadable: string[]; symlinksIgnored: string[]; entriesVisited: number; truncated: boolean }
+export interface WalkResult { files: string[]; assetFiles: string[]; ignoredDirectories: string[]; filesOverLimit: number; filesOverLimitPaths: string[]; unreadable: string[]; symlinksIgnored: string[]; symlinkDirectoriesIgnored: string[]; symlinkFilesIgnored: string[]; entriesVisited: number; truncated: boolean }
 export async function walkRepository(root: string): Promise<WalkResult> {
-  const files: string[] = []; const assetFiles: string[] = []; const ignoredDirectories = new Set<string>(); const unreadable = new Set<string>(); const symlinksIgnored = new Set<string>(); const filesOverLimitPaths = new Set<string>(); let filesOverLimit = 0; let entriesVisited = 0; let truncated = false;
+  const files: string[] = []; const assetFiles: string[] = []; const ignoredDirectories = new Set<string>(); const unreadable = new Set<string>(); const symlinksIgnored = new Set<string>(); const symlinkDirectoriesIgnored = new Set<string>(); const symlinkFilesIgnored = new Set<string>(); const filesOverLimitPaths = new Set<string>(); let filesOverLimit = 0; let entriesVisited = 0; let truncated = false;
   async function walk(directory: string): Promise<void> {
     if (entriesVisited >= MAX_ENTRIES) { truncated = true; return; }
     let entries; try { entries = await readdir(directory, { withFileTypes: true }); } catch { unreadable.add(relative(root, directory)); return; }
@@ -22,12 +22,20 @@ export async function walkRepository(root: string): Promise<WalkResult> {
       if (entriesVisited >= MAX_ENTRIES) { truncated = true; return; }
       entriesVisited++;
       const absolute = path.join(directory, entry.name); const relative = path.relative(root, absolute);
-      if (entry.isSymbolicLink()) { symlinksIgnored.add(relative); continue; }
+      if (entry.isSymbolicLink()) {
+        // Never traverse a link, even if it points back into the repository.
+        // We only classify it so preflight can conservatively block an omitted
+        // source tree while allowing an unrelated linked README to remain a warn.
+        symlinksIgnored.add(relative);
+        try { if ((await stat(absolute)).isDirectory()) symlinkDirectoriesIgnored.add(relative); else symlinkFilesIgnored.add(relative); }
+        catch { unreadable.add(relative); }
+        continue;
+      }
       if (entry.isDirectory()) { if (IGNORED_DIRECTORIES.has(entry.name) || /^(?:shiplayer-)?release(?:-|$)/.test(entry.name)) { ignoredDirectories.add(relative || entry.name); continue; } await walk(absolute); }
       else if (entry.isFile()) { try { const details = await stat(absolute); assetFiles.push(absolute); if (details.size > MAX_FILE_BYTES) { filesOverLimit++; filesOverLimitPaths.add(relative); continue; } files.push(absolute); } catch { unreadable.add(relative); } }
     }
   }
-  await walk(root); return { files, assetFiles: assetFiles.sort(), ignoredDirectories: [...ignoredDirectories].sort(), filesOverLimit, filesOverLimitPaths: [...filesOverLimitPaths].sort(), unreadable: [...unreadable].sort(), symlinksIgnored: [...symlinksIgnored].sort(), entriesVisited, truncated };
+  await walk(root); return { files, assetFiles: assetFiles.sort(), ignoredDirectories: [...ignoredDirectories].sort(), filesOverLimit, filesOverLimitPaths: [...filesOverLimitPaths].sort(), unreadable: [...unreadable].sort(), symlinksIgnored: [...symlinksIgnored].sort(), symlinkDirectoriesIgnored: [...symlinkDirectoriesIgnored].sort(), symlinkFilesIgnored: [...symlinkFilesIgnored].sort(), entriesVisited, truncated };
 }
 
 export function relative(root: string, filePath: string): string { return path.relative(root, filePath).split(path.sep).join("/"); }

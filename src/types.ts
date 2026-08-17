@@ -25,7 +25,7 @@ export interface AnalysisReport {
   findings: Finding[];
   contradictions: string[];
   unresolvedQuestions: string[];
-  ignored: { directories: string[]; filesOverLimit: number; filesOverLimitPaths: string[]; filesScanned: number; entriesVisited: number; unreadable: string[]; symlinksIgnored: string[]; truncated: boolean };
+  ignored: { directories: string[]; filesOverLimit: number; filesOverLimitPaths: string[]; filesScanned: number; entriesVisited: number; unreadable: string[]; symlinksIgnored: string[]; symlinkDirectoriesIgnored: string[]; symlinkFilesIgnored: string[]; truncated: boolean };
 }
 
 export interface LocaleCopy {

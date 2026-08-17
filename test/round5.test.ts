@@ -89,3 +89,37 @@ test("round-7 init maps TARGETED_DEVICE_FAMILY tokens without inventing iPhone s
 test("round-7 detects runtime sidecar extensions and insecure HTTP endpoints", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-runtime-round7-")); const manifest = readyManifest(); await writeReadyAssets(root, manifest); await writeFile(path.join(root, "sidecar.mts"), "fetch('HTTP://api.example.test/v1')"); const report = await preflight(root, manifest); assert.ok(report.results.some((item) => item.id.includes("insecure-endpoint") && item.severity === "block"));
 });
+
+test("round-8 blocks skipped symlinked source directories but not clearly test-only directory links", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-symlink-tree-round8-")); const manifest = readyManifest(); await writeReadyAssets(root, manifest);
+  const outside = await mkdtemp(path.join(tmpdir(), "shiplayer-outside-source-round8-")); await writeFile(path.join(outside, "Worker.ts"), "fetch('https://external.example.test/v1')"); await symlink(outside, path.join(root, "Sources"));
+  let report = await preflight(root, manifest); assert.equal(report.canSubmit, false); assert.ok(report.results.some((item) => item.id === "source.scan-coverage" && item.severity === "block"));
+  await rm(path.join(root, "Sources")); await symlink(outside, path.join(root, "ExampleUITests")); await writeFile(path.join(root, "ExampleTests.swift"), "// test fixture");
+  report = await preflight(root, manifest); assert.equal(report.results.filter((item) => item.id === "source.scan-coverage" && item.severity === "block").length, 0);
+});
+
+test("round-8 redacts URL credentials and handles static and dynamic template endpoints", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-endpoint-redaction-round8-")); const manifest = readyManifest(); await writeReadyAssets(root, manifest);
+  const sentinel = "SUPERSECRET123456789";
+  await writeFile(path.join(root, "worker.ts"), `fetch(\"https://user:${sentinel}@api.example.test/webhook/${sentinel}?api_key=${sentinel}&user=can#private\"); const a = \`https://static.example.test/v1\`; const b = \`https://dynamic.example.test/v1/\${42}\`;`);
+  const analysis = await analyzeRepository(root); const report = await preflight(root, manifest); const generated = await generateReleasePackage(root, manifest, analysis, report, "release-redaction");
+  const renderedPackage = await Promise.all(generated.files.map((file) => readFile(path.join(generated.directory, file), "utf8")));
+  const rendered = [JSON.stringify(analysis), JSON.stringify(report), ...renderedPackage].join("\n");
+  assert.equal(rendered.includes(sentinel), false); assert.equal(rendered.includes("#private"), false); assert.equal(rendered.includes("user:"), false);
+  const endpointKeys = analysis.findings.filter((item) => item.key.startsWith("endpoint:")).map((item) => item.key); assert.ok(endpointKeys.includes("endpoint:https://api.example.test/webhook/:redacted?api_key&user")); assert.ok(endpointKeys.includes("endpoint:https://static.example.test/v1")); assert.ok(endpointKeys.includes("endpoint:https://dynamic.example.test/v1/")); assert.equal(endpointKeys.some((key) => key.includes("%60") || key.includes("%7B")), false); assert.ok(analysis.unresolvedQuestions.some((item) => item.includes("dynamic endpoint expression")));
+  const run = spawnSync("./node_modules/.bin/tsx", ["src/index.ts", "analyze", root, "--json"], { cwd: path.resolve("."), encoding: "utf8" }); assert.equal(run.status, 0, run.stderr); assert.equal(run.stdout.includes(sentinel), false);
+});
+
+test("round-8 reads release identity, encryption, and purpose strings from a plain Xcode xcconfig", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-xcconfig-round8-")); const manifest = readyManifest(); await writeReadyAssets(root, manifest); await rm(path.join(root, "project.yml")); await mkdir(path.join(root, "Example.xcodeproj"));
+  await writeFile(path.join(root, "Example.xcodeproj/project.pbxproj"), "GENERATE_INFOPLIST_FILE = YES;\nINFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;\n");
+  await writeFile(path.join(root, "Release.xcconfig"), "PRODUCT_BUNDLE_IDENTIFIER = com.example.app\nMARKETING_VERSION = 1.0\nCURRENT_PROJECT_VERSION = 1\nIPHONEOS_DEPLOYMENT_TARGET = 17.0\nTARGETED_DEVICE_FAMILY = 1\nINFOPLIST_KEY_NSCameraUsageDescription = \"Scan a receipt\"\n");
+  manifest.permissions = [{ key: "NSCameraUsageDescription", purpose: "Scan a receipt", confirmation: "confirmed", evidence: ["Release.xcconfig"] }];
+  const report = await preflight(root, manifest); assert.equal(report.summary.block, 0); assert.ok(report.results.some((item) => item.id === "consistency.encryption" && item.severity === "pass")); assert.ok(report.results.some((item) => item.id === "source.permission.NSCameraUsageDescription.evidence" && item.severity === "pass"));
+});
+
+test("round-8 excludes test and screenshot-tooling omissions from production source coverage", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-exclusions-round8-")); const manifest = readyManifest(); await writeReadyAssets(root, manifest); await mkdir(path.join(root, "ExampleTests")); await writeFile(path.join(root, "ExampleTests/large.ts"), Buffer.alloc(1_000_001)); await mkdir(path.join(root, "design/app-store-screenshots"), { recursive: true }); await writeFile(path.join(root, "design/app-store-screenshots/editor.ts"), Buffer.alloc(1_000_001));
+  const outside = await mkdtemp(path.join(tmpdir(), "shiplayer-test-link-round8-")); await writeFile(path.join(outside, "fixture.ts"), "test only"); await symlink(outside, path.join(root, "ExampleUITests"));
+  const report = await preflight(root, manifest); assert.equal(report.results.filter((item) => item.id === "source.scan-coverage" && item.severity === "block").length, 0);
+});
