@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { access, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { defaultManifest, validateManifest } from "../src/manifest.js";
@@ -11,10 +12,21 @@ import type { AnalysisReport, PreflightReport } from "../src/types.js";
 import { png, readyManifest, writeReadyAssets } from "./helpers.js";
 import { inspectImage } from "../src/image.js";
 
-const analysis = (repository: string): AnalysisReport => ({ schemaVersion: 1, repository, scannedAt: "x", project: { xcodeProjects: [], workspaces: [], projectYml: [] }, findings: [], contradictions: [], unresolvedQuestions: [], ignored: { directories: [], filesOverLimit: 0, filesScanned: 0, unreadable: [], symlinksIgnored: [], truncated: false } });
+const analysis = (repository: string): AnalysisReport => ({ schemaVersion: 1, repository, scannedAt: "x", project: { xcodeProjects: [], workspaces: [], projectYml: [] }, findings: [], contradictions: [], unresolvedQuestions: [], ignored: { directories: [], filesOverLimit: 0, filesScanned: 0, entriesVisited: 0, unreadable: [], symlinksIgnored: [], truncated: false } });
 const preflight: PreflightReport = { repository: ".", results: [], summary: { pass: 0, warn: 0, block: 0 }, canPrepare: true, canApply: false, canSubmit: false };
 test("safe relative paths reject traversal and absolute paths", () => { assert.throws(() => safeRelativePath("../escape", "test")); assert.throws(() => safeRelativePath("/tmp/escape", "test")); assert.equal(safeRelativePath("release folder/output", "test"), "release folder/output"); });
 test("generator refuses outside and unmanaged output", async () => { const root = await mkdtemp(path.join(tmpdir(), "shiplayer spaces ")); const manifest = defaultManifest({ name: "Example", bundleId: "com.example.app" }); await assert.rejects(() => generateReleasePackage(root, manifest, analysis(root), preflight, "../escape")); await mkdir(path.join(root, "unmanaged")); await writeFile(path.join(root, "unmanaged", "keep.txt"), "keep"); await assert.rejects(() => generateReleasePackage(root, manifest, analysis(root), preflight, "unmanaged"), /refusing to overwrite/); });
+test("generator rejects source-control output and init never follows a forced manifest symlink", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-init-link-")); const manifest = defaultManifest({ name: "Example", bundleId: "com.example.app" }); await mkdir(path.join(root, ".git"));
+  await assert.rejects(() => generateReleasePackage(root, manifest, analysis(root), preflight, ".git/shiplayer-malicious"), /reserved/);
+  const outside = path.join(root, "outside.yml"); await writeFile(outside, "keep-this-target"); await symlink(outside, path.join(root, "shiplayer.yml"));
+  const run = spawnSync("./node_modules/.bin/tsx", ["src/index.ts", "init", root, "--force", "--json"], { encoding: "utf8" });
+  assert.equal(run.status, 1); assert.match(run.stdout, /regular file/); assert.equal(await readFile(outside, "utf8"), "keep-this-target");
+});
+test("generator rejects an output that collides with declared source inputs", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-output-collision-")); const manifest = defaultManifest({ name: "Example", bundleId: "com.example.app" }); manifest.screenshots.marketingProjectPath = "design/editor";
+  await assert.rejects(() => generateReleasePackage(root, manifest, analysis(root), preflight, "design"), /collides with a manifest source input/);
+});
 test("managed regeneration removes only marked package contents and rejects symlink output", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer managed "));
   const manifest = defaultManifest({ name: "Example", bundleId: "com.example.app" });
@@ -43,6 +55,11 @@ test("manifest rejects unsafe raw, marketing, and IAP asset paths before generat
   manifest.screenshots.rawOutputDir = "screenshots";
   manifest.screenshots.marketingProjectPath = "/tmp/marketing";
   assert.throws(() => validateManifest(manifest), /Invalid shiplayer/);
+});
+test("manifest rejects direct secret material while allowing ordinary support prose", () => {
+  const manifest = defaultManifest({ name: "Example", bundleId: "com.example.app" }); manifest.review.notes = "password reset is available from Settings"; validateManifest(manifest);
+  manifest.review.notes = "api_key=sk-this-is-a-real-looking-secret"; assert.throws(() => validateManifest(manifest), /credential material/);
+  manifest.review.notes = "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----"; assert.throws(() => validateManifest(manifest), /credential material/);
 });
 test("walker is deterministic and ignores symlinks", async () => { const root = await mkdtemp(path.join(tmpdir(), "shiplayer-walk-")); await writeFile(path.join(root, "z.swift"), "z"); await writeFile(path.join(root, "a.swift"), "a"); await symlink(path.join(root, "a.swift"), path.join(root, "linked.swift")); const first = await walkRepository(root); const second = await walkRepository(root); assert.deepEqual(first.files, second.files); assert.equal(first.symlinksIgnored.length, 1); });
 test("preflight turns tiny or unreadable image input into blockers instead of crashing", async () => {

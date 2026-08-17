@@ -28,6 +28,8 @@ test("preflight and generated release package are deterministic", async () => {
   assert.equal(firstAnalysis, secondAnalysis);
   assert.ok(generated.files.includes("privacy/questionnaire-draft.md"));
   assert.ok(first.toLowerCase().includes("subscription"));
+  assert.ok((await readFile(path.join(generated.directory, "legal/terms-of-use-draft.md"), "utf8")).includes("Standard Licensed"));
+  assert.ok((await readFile(path.join(generated.directory, "remaining-human-actions.md"), "utf8")).includes("Scanner question:"));
 });
 
 test("complete free, paid, lifetime, and subscription fixtures pass preflight", async () => {

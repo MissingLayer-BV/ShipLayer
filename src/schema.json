@@ -12,6 +12,7 @@
     "dataProcessing",
     "externalProcessors",
     "externalServiceDecisions",
+    "secondaryTargetConfirmations",
     "review",
     "screenshots",
     "monetization",
@@ -70,6 +71,12 @@
       "type": "array",
       "items": {
         "$ref": "#/$defs/externalServiceDecision"
+      }
+    },
+    "secondaryTargetConfirmations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/secondaryTargetConfirmation"
       }
     },
     "review": {
@@ -143,6 +150,12 @@
       "type": "string",
       "pattern": "^[a-z]{2,3}(?:-[A-Z][a-z]{3}|-[A-Z]{2})?(?:-[A-Z]{2})?$"
     },
+    "dataCategory": {
+      "enum": ["Name", "Email Address", "Phone Number", "Physical Address", "Other User Contact Info", "Health", "Fitness", "Payment Info", "Credit Info", "Other Financial Info", "Precise Location", "Coarse Location", "Sensitive Info", "Contacts", "Emails or Text Messages", "Photos or Videos", "Audio Data", "Gameplay Content", "Customer Support", "Other User Content", "Browsing History", "Search History", "User ID", "Device ID", "Purchases", "Product Interaction", "Advertising Data", "Other Usage Data", "Crash Data", "Performance Data", "Other Diagnostic Data", "Environment Scanning", "Hands", "Head", "Other Data"]
+    },
+    "dataPurpose": {
+      "enum": ["Third-Party Advertising", "Developer’s Advertising or Marketing", "Analytics", "Product Personalization", "App Functionality", "Other Purposes"]
+    },
     "app": {
       "type": "object",
       "additionalProperties": false,
@@ -183,11 +196,11 @@
         },
         "version": {
           "type": "string",
-          "minLength": 1
+          "pattern": "^[0-9]+(?:\\.[0-9]+){0,2}$"
         },
         "build": {
           "type": "string",
-          "minLength": 1
+          "pattern": "^[0-9]+(?:\\.[0-9]+){0,2}$"
         },
         "deploymentTarget": {
           "type": "string",
@@ -326,13 +339,13 @@
       ],
       "properties": {
         "category": {
-          "$ref": "#/$defs/nonEmpty"
+          "$ref": "#/$defs/dataCategory"
         },
         "purpose": {
           "type": "array",
           "minItems": 1,
           "items": {
-            "$ref": "#/$defs/nonEmpty"
+            "$ref": "#/$defs/dataPurpose"
           }
         },
         "linkedToIdentity": {
@@ -380,13 +393,13 @@
           "$ref": "#/$defs/nonEmpty"
         },
         "purpose": {
-          "$ref": "#/$defs/nonEmpty"
+          "$ref": "#/$defs/dataPurpose"
         },
         "dataCategories": {
           "type": "array",
           "minItems": 1,
           "items": {
-            "$ref": "#/$defs/nonEmpty"
+            "$ref": "#/$defs/dataCategory"
           }
         },
         "confirmation": {
@@ -435,6 +448,34 @@
         }
       }
     },
+    "secondaryTargetConfirmation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bundleId",
+        "classification",
+        "evidence",
+        "confirmation"
+      ],
+      "properties": {
+        "bundleId": {
+          "$ref": "#/$defs/bundleId"
+        },
+        "classification": {
+          "enum": ["extension", "widget", "other-app"]
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/repoPath"
+          }
+        },
+        "confirmation": {
+          "$ref": "#/$defs/confirmation"
+        }
+      }
+    },
     "scenario": {
       "type": "object",
       "additionalProperties": false,
@@ -449,19 +490,26 @@
           "pattern": "^[a-z0-9][a-z0-9-]*$"
         },
         "title": {
-          "$ref": "#/$defs/nonEmpty"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
         },
         "launchArguments": {
           "type": "array",
+          "maxItems": 20,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 200
           }
         },
         "steps": {
           "type": "array",
           "minItems": 1,
+          "maxItems": 20,
           "items": {
-            "$ref": "#/$defs/nonEmpty"
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
           }
         }
       }
@@ -510,23 +558,28 @@
               "pattern": "^[A-Z][A-Z0-9_]*$"
             },
             "setupInstructions": {
-              "type": "string"
+              "type": "string",
+              "maxLength": 1000
             }
           }
         },
         "notes": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 2500
         },
         "recordingScenarios": {
           "type": "array",
+          "maxItems": 20,
           "items": {
             "$ref": "#/$defs/scenario"
           }
         },
         "sampleData": {
           "type": "array",
+          "maxItems": 20,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 200
           }
         }
       }
@@ -837,6 +890,7 @@
         "paywallNavigation",
         "restorePath",
         "termsUrl",
+        "termsOfUse",
         "privacyUrl",
         "disclosureConfirmation",
         "confirmation"
@@ -874,8 +928,8 @@
                   "properties": {
                     "displayName": {
                       "type": "string",
-                      "minLength": 2,
-                      "maxLength": 30
+                      "minLength": 1,
+                      "pattern": "^[^<>\\u0000-\\u001F\\u007F]+$"
                     }
                   }
                 }
@@ -903,6 +957,19 @@
         },
         "termsUrl": {
           "$ref": "#/$defs/url"
+        },
+        "termsOfUse": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "confirmation"],
+          "properties": {
+            "type": {
+              "enum": ["apple-standard-eula", "custom"]
+            },
+            "confirmation": {
+              "$ref": "#/$defs/confirmation"
+            }
+          }
         },
         "privacyUrl": {
           "$ref": "#/$defs/url"

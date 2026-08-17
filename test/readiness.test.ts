@@ -11,7 +11,7 @@ import { analyzeRepository, findValue } from "../src/scanner.js";
 import type { AnalysisReport, PreflightReport } from "../src/types.js";
 import { png, readyManifest, writeReadyAssets } from "./helpers.js";
 
-const emptyAnalysis = (repository: string): AnalysisReport => ({ schemaVersion: 1, repository, scannedAt: "x", project: { xcodeProjects: [], workspaces: [], projectYml: [] }, findings: [], contradictions: [], unresolvedQuestions: [], ignored: { directories: [], filesOverLimit: 0, filesScanned: 0, unreadable: [], symlinksIgnored: [], truncated: false } });
+const emptyAnalysis = (repository: string): AnalysisReport => ({ schemaVersion: 1, repository, scannedAt: "x", project: { xcodeProjects: [], workspaces: [], projectYml: [] }, findings: [], contradictions: [], unresolvedQuestions: [], ignored: { directories: [], filesOverLimit: 0, filesScanned: 0, entriesVisited: 0, unreadable: [], symlinksIgnored: [], truncated: false } });
 const emptyPreflight: PreflightReport = { repository: ".", results: [], summary: { pass: 0, warn: 0, block: 0 }, canPrepare: true, canApply: false, canSubmit: false };
 
 test("scanner evidence cannot be silently omitted from a ready manifest", async () => {
@@ -21,6 +21,8 @@ test("scanner evidence cannot be silently omitted from a ready manifest", async 
   manifest.permissions = [{ key: "NSCameraUsageDescription", purpose: "Capture proof", confirmation: "confirmed", evidence: ["Info.plist"] }];
   manifest.externalServiceDecisions = [{ finding: "thirdPartySdkCandidate:Firebase:Firebase", disposition: "not-an-external-processor", reason: "Fixture decision only.", evidence: ["App.swift"], confirmation: "confirmed" }, { finding: "endpoint:https://api.openai.com/v1/models", disposition: "not-an-external-processor", reason: "Fixture decision only.", evidence: ["App.swift"], confirmation: "confirmed" }];
   report = await preflight(root, manifest); assert.equal(report.summary.block, 0, report.results.filter((item) => item.severity === "block").map((item) => item.message).join("; "));
+  manifest.permissions[0].purpose = "Different purpose"; manifest.externalServiceDecisions[0].evidence = ["made-up.swift"];
+  report = await preflight(root, manifest); assert.ok(report.results.some((item) => item.id.includes("purpose") && item.severity === "block")); assert.ok(report.results.some((item) => item.id.includes("external-decision") && item.severity === "block"));
 });
 
 test("family-specific dimensions, mandatory paid agreements, and remote references block readiness", async () => {
@@ -63,4 +65,27 @@ test("product limits, product-ID characters, and offer matrix are enforced", () 
   product.referenceName = "Example Pro Monthly"; product.localizations["en-US"].description = "x".repeat(46); assert.throws(() => validateManifest(manifest), /Invalid shiplayer/);
   product.localizations["en-US"].description = "Monthly access."; product.reviewNotes = "x".repeat(4001); assert.throws(() => validateManifest(manifest), /Invalid shiplayer/);
   product.reviewNotes = "Tap Upgrade."; (manifest.monetization as unknown as { group: { localizations: Record<string, unknown> } }).group.localizations.invalid = { displayName: "Invalid locale" }; assert.throws(() => validateManifest(manifest), /Invalid shiplayer/);
+});
+
+test("review assets accept supported iPhone capture sizes but never cross family", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-review-family-")); const manifest = readyManifest("non-consumables"); await writeReadyAssets(root, manifest);
+  await writeFile(path.join(root, "review/unlock.png"), png(1179, 2556)); let report = await preflight(root, manifest);
+  assert.equal(report.results.filter((item) => item.id.includes("purchase.com.example.unlock") && item.severity === "block").length, 0);
+  await writeFile(path.join(root, "review/unlock.png"), png(2064, 2752)); report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id.includes("purchase.com.example.unlock.asset-dimensions") && item.severity === "block"));
+});
+
+test("privacy/legal, App Store record, and scanner omissions cannot silently green-light submit readiness", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-submit-gates-")); const manifest = readyManifest(); await writeReadyAssets(root, manifest);
+  manifest.confirmations.privacy = "not-applicable"; manifest.confirmations.legal = "not-applicable"; manifest.app.appStoreAppId = undefined;
+  await writeFile(path.join(root, "oversized.swift"), "x".repeat(1_000_001));
+  const report = await preflight(root, manifest);
+  assert.equal(report.canSubmit, false); assert.ok(report.results.some((item) => item.id === "confirmation.privacy" && item.severity === "block")); assert.ok(report.results.some((item) => item.id === "app.store-id" && item.severity === "block")); assert.ok(report.results.some((item) => item.id === "source.scan-coverage" && item.severity === "block"));
+});
+
+test("assembled App Review notes remain within Apple's pasteable limit", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-review-notes-")); const manifest = readyManifest(); await writeReadyAssets(root, manifest);
+  manifest.review.recordingScenarios = Array.from({ length: 20 }, (_, index) => ({ id: `scenario-${index}`, title: "Review flow", steps: Array.from({ length: 20 }, () => "x".repeat(400)) }));
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "review.notes.length" && item.severity === "block"));
 });

@@ -37,21 +37,21 @@ No command creates a GitHub Action, triggers cloud CI, or uses a paid service.
 
 ## Release package
 
-`prepare` writes a managed `shiplayer-release/` package (or a safe relative `--out`) containing a normalized manifest, analysis/preflight reports, per-locale metadata drafts, App Privacy draft and evidence matrix, privacy/support page drafts, App Review notes, physical-device recording script, screenshot capture plan, neutral marketing-composition hand-off, StoreKit checklist, dry-run ASC plan, and remaining human actions. It refuses traversal, symlinks, the repository root, and unmanaged output directories; managed packages regenerate from staging.
+`prepare` writes a managed `shiplayer-release/` package (or a safe relative `--out`) containing a normalized manifest, analysis/preflight reports, per-locale metadata drafts, App Privacy draft and evidence matrix, privacy/support/Terms-of-Use drafts, App Review notes, physical-device recording script, screenshot capture plan, neutral marketing-composition hand-off, StoreKit checklist, dry-run ASC plan, and remaining human actions. It refuses traversal, symlinks, the repository root, VCS/vendor/build paths, manifest-input collisions, and unmanaged output directories; managed packages regenerate atomically from staging.
 
 ## Safety model
 
-- `shiplayer.yml` contains environment-variable names, never credentials or `.p8` contents.
+- `shiplayer.yml` contains environment-variable names, never credentials or `.p8` contents. It rejects clear private-key/token/password assignment material in free text as a defense-in-depth guard.
 - Heuristics are proposals. Privacy, legal, tax, agreements, trader status, and regulated-content declarations require human confirmation.
 - Remote mode uses an App Store Connect ES256 JWT from `APP_STORE_CONNECT_ISSUER_ID`, `APP_STORE_CONNECT_KEY_ID`, and `APP_STORE_CONNECT_PRIVATE_KEY_PATH`. It never logs private key material.
-- v0.1 implements authenticated discovery reads only. It selects the requested version/build when supplied, follows bounded API pagination, and does not claim it computed a full diff, created an app, uploaded an asset, or submitted for review.
+- v0.1 implements authenticated discovery reads only. It selects the requested iOS version/build when supplied, follows bounded official-API pagination, validates EC P-256 JWT keys, and does not claim it computed a full diff, created an app, uploaded an asset, or submitted for review.
 - Apple UI/human actions remain required for initial app-record creation, agreements, tax/banking, trader declarations, privacy/legal confirmation, final asset review, and final App Review submission.
 
 ## Manifest
 
 The checked-in [JSON Schema](src/schema.json) and runtime validation cover identity, metadata, permissions, processors, review access, screenshot matrices, signing, release settings, and monetization. For subscriptions, provide a group with localized display names, base territory, monthly/yearly (or supported custom) durations, levels, Apple-safe product IDs, product localizations, price references, introductory offers, family sharing, review assets, paywall navigation, restore path, and explicit confirmation. Introductory offers model free trials, pay up front, and pay as you go (including the required number of periods); ShipLayer rejects combinations that do not match Apple's current duration rules.
 
-See [fixtures/subscription-shiplayer.yml](fixtures/subscription-shiplayer.yml) for a complete fictional subscription example.
+See [fixtures/subscription-shiplayer.yml](fixtures/subscription-shiplayer.yml) for a complete fictional subscription example. Subscription output also includes a clearly marked Terms of Use/EULA handoff for either Apple's Standard EULA or human-reviewed custom terms.
 
 ## Architecture and development
 

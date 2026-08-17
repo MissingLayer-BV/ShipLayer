@@ -4,7 +4,7 @@ import path from "node:path";
 
 export const IGNORED_DIRECTORIES = new Set([".git", "node_modules", "Pods", "Carthage", "DerivedData", "build", ".build", "dist", ".swiftpm", "vendor", "release", "shiplayer-release", ".shiplayer-staging"]);
 export const MAX_FILE_BYTES = 1_000_000;
-export const MAX_FILES = 5_000;
+export const MAX_ENTRIES = 5_000;
 
 export async function pathExists(filePath: string): Promise<boolean> { return existsSync(filePath); }
 export async function ensureDirectory(directory: string): Promise<void> { await mkdir(directory, { recursive: true }); }
@@ -12,20 +12,22 @@ export async function readText(filePath: string): Promise<string> { return readF
 export async function writeText(filePath: string, content: string): Promise<void> { await ensureDirectory(path.dirname(filePath)); await writeFile(filePath, content, "utf8"); }
 export async function copyFileTree(from: string, to: string): Promise<void> { await cp(from, to, { recursive: true }); }
 
-export interface WalkResult { files: string[]; ignoredDirectories: string[]; filesOverLimit: number; unreadable: string[]; symlinksIgnored: string[]; truncated: boolean }
+export interface WalkResult { files: string[]; ignoredDirectories: string[]; filesOverLimit: number; unreadable: string[]; symlinksIgnored: string[]; entriesVisited: number; truncated: boolean }
 export async function walkRepository(root: string): Promise<WalkResult> {
-  const files: string[] = []; const ignoredDirectories = new Set<string>(); const unreadable = new Set<string>(); const symlinksIgnored = new Set<string>(); let filesOverLimit = 0; let truncated = false;
+  const files: string[] = []; const ignoredDirectories = new Set<string>(); const unreadable = new Set<string>(); const symlinksIgnored = new Set<string>(); let filesOverLimit = 0; let entriesVisited = 0; let truncated = false;
   async function walk(directory: string): Promise<void> {
-    if (files.length >= MAX_FILES) { truncated = true; return; }
+    if (entriesVisited >= MAX_ENTRIES) { truncated = true; return; }
     let entries; try { entries = await readdir(directory, { withFileTypes: true }); } catch { unreadable.add(relative(root, directory)); return; }
     for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (entriesVisited >= MAX_ENTRIES) { truncated = true; return; }
+      entriesVisited++;
       const absolute = path.join(directory, entry.name); const relative = path.relative(root, absolute);
       if (entry.isSymbolicLink()) { symlinksIgnored.add(relative); continue; }
       if (entry.isDirectory()) { if (IGNORED_DIRECTORIES.has(entry.name) || /^(?:shiplayer-)?release(?:-|$)/.test(entry.name)) { ignoredDirectories.add(relative || entry.name); continue; } await walk(absolute); }
-      else if (entry.isFile()) { try { const details = await stat(absolute); if (details.size > MAX_FILE_BYTES) { filesOverLimit++; continue; } files.push(absolute); if (files.length >= MAX_FILES) { truncated = true; return; } } catch { unreadable.add(relative); } }
+      else if (entry.isFile()) { try { const details = await stat(absolute); if (details.size > MAX_FILE_BYTES) { filesOverLimit++; continue; } files.push(absolute); } catch { unreadable.add(relative); } }
     }
   }
-  await walk(root); return { files, ignoredDirectories: [...ignoredDirectories].sort(), filesOverLimit, unreadable: [...unreadable].sort(), symlinksIgnored: [...symlinksIgnored].sort(), truncated };
+  await walk(root); return { files, ignoredDirectories: [...ignoredDirectories].sort(), filesOverLimit, unreadable: [...unreadable].sort(), symlinksIgnored: [...symlinksIgnored].sort(), entriesVisited, truncated };
 }
 
 export function relative(root: string, filePath: string): string { return path.relative(root, filePath).split(path.sep).join("/"); }

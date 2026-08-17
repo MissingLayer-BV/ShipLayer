@@ -1,10 +1,12 @@
 import path from "node:path";
-import { readFile, readdir } from "node:fs/promises";
+import { lstat, readFile, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import type { CheckResult, PreflightReport, ShipLayerManifest } from "./types.js";
 import { analyzeRepository, findValue } from "./scanner.js";
 import { resolveContained, walkRepository } from "./fs.js";
 import { inspectImage } from "./image.js";
+import { validateAscPrivateKey } from "./asc.js";
+import { appReviewNotes } from "./generator.js";
 
 const IPHONE_SCREENSHOT_DIMENSIONS = new Set([
   "1320x2868", // iPhone 6.9-inch
@@ -17,6 +19,10 @@ const IPAD_SCREENSHOT_DIMENSIONS = new Set([
   "2064x2752", // iPad 13-inch
   "2048x2732" // iPad 12.9-inch
 ]);
+// Storefront decks use the focused current marketing classes above. App Review
+// screenshots may use any supported capture size for a declared device family.
+const IPHONE_REVIEW_SCREENSHOT_DIMENSIONS = new Set([...IPHONE_SCREENSHOT_DIMENSIONS, "1179x2556", "1170x2532", "1125x2436", "1080x2340", "828x1792", "1242x2208", "750x1334", "640x1136"]);
+const IPAD_REVIEW_SCREENSHOT_DIMENSIONS = new Set([...IPAD_SCREENSHOT_DIMENSIONS, "2048x2732", "1668x2388", "1668x2224", "1640x2360", "1536x2048"]);
 const APPLE_CATEGORIES = new Set(["Books", "Business", "Developer Tools", "Education", "Entertainment", "Finance", "Food & Drink", "Games", "Graphics & Design", "Health & Fitness", "Lifestyle", "Magazines & Newspapers", "Medical", "Music", "Navigation", "News", "Photo & Video", "Productivity", "Reference", "Shopping", "Social Networking", "Sports", "Travel", "Utilities", "Weather"]);
 
 type Add = (id: string, severity: CheckResult["severity"], message: string, remediation?: string) => void;
@@ -42,13 +48,16 @@ export async function preflight(repository: string, manifest: ShipLayerManifest,
   if (manifest.contacts.supportEmail) add("contacts.support-email", "pass", "Support email is present.");
   else add("contacts.support-email", "warn", "Support email is absent.", "Add a support email for a real support channel.");
   if (app.appStoreAppId) add("app.store-id", "pass", "App Store Connect app ID is present.");
-  else add("app.store-id", "warn", "App Store Connect app ID is absent; remote discovery cannot target a known record.", "Create the initial app record manually, then add app.appStoreAppId.");
+  else add("app.store-id", "block", "App Store Connect app ID is absent; submission cannot target a confirmed app record.", "Create the initial app record manually, then add app.appStoreAppId.");
 
   const contact = manifest.review.contact;
   addRequired(add, "review.contact", Boolean(contact?.firstName && contact.lastName && contact.email && contact.phone), "App Review contact is incomplete.", "Set first name, last name, email, and phone.");
   const demo = manifest.review.demoAccount;
   if (demo?.required && (!demo.usernameEnv || !demo.passwordEnv || !demo.setupInstructions)) add("review.demo-account", "block", "Demo account is required but secure references or setup instructions are incomplete.", "Set only environment-variable names and setup instructions; never put credentials in the manifest.");
   else add("review.demo-account", "pass", demo?.required ? "Demo account uses secure environment-variable references." : "No login is required.");
+  const generatedReviewNotes = appReviewNotes(manifest);
+  if (generatedReviewNotes.length > 4_000) add("review.notes.length", "block", `Generated App Review notes have ${generatedReviewNotes.length} characters; Apple allows at most 4,000.`, "Shorten review notes, setup instructions, sample data, or scenarios.");
+  else add("review.notes.length", "pass", `Generated App Review notes have ${generatedReviewNotes.length} characters.`);
 
   metadataChecks(manifest, add);
   permissionChecks(manifest, add);
@@ -68,8 +77,8 @@ export async function preflight(repository: string, manifest: ShipLayerManifest,
     if (missingReferences.length || missingValues.length) add("asc.credentials", "block", `Remote App Store Connect discovery lacks ${[...missingReferences, ...missingValues].join(", ")}.`, "Set all three environment-variable references and values locally; never put secrets in shiplayer.yml.");
     else {
       const keyPath = process.env[manifest.sync.privateKeyPathEnv as string] as string;
-      try { if (!(await readFile(keyPath, "utf8")).trim()) throw new Error("empty"); add("asc.credentials", "pass", "Remote App Store Connect credential references and private-key file are readable."); }
-      catch { add("asc.credentials", "block", "Remote App Store Connect private-key path is unreadable.", "Set the private-key path environment variable to a readable local .p8 file; never put key material in shiplayer.yml."); }
+      try { await validateAscPrivateKey(keyPath); add("asc.credentials", "pass", "Remote App Store Connect credential references contain a readable EC P-256 private key."); }
+      catch { add("asc.credentials", "block", "Remote App Store Connect private-key path is unreadable or not an EC P-256 key.", "Set the private-key path environment variable to a readable EC P-256 .p8 file; never put key material in shiplayer.yml."); }
     }
   }
 
@@ -136,7 +145,7 @@ function exportComplianceCheck(manifest: ShipLayerManifest, add: Add): void {
 
 function confirmationChecks(manifest: ShipLayerManifest, add: Add): void {
   for (const [key, value] of Object.entries(manifest.confirmations)) {
-    if (key === "ageRating" && value !== "confirmed") add(`confirmation.${key}`, "block", "The App Store age-rating questionnaire requires explicit human completion.", "Complete the current App Store Connect age-rating questionnaire and confirm it here.");
+    if (["ageRating", "privacy", "legal"].includes(key) && value !== "confirmed") add(`confirmation.${key}`, "block", `${key === "ageRating" ? "The App Store age-rating questionnaire" : `${key[0].toUpperCase()}${key.slice(1)} declaration`} requires explicit human confirmation.`, `Complete and confirm the ${key === "ageRating" ? "current App Store Connect age-rating questionnaire" : key} declaration before submission.`);
     else if (value === "confirmed" || value === "not-applicable") add(`confirmation.${key}`, "pass", `${key} declaration is ${value}.`);
     else add(`confirmation.${key}`, "block", `${key} declaration requires explicit human confirmation.`, "Confirm only after reviewing the App Store Connect/legal requirement.");
   }
@@ -166,6 +175,8 @@ function monetizationChecks(manifest: ShipLayerManifest, add: Add): void {
   addRequired(add, "subscriptions.restore", money.restorePath, "Subscription restore path is missing.", "Describe Restore Purchases path.");
   if (!isHttps(money.termsUrl) || !isHttps(money.privacyUrl)) add("subscriptions.legal-links", "block", "Subscription terms/privacy links must be public HTTPS URLs.", "Set termsUrl and privacyUrl.");
   else add("subscriptions.legal-links", "pass", "Subscription terms and privacy links are declared.");
+  if (money.termsOfUse.confirmation !== "confirmed") add("subscriptions.terms-of-use", "block", "Terms of Use/EULA selection requires human confirmation.", "Choose Apple Standard EULA or custom terms only after legal review.");
+  else add("subscriptions.terms-of-use", "pass", `Subscription Terms of Use is ${money.termsOfUse.type}.`);
   for (const product of money.products) productChecks("subscription", product, manifest.app.locales, add);
 }
 
@@ -228,16 +239,22 @@ async function screenshotChecks(repository: string, manifest: ShipLayerManifest,
 
 async function iconChecks(repository: string, add: Add): Promise<void> {
   const files = (await walkRepository(repository)).files;
-  const iconCatalog = files.find((file) => file.endsWith("AppIcon.appiconset/Contents.json"));
-  if (!iconCatalog) { add("assets.app-icon", "block", "No AppIcon.appiconset was found.", "Add an app icon asset catalog."); return; }
-  add("assets.app-icon", "pass", `App icon asset catalog found at ${path.relative(repository, iconCatalog)}.`);
+  const iconCatalogs = files.filter((file) => file.endsWith("AppIcon.appiconset/Contents.json")).sort();
+  if (!iconCatalogs.length) { add("assets.app-icon", "block", "No AppIcon.appiconset was found.", "Add an app icon asset catalog."); return; }
+  if (iconCatalogs.length > 1) add("assets.app-icon.ambiguous", "block", `Multiple AppIcon catalogs were found (${iconCatalogs.map((item) => path.relative(repository, item)).join(", ")}).`, "Select/model the production target icon catalog before submission.");
+  for (const iconCatalog of iconCatalogs) await validateIconCatalog(repository, files, iconCatalog, add);
+}
+
+async function validateIconCatalog(repository: string, files: string[], iconCatalog: string, add: Add): Promise<void> {
+  const catalogId = path.relative(repository, iconCatalog).replaceAll(path.sep, "/");
+  add(`assets.app-icon.${catalogId}`, "pass", `App icon asset catalog found at ${catalogId}.`);
   const folder = path.dirname(iconCatalog);
   const rasterFiles = files.filter((file) => path.dirname(file) === folder && /\.(png|jpe?g)$/i.test(file));
-  if (!rasterFiles.length) { add("assets.app-icon-images", "block", "The AppIcon asset catalog has no raster image files.", "Add and verify app icon raster assets before upload."); return; }
+  if (!rasterFiles.length) { add(`assets.app-icon-images.${catalogId}`, "block", "The AppIcon asset catalog has no raster image files.", "Add and verify app icon raster assets before upload."); return; }
   try {
     const contents = JSON.parse(await readFile(iconCatalog, "utf8")) as { images?: Array<{ filename?: unknown }> };
     const declared = (contents.images || []).map((image) => image.filename).filter((file): file is string => typeof file === "string" && file.length > 0);
-    if (!declared.length) add("assets.app-icon-declarations", "block", "AppIcon Contents.json does not declare any raster icon filename.", "Generate/assign the required app icon image assets.");
+    if (!declared.length) add(`assets.app-icon-declarations.${catalogId}`, "block", "AppIcon Contents.json does not declare any raster icon filename.", "Generate/assign the required app icon image assets.");
     let validMarketingIcon = false;
     for (const filename of declared) {
       const raster = rasterFiles.find((file) => path.basename(file) === filename);
@@ -247,8 +264,8 @@ async function iconChecks(repository: string, add: Add): Promise<void> {
       if (details.alpha) add(`assets.app-icon.${filename}.alpha`, "block", `App icon ${filename} has transparency.`, "Export a flattened app icon without alpha.");
       if (details.width === 1024 && details.height === 1024 && !details.alpha) validMarketingIcon = true;
     }
-    if (!validMarketingIcon) add("assets.app-icon-marketing", "block", "No declared 1024×1024 opaque App Store app icon was found.", "Declare a valid 1024×1024 flattened icon in AppIcon Contents.json.");
-  } catch { add("assets.app-icon-contents", "block", "AppIcon Contents.json is unreadable or malformed.", "Regenerate the app icon asset catalog."); }
+    if (!validMarketingIcon) add(`assets.app-icon-marketing.${catalogId}`, "block", "No declared 1024×1024 opaque App Store app icon was found.", "Declare a valid 1024×1024 flattened icon in AppIcon Contents.json.");
+  } catch { add(`assets.app-icon-contents.${catalogId}`, "block", "AppIcon Contents.json is unreadable or malformed.", "Regenerate the app icon asset catalog."); }
 }
 
 async function purchaseAssetChecks(repository: string, manifest: ShipLayerManifest, add: Add): Promise<void> {
@@ -275,19 +292,51 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
     else add(`consistency.${key}`, "block", `Manifest ${key} (${expected}) disagrees with source evidence (${detected}).`, "Update the manifest or source setting.");
   };
   compare("bundleId", manifest.app.bundleId); compare("version", manifest.app.version); compare("build", manifest.app.build);
-  const declaredPermissions = new Set(manifest.permissions.map((permission) => permission.key));
+  for (const permission of manifest.permissions) {
+    const evidence = permission.evidence || []; const valid = await validEvidencePaths(repository, evidence);
+    if (evidence.length && valid.size !== evidence.length) add(`manifest.permission.${permission.key}.evidence`, "block", `${permission.key} references missing, symlinked, or out-of-repository evidence.`, "Use only exact contained, regular source files as evidence.");
+  }
+  for (const processor of manifest.externalProcessors) {
+    const evidence = processor.evidence || []; const valid = await validEvidencePaths(repository, evidence);
+    if (evidence.length && valid.size !== evidence.length) add(`manifest.processor.${processor.name}.evidence`, "block", `${processor.name} references missing, symlinked, or out-of-repository evidence.`, "Use only exact contained, regular source files as evidence.");
+  }
+  for (const decision of manifest.externalServiceDecisions) {
+    const valid = await validEvidencePaths(repository, decision.evidence);
+    if (valid.size !== decision.evidence.length) add(`manifest.external-decision.${decision.finding}.evidence`, "block", `External-service decision '${decision.finding}' references missing, symlinked, or out-of-repository evidence.`, "Use only exact contained, regular source files as evidence.");
+  }
   for (const finding of report.findings.filter((item) => item.key.startsWith("permission:"))) {
     const key = finding.key.slice("permission:".length);
-    if (!declaredPermissions.has(key)) add(`source.permission.${key}`, "block", `Source evidence declares ${key}, but the manifest has no matching permission declaration.`, "Add a human-confirmed permission declaration or remove the source capability.");
+    const permission = manifest.permissions.find((item) => item.key === key);
+    if (!permission) { add(`source.permission.${key}`, "block", `Source evidence declares ${key}, but the manifest has no matching permission declaration.`, "Add a human-confirmed permission declaration or remove the source capability."); continue; }
+    const detectedPurposes = stringValues(finding.value); const sourcePaths = new Set(finding.evidence.map((item) => item.source)); const evidence = await validEvidencePaths(repository, permission.evidence || []);
+    if (!detectedPurposes.includes(permission.purpose || "")) add(`source.permission.${key}.purpose`, "block", `${key} purpose differs from the Info.plist evidence.`, "Use the exact user-facing Info.plist purpose string or update the source declaration.");
+    if (!intersects(evidence, sourcePaths)) add(`source.permission.${key}.evidence`, "block", `${key} must cite an existing source evidence file that matches the scanner finding.`, "Reference the matching Info.plist path; evidence must be a contained, non-symlinked file.");
+    else add(`source.permission.${key}.evidence`, "pass", `${key} manifest evidence matches source evidence.`);
   }
   for (const permission of manifest.permissions) if (!report.findings.some((finding) => finding.key === `permission:${permission.key}`) && !(permission.evidence || []).length) add(`manifest.permission.${permission.key}`, "warn", `${permission.key} has no scanner evidence or manifest evidence path.`, "Verify the purpose string and add source evidence if this permission is used.");
   for (const finding of report.findings.filter((item) => item.key.startsWith("thirdPartySdkCandidate:") || item.key === "endpoint")) {
     const findingId = `${finding.key}:${Array.isArray(finding.value) ? finding.value.join(",") : String(finding.value)}`;
     const decision = manifest.externalServiceDecisions.find((item) => item.finding === findingId);
     if (!decision || decision.confirmation !== "confirmed" || !decision.reason || !decision.evidence.length) { add(`source.external.${findingId}`, "block", `Source heuristic '${findingId}' has no confirmed processor/disposition decision.`, "Declare the processor or explicitly record why it is not an external processor, with source evidence."); continue; }
-    if (decision.disposition === "declared-processor" && !manifest.externalProcessors.some((processor) => processor.confirmation === "confirmed" && processor.evidence?.some((evidence) => decision.evidence.includes(evidence)))) add(`source.external.${findingId}`, "block", `Processor decision for '${findingId}' is not linked to a confirmed external processor evidence record.`, "Add the matching external processor with confirmed data categories and evidence.");
-    else add(`source.external.${findingId}`, "pass", `Source heuristic '${findingId}' has a human-confirmed disposition.`);
+    const sourcePaths = new Set(finding.evidence.map((item) => item.source)); const decisionEvidence = await validEvidencePaths(repository, decision.evidence);
+    if (!intersects(decisionEvidence, sourcePaths)) { add(`source.external.${findingId}`, "block", `Disposition for '${findingId}' must cite an existing source evidence file that matches the scanner finding.`, "Reference exact contained, non-symlinked source evidence."); continue; }
+    if (decision.disposition === "declared-processor") {
+      const linkedProcessor = manifest.externalProcessors.find((processor) => processor.confirmation === "confirmed" && intersects(new Set(processor.evidence || []), decisionEvidence));
+      if (!linkedProcessor || !intersects(await validEvidencePaths(repository, linkedProcessor.evidence || []), decisionEvidence)) add(`source.external.${findingId}`, "block", `Processor decision for '${findingId}' is not linked to a confirmed external processor evidence record.`, "Add the matching external processor with confirmed data categories and evidence.");
+      else add(`source.external.${findingId}`, "pass", `Source heuristic '${findingId}' has a human-confirmed processor disposition.`);
+    } else add(`source.external.${findingId}`, "pass", `Source heuristic '${findingId}' has a human-confirmed non-processor disposition.`);
   }
+  const secondary = report.findings.find((finding) => finding.key === "secondaryBundleId");
+  if (secondary) {
+    const sourcePaths = new Set(secondary.evidence.map((item) => item.source));
+    for (const bundleId of stringValues(secondary.value)) {
+      const confirmation = manifest.secondaryTargetConfirmations.find((item) => item.bundleId === bundleId);
+      if (!confirmation || confirmation.confirmation !== "confirmed" || confirmation.classification === "other-app" || !intersects(await validEvidencePaths(repository, confirmation.evidence || []), sourcePaths)) add(`source.secondary-target.${bundleId}`, "block", `Secondary target ${bundleId} needs an evidence-backed human classification as an extension or widget.`, "Confirm the Xcode target type and record a contained source evidence path.");
+      else add(`source.secondary-target.${bundleId}`, "pass", `Secondary target ${bundleId} is confirmed as a ${confirmation.classification}.`);
+    }
+  }
+  if (report.ignored.truncated || report.ignored.filesOverLimit || report.ignored.unreadable.length || report.ignored.symlinksIgnored.length) add("source.scan-coverage", "block", `Source scan omitted ${[report.ignored.truncated ? "a truncated entry set" : "", report.ignored.filesOverLimit ? `${report.ignored.filesOverLimit} oversized file(s)` : "", report.ignored.unreadable.length ? `${report.ignored.unreadable.length} unreadable path(s)` : "", report.ignored.symlinksIgnored.length ? `${report.ignored.symlinksIgnored.length} symlinked path(s)` : ""].filter(Boolean).join(", ")}.`, "Inspect omitted source manually and remove/resolve exclusions before claiming submission readiness.");
+  for (const [index, question] of report.unresolvedQuestions.entries()) add(`source.question.${index + 1}`, "warn", question, "Resolve or record this scanner question during human release review.");
   const storeKit = report.findings.find((finding) => finding.key === "storekitProductId")?.value;
   const sourceIds = new Set(Array.isArray(storeKit) ? storeKit.filter((value): value is string => typeof value === "string") : typeof storeKit === "string" ? [storeKit] : []);
   const manifestIds = new Set(manifest.monetization.type === "subscriptions" || manifest.monetization.type === "non-consumables" ? manifest.monetization.products.map((product) => product.productId) : []);
@@ -295,6 +344,15 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
   for (const id of manifestIds) if (sourceIds.size && !sourceIds.has(id)) add(`manifest.${id}`, "block", `Manifest product ${id} is absent from StoreKit evidence.`);
 }
 
+function stringValues(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : typeof value === "string" ? [value] : []; }
+function intersects(left: Set<string>, right: Set<string>): boolean { return [...left].some((item) => right.has(item)); }
+async function validEvidencePaths(repository: string, evidence: string[]): Promise<Set<string>> {
+  const valid = new Set<string>();
+  for (const value of evidence) {
+    try { const target = await resolveContained(repository, value, "evidence path"); const details = await lstat(target); if (details.isFile() && !details.isSymbolicLink()) valid.add(value); } catch { /* invalid evidence is intentionally excluded */ }
+  }
+  return valid;
+}
 function isFamilyScreenshotDimensions(family: "iphone" | "ipad", width: number, height: number): boolean { const supported = family === "iphone" ? IPHONE_SCREENSHOT_DIMENSIONS : IPAD_SCREENSHOT_DIMENSIONS; return supported.has(`${width}x${height}`) || supported.has(`${height}x${width}`); }
-function isReviewScreenshotDimension(manifest: ShipLayerManifest, width: number, height: number): boolean { return manifest.app.deviceFamilies.some((family) => isFamilyScreenshotDimensions(family, width, height)); }
+function isReviewScreenshotDimension(manifest: ShipLayerManifest, width: number, height: number): boolean { return manifest.app.deviceFamilies.some((family) => { const supported = family === "iphone" ? IPHONE_REVIEW_SCREENSHOT_DIMENSIONS : IPAD_REVIEW_SCREENSHOT_DIMENSIONS; return supported.has(`${width}x${height}`) || supported.has(`${height}x${width}`); }); }
 function sameOrientationOrReverse(width: number, height: number, expectedWidth: number, expectedHeight: number): boolean { return (width === expectedWidth && height === expectedHeight) || (width === expectedHeight && height === expectedWidth); }

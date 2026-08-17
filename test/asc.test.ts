@@ -5,7 +5,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { parse } from "yaml";
-import { AppStoreConnectClient, createJwt, appStorePlan } from "../src/asc.js";
+import { AppStoreConnectClient, createJwt, appStorePlan, validateAscPrivateKey } from "../src/asc.js";
 import type { ShipLayerManifest } from "../src/types.js";
 
 async function keyMaterial(): Promise<{ privateKeyPath: string; publicKey: ReturnType<typeof generateKeyPairSync>["publicKey"] }> { const dir = await mkdtemp(path.join(tmpdir(), "shiplayer-key-")); const pair = generateKeyPairSync("ec", { namedCurve: "prime256v1" }); const privateKeyPath = path.join(dir, "AuthKey_TEST.p8"); await writeFile(privateKeyPath, pair.privateKey.export({ type: "pkcs8", format: "pem" })); return { privateKeyPath, publicKey: pair.publicKey }; }
@@ -26,12 +26,12 @@ test("remote discovery selects IOS version and reads screenshot sets through ver
     const body = url.includes("/apps?") ? { data: [{ id: "app-id" }] }
       : url.includes("/appStoreVersions?") ? { data: [{ id: "mac", attributes: { platform: "MAC_OS", versionString: "1.0" } }, { id: "ios", attributes: { platform: "IOS", versionString: "1.0" } }] }
       : url.includes("/appStoreVersions/ios/appStoreVersionLocalizations") ? { data: [{ id: "localization" }] }
-      : url.includes("/appStoreVersionLocalizations/localization/appScreenshotSets") ? { data: [{ id: "set" }] }
+      : url.includes("/appStoreVersionLocalizations/localization/appScreenshotSets") ? { data: [{ id: "set" }], included: [{ id: "image", type: "appScreenshots" }] }
       : { data: [] };
     return { ok: true, status: 200, text: async () => JSON.stringify(body) };
   });
   const result = await client.discover("com.example.app", { version: "1.0" });
-  assert.equal(result.versions.length, 1); assert.ok(paths.some((item) => item.includes("/appStoreVersionLocalizations/localization/appScreenshotSets"))); assert.ok(!paths.some((item) => item.includes("/appStoreVersions/ios/appScreenshotSets")));
+  assert.equal(result.versions.length, 1); assert.equal(result.screenshotSets.length, 1); assert.equal(result.screenshots.length, 1); assert.ok(paths.some((item) => item.includes("/appStoreVersionLocalizations/localization/appScreenshotSets"))); assert.ok(!paths.some((item) => item.includes("/appStoreVersions/ios/appScreenshotSets")));
 });
 test("remote plan reports read-only discovery", async () => { const manifest = parse(await (await import("node:fs/promises")).readFile(path.resolve("fixtures/subscription-shiplayer.yml"), "utf8")) as ShipLayerManifest; const privateKeyPath = await keyPath(); const plan = await appStorePlan(manifest, true, { APP_STORE_CONNECT_KEY_ID: "kid", APP_STORE_CONNECT_ISSUER_ID: "issuer", APP_STORE_CONNECT_PRIVATE_KEY_PATH: privateKeyPath }, async (url) => ({ ok: true, status: 200, text: async () => url.includes("/apps?") ? JSON.stringify({ data: [] }) : JSON.stringify({ data: [] }) })); assert.equal(plan.mode, "remote"); assert.ok(plan.operations.some((item) => item.action === "manual")); });
 
@@ -68,4 +68,15 @@ test("ASC request timeout is bounded and reports no mutation", async () => {
   });
   const client = new AppStoreConnectClient({ issuerId: "issuer", keyId: "kid", privateKeyPath }, hangingFetcher, 1);
   await assert.rejects(() => client.get("/apps"), /timed out; no changes were made/);
+});
+
+test("ASC never signs or sends a JWT to an untrusted URL and rejects RSA keys", async () => {
+  const privateKeyPath = await keyPath(); let calls = 0;
+  const client = new AppStoreConnectClient({ issuerId: "issuer", keyId: "kid", privateKeyPath }, async () => { calls++; return { ok: true, status: 200, text: async () => "{}" }; });
+  await assert.rejects(() => client.get("https://attacker.example/v1/apps"), /official HTTPS/);
+  await assert.rejects(() => client.get("https://api.appstoreconnect.apple.com/not-v1"), /official HTTPS/);
+  assert.equal(calls, 0);
+  const rsa = generateKeyPairSync("rsa", { modulusLength: 2048 }); const dir = await mkdtemp(path.join(tmpdir(), "shiplayer-rsa-")); const rsaPath = path.join(dir, "key.pem"); await writeFile(rsaPath, rsa.privateKey.export({ type: "pkcs8", format: "pem" }));
+  await assert.rejects(() => validateAscPrivateKey(rsaPath), /EC P-256/);
+  await assert.rejects(() => createJwt({ issuerId: "issuer", keyId: "kid", privateKeyPath: rsaPath }), /EC P-256/);
 });
