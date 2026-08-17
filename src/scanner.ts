@@ -57,7 +57,11 @@ export async function analyzeRepository(repository: string): Promise<AnalysisRep
     if (file.endsWith(".storekit")) { for (const match of content.matchAll(/"productID"\s*:\s*"([^"]+)"/g)) push("storekitProductId", match[1], { source, excerpt: match[0], confidence: "confirmed", kind }); }
     const nativeSource = /\.(swift|m|mm|h)$/.test(file); const webRuntimeSource = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$/.test(file);
     if (nativeSource || webRuntimeSource) {
-      if (nativeSource) for (const framework of APPLE_FRAMEWORKS) if (new RegExp(`\\bimport\\s+${framework}\\b|\\b${framework}\\s*\\.`).test(content)) push(`framework:${framework}`, framework, { source, excerpt: framework, confidence: "medium", kind: "source-heuristic" });
+      if (nativeSource) {
+        for (const framework of APPLE_FRAMEWORKS) if (new RegExp(`\\bimport\\s+${framework}\\b|\\b${framework}\\s*\\.`).test(content)) push(`framework:${framework}`, framework, { source, excerpt: framework, confidence: "medium", kind: "source-heuristic" });
+        if (/\.displayPrice\b|\bProductView\s*\(/.test(content)) push("storekitLocalizedPrice", "StoreKit localized price display", { source, excerpt: content.match(/.{0,80}(?:\.displayPrice\b|\bProductView\s*\().{0,80}/s)?.[0].slice(0, 220), confidence: "high", kind: "source-heuristic" });
+        if (/\.purchase\s*\(/.test(content)) push("storekitPurchaseCall", "StoreKit purchase call", { source, excerpt: content.match(/.{0,80}\.purchase\s*\(.{0,80}/s)?.[0].slice(0, 220), confidence: "high", kind: "source-heuristic" });
+      }
       for (const sdk of THIRD_PARTY_SDK_CANDIDATES) {
         const pattern = nativeSource ? new RegExp(`\\bimport\\s+${sdk}\\b|\\b${sdk}\\s*\\.`) : new RegExp(`(?:\\bimport\\s+(?:[^;\\n]*?\\s+from\\s+)?|\\brequire\\s*\\()?["']${sdk}["']|\\bfrom\\s+["']${sdk}["']`);
         if (pattern.test(content)) push(`thirdPartySdkCandidate:${sdk}`, sdk, { source, excerpt: sdk, confidence: "medium", kind: "source-heuristic" });

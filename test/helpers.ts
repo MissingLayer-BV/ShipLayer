@@ -2,7 +2,21 @@ import { deflateSync } from "node:zlib";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { defaultManifest } from "../src/manifest.js";
-import type { ShipLayerManifest } from "../src/types.js";
+import type { PurchasePresentation, ShipLayerManifest } from "../src/types.js";
+
+export function readyPurchasePresentation(subscription = false): PurchasePresentation {
+  return {
+    localizedPriceSource: "storekit-display-price",
+    localizedPriceVisibleBeforePurchase: true,
+    purchaseDisabledUntilPriceLoaded: true,
+    subscriptionPeriodVisibleBeforePurchase: subscription ? true : "not-applicable",
+    offerTermsVisibleBeforePurchase: subscription ? true : "not-applicable",
+    termsAndPrivacyLinksVisibleBeforePurchase: subscription ? true : "not-applicable",
+    sourceEvidence: ["Sources/Paywall.swift"],
+    testEvidence: ["Tests/PaywallUITests.swift"],
+    confirmation: "confirmed"
+  };
+}
 
 export function png(width: number, height: number, alpha = false): Buffer {
   const channels = alpha ? 4 : 3; const row = Buffer.alloc(1 + width * channels); const raw = Buffer.concat(Array.from({ length: height }, () => row));
@@ -20,8 +34,8 @@ export function readyManifest(type: "free" | "paid-app" | "non-consumables" | "s
   manifest.screenshots.scenarios = [{ id: "home", title: "Home", steps: ["Launch"] }]; manifest.screenshots.configurations = [{ device: "iPhone 16 Pro Max", family: "iphone", locale: "en-US", requiredDimensions: { width: 1320, height: 2868 } }];
   manifest.build = { signing: "automatic", exportCompliance: "exempt", testFlightUpload: false }; manifest.confirmations = { privacy: "confirmed", legal: "confirmed", trader: "confirmed", paidAgreements: "confirmed", ageRating: "confirmed", contentRights: "confirmed" };
   if (type === "paid-app") manifest.monetization = { type: "paid-app", pricePointReference: "P1" };
-  if (type === "non-consumables") manifest.monetization = { type: "non-consumables", paywallNavigation: "Tap Upgrade", restorePath: "Tap Restore Purchases", confirmation: "confirmed", products: [{ productId: "com.example.unlock", referenceName: "Example Unlimited", pricePointReference: "P1", familySharing: true, reviewNotes: "Tap Upgrade.", reviewScreenshot: "review/unlock.png", localizations: { "en-US": { displayName: "Example Unlimited", description: "Unlimited access." } } }] };
-  if (type === "subscriptions") manifest.monetization = { type: "subscriptions", group: { referenceName: "Example Pro", localizations: { "en-US": { displayName: "Example Pro" } } }, baseTerritory: "USA", baseTerritoryConfirmation: "confirmed", paywallNavigation: "Tap Upgrade", restorePath: "Tap Restore Purchases", termsUrl: "https://example.com/terms", termsOfUse: { type: "apple-standard-eula", confirmation: "confirmed" }, privacyUrl: "https://example.com/privacy", disclosureConfirmation: "confirmed", confirmation: "confirmed", products: [{ productId: "com.example.pro.monthly", referenceName: "Example Pro Monthly", duration: "P1M", level: 1, pricePointReference: "P1", familySharing: true, reviewNotes: "Tap Upgrade.", reviewScreenshot: "review/monthly.png", localizations: { "en-US": { displayName: "Example Pro", description: "Monthly access." } }, introductoryOffer: { type: "free-trial", duration: "P3D" } }] };
+  if (type === "non-consumables") manifest.monetization = { type: "non-consumables", paywallNavigation: "Tap Upgrade", restorePath: "Tap Restore Purchases", purchasePresentation: readyPurchasePresentation(), confirmation: "confirmed", products: [{ productId: "com.example.unlock", referenceName: "Example Unlimited", pricePointReference: "P1", familySharing: true, reviewNotes: "Tap Upgrade.", reviewScreenshot: "review/unlock.png", localizations: { "en-US": { displayName: "Example Unlimited", description: "Unlimited access." } } }] };
+  if (type === "subscriptions") manifest.monetization = { type: "subscriptions", group: { referenceName: "Example Pro", localizations: { "en-US": { displayName: "Example Pro" } } }, baseTerritory: "USA", baseTerritoryConfirmation: "confirmed", paywallNavigation: "Tap Upgrade", restorePath: "Tap Restore Purchases", purchasePresentation: readyPurchasePresentation(true), termsUrl: "https://example.com/terms", termsOfUse: { type: "apple-standard-eula", confirmation: "confirmed" }, privacyUrl: "https://example.com/privacy", disclosureConfirmation: "confirmed", confirmation: "confirmed", products: [{ productId: "com.example.pro.monthly", referenceName: "Example Pro Monthly", duration: "P1M", level: 1, pricePointReference: "P1", familySharing: true, reviewNotes: "Tap Upgrade.", reviewScreenshot: "review/monthly.png", localizations: { "en-US": { displayName: "Example Pro", description: "Monthly access." } }, introductoryOffer: { type: "free-trial", duration: "P3D" } }] };
   return manifest;
 }
 
@@ -29,5 +43,9 @@ export async function writeReadyAssets(root: string, manifest: ShipLayerManifest
   await writeFile(path.join(root, "project.yml"), `name: Example\nsettings:\n  base:\n    PRODUCT_BUNDLE_IDENTIFIER: ${manifest.app.bundleId}\n    MARKETING_VERSION: ${manifest.app.version}\n    CURRENT_PROJECT_VERSION: ${manifest.app.build}\n    IPHONEOS_DEPLOYMENT_TARGET: ${manifest.app.deploymentTarget || "17.0"}\n    TARGETED_DEVICE_FAMILY: ${manifest.app.deviceFamilies.map((family) => family === "iphone" ? "1" : "2").join(",")}\n    ITSAppUsesNonExemptEncryption: false\n`);
   const icon = path.join(root, "Assets.xcassets/AppIcon.appiconset"); await mkdir(icon, { recursive: true }); await writeFile(path.join(icon, "Contents.json"), JSON.stringify({ images: [{ filename: "icon.png", idiom: "ios-marketing", size: "1024x1024", scale: "1x" }], info: { version: 1, author: "xcode" } })); await writeFile(path.join(icon, "icon.png"), png(1024, 1024));
   const screenshotDir = path.join(root, manifest.screenshots.rawOutputDir, "iphone", "en-US"); await mkdir(screenshotDir, { recursive: true }); await writeFile(path.join(screenshotDir, "home.png"), png(1320, 2868));
-  if (manifest.monetization.type === "non-consumables" || manifest.monetization.type === "subscriptions") for (const product of manifest.monetization.products) { const target = path.join(root, product.reviewScreenshot); await mkdir(path.dirname(target), { recursive: true }); await writeFile(target, png(1320, 2868)); }
+  if (manifest.monetization.type === "non-consumables" || manifest.monetization.type === "subscriptions") {
+    for (const product of manifest.monetization.products) { const target = path.join(root, product.reviewScreenshot); await mkdir(path.dirname(target), { recursive: true }); await writeFile(target, png(1320, 2868)); }
+    const source = path.join(root, "Sources/Paywall.swift"); await mkdir(path.dirname(source), { recursive: true }); await writeFile(source, "let price = product.displayPrice\nButton(\"Buy for \\(price)\") { Task { try await product.purchase() } }\n");
+    const uiTest = path.join(root, "Tests/PaywallUITests.swift"); await mkdir(path.dirname(uiTest), { recursive: true }); await writeFile(uiTest, "XCTAssertTrue(app.staticTexts[\"paywall.price\"].waitForExistence(timeout: 5))\n");
+  }
 }

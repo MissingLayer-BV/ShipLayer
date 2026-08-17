@@ -42,14 +42,20 @@ No command creates a GitHub Action, triggers cloud CI, or uses a paid service.
 ## Safety model
 
 - `shiplayer.yml` contains environment-variable names, never credentials or `.p8` contents. It rejects clear private-key/token/password assignment material in free text as a defense-in-depth guard.
-- Heuristics are proposals. Privacy, legal, tax, agreements, trader status, and regulated-content declarations require human confirmation.
+- Heuristics are proposals. Privacy, legal, tax, agreements, trader status, and regulated-content declarations require human confirmation. Zero Data Retention, no-training, and provider data-collection controls do not mean personal data was not shared with the service that received it.
 - Remote mode uses an App Store Connect ES256 JWT from `APP_STORE_CONNECT_ISSUER_ID`, `APP_STORE_CONNECT_KEY_ID`, and `APP_STORE_CONNECT_PRIVATE_KEY_PATH`. It never logs private key material.
 - v0.1 implements authenticated discovery reads only. It selects the requested iOS version/build when supplied, follows bounded official-API pagination, validates EC P-256 JWT keys, and does not claim it computed a full diff, created an app, uploaded an asset, or submitted for review. Modern Xcode Icon Composer `.icon` files are supported as a selected asset with an explicit human Xcode/archive verification gate; their private internal format is not parsed.
 - Apple UI/human actions remain required for initial app-record creation, agreements, tax/banking, trader declarations, privacy/legal confirmation, final asset review, and final App Review submission.
 
 ## Manifest
 
-The checked-in [JSON Schema](src/schema.json) and runtime validation cover identity, metadata, permissions, processors, review access, screenshot matrices, signing, release settings, and monetization. For subscriptions, provide a group with localized display names, base territory, monthly/yearly (or supported custom) durations, levels, Apple-safe product IDs, product localizations, price references, introductory offers, family sharing, review assets, paywall navigation, restore path, and explicit confirmation. Introductory offers model free trials, pay up front, and pay as you go (including the required number of periods); ShipLayer rejects combinations that do not match Apple's current duration rules.
+The checked-in [JSON Schema](src/schema.json) and runtime validation cover identity, metadata, permissions, processors, review access, screenshot matrices, signing, release settings, and monetization.
+
+Third-party AI features require an `aiDataSharing` declaration that names the exact data, purpose, and every recipient; evidence of a disclosure shown before transmission; an explicit send action and non-AI decline path; a visible privacy-policy link; and matching policy evidence covering collection, uses, recipients, retention/deletion, and same-or-equal protection. Declaring an AI processor while disabling this section is a submission blocker.
+
+Every non-consumable or subscription requires `purchasePresentation` evidence. The production paywall must load StoreKit `Product`, show `Product.displayPrice` before an enabled purchase control, remain disabled when the product/price is unavailable, and have a UI/snapshot regression test for the visible localized price. Hard-coded prices are blocked. Subscriptions additionally require visible billing period, offer terms when applicable, and Terms/Privacy links before purchase.
+
+For subscriptions, provide a group with localized display names, base territory, monthly/yearly (or supported custom) durations, levels, Apple-safe product IDs, product localizations, price references, introductory offers, family sharing, review assets, paywall navigation, restore path, and explicit confirmation. Introductory offers model free trials, pay up front, and pay as you go (including the required number of periods); ShipLayer rejects combinations that do not match Apple's current duration rules.
 
 See [fixtures/subscription-shiplayer.yml](fixtures/subscription-shiplayer.yml) for a complete fictional subscription example. Subscription output also includes a clearly marked Terms of Use/EULA handoff for either Apple's Standard EULA or human-reviewed custom terms.
 

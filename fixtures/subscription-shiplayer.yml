@@ -39,6 +39,7 @@ dataProcessing:
     usedForTracking: false
     confirmation: confirmed
 externalProcessors: []
+aiDataSharing: {enabled: false}
 externalServiceDecisions: []
 secondaryTargetConfirmations: []
 review:
@@ -101,6 +102,16 @@ monetization:
       reviewScreenshot: review/yearly.png
   paywallNavigation: Open Settings, tap Upgrade, then select a plan.
   restorePath: Open Settings, tap Upgrade, then tap Restore Purchases.
+  purchasePresentation:
+    localizedPriceSource: storekit-display-price
+    localizedPriceVisibleBeforePurchase: true
+    purchaseDisabledUntilPriceLoaded: true
+    subscriptionPeriodVisibleBeforePurchase: true
+    offerTermsVisibleBeforePurchase: true
+    termsAndPrivacyLinksVisibleBeforePurchase: true
+    sourceEvidence: [ReceiptLoop/PaywallView.swift]
+    testEvidence: [ReceiptLoopUITests/PaywallUITests.swift]
+    confirmation: confirmed
   termsUrl: https://example.com/terms
   termsOfUse: {type: apple-standard-eula, confirmation: confirmed}
   privacyUrl: https://example.com/privacy

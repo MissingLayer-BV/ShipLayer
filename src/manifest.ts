@@ -19,7 +19,7 @@ const ISO_TERRITORIES = new Set("AFG ALB DZA ASM AND AGO AIA ATA ATG ARG ARM ABW
 export function manifestPath(repo: string): string { return path.join(repo, "shiplayer.yml"); }
 export function defaultManifest(input: Partial<ShipLayerManifest["app"]> = {}): ShipLayerManifest {
   const app = { name: input.name || "", bundleId: input.bundleId || "", deviceFamilies: input.deviceFamilies || ["iphone", "ipad"], locales: input.locales || ["en-US"], primaryLocale: input.primaryLocale || "en-US", availability: input.availability || "all", releaseMode: input.releaseMode || "manual", ...input } as ShipLayerManifest["app"];
-  return { schemaVersion: 1, app, contacts: {}, metadata: { localizations: { [app.primaryLocale]: {} } }, permissions: [], dataProcessing: [], externalProcessors: [], externalServiceDecisions: [], secondaryTargetConfirmations: [], review: { demoAccount: { required: false }, recordingScenarios: [] }, screenshots: { scenarios: [], configurations: screenshotConfigs(app.primaryLocale, app.deviceFamilies), rawOutputDir: "release/raw-screenshots", marketingProjectPath: "design/app-store-screenshots" }, monetization: { type: "free" }, build: { signing: "unknown", exportCompliance: "unknown", testFlightUpload: false }, sync: { mode: "dry-run", appStoreConnectKeyIdEnv: "APP_STORE_CONNECT_KEY_ID", issuerIdEnv: "APP_STORE_CONNECT_ISSUER_ID", privateKeyPathEnv: "APP_STORE_CONNECT_PRIVATE_KEY_PATH" }, confirmations: { privacy: "needs-human-confirmation", legal: "needs-human-confirmation", trader: "needs-human-confirmation", paidAgreements: "needs-human-confirmation", ageRating: "needs-human-confirmation", contentRights: "needs-human-confirmation" } };
+  return { schemaVersion: 1, app, contacts: {}, metadata: { localizations: { [app.primaryLocale]: {} } }, permissions: [], dataProcessing: [], externalProcessors: [], aiDataSharing: { enabled: false }, externalServiceDecisions: [], secondaryTargetConfirmations: [], review: { demoAccount: { required: false }, recordingScenarios: [] }, screenshots: { scenarios: [], configurations: screenshotConfigs(app.primaryLocale, app.deviceFamilies), rawOutputDir: "release/raw-screenshots", marketingProjectPath: "design/app-store-screenshots" }, monetization: { type: "free" }, build: { signing: "unknown", exportCompliance: "unknown", testFlightUpload: false }, sync: { mode: "dry-run", appStoreConnectKeyIdEnv: "APP_STORE_CONNECT_KEY_ID", issuerIdEnv: "APP_STORE_CONNECT_ISSUER_ID", privateKeyPathEnv: "APP_STORE_CONNECT_PRIVATE_KEY_PATH" }, confirmations: { privacy: "needs-human-confirmation", legal: "needs-human-confirmation", trader: "needs-human-confirmation", paidAgreements: "needs-human-confirmation", ageRating: "needs-human-confirmation", contentRights: "needs-human-confirmation" } };
 }
 
 function screenshotConfigs(locale: string, families: Array<"iphone" | "ipad">): ShipLayerManifest["screenshots"]["configurations"] {
@@ -66,6 +66,7 @@ export function validateManifest(candidate: unknown): asserts candidate is ShipL
   requireHttpsUrl("contacts.supportUrl", manifest.contacts.supportUrl);
   requireHttpsUrl("contacts.marketingUrl", manifest.contacts.marketingUrl);
   requireHttpsUrl("contacts.privacyUrl", manifest.contacts.privacyUrl);
+  for (const processor of manifest.externalProcessors) requireHttpsUrl(`external processor ${processor.name} privacyPolicyUrl`, processor.privacyPolicyUrl);
   for (const locale of manifest.app.locales) if (!APPLE_LOCALES.has(locale)) errors.push(`app.locales contains unsupported App Store localization '${locale}'`);
   const validateLocalizationMap = (label: string, localizations: Record<string, unknown>): void => {
     for (const locale of Object.keys(localizations)) {
@@ -89,6 +90,9 @@ export function validateManifest(candidate: unknown): asserts candidate is ShipL
     for (const locale of manifest.app.locales) if (!product.localizations[locale]) errors.push(`non-consumable ${product.productId} needs ${locale} localization`);
     try { safeRelativePath(product.reviewScreenshot, `review screenshot for ${product.productId}`); } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
   }
+  if (manifest.monetization.type === "non-consumables" || manifest.monetization.type === "subscriptions") {
+    for (const evidence of [...manifest.monetization.purchasePresentation.sourceEvidence, ...manifest.monetization.purchasePresentation.testEvidence]) try { safeRelativePath(evidence, "purchase presentation evidence"); } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
+  }
   const duplicateScenario = (label: string, scenarios: ShipLayerManifest["screenshots"]["scenarios"]): void => { const values = new Set<string>(); for (const scenario of scenarios) { if (values.has(scenario.id)) errors.push(`duplicate ${label} scenario ID '${scenario.id}'`); values.add(scenario.id); } };
   duplicateScenario("screenshot", manifest.screenshots.scenarios); duplicateScenario("review", manifest.review.recordingScenarios);
   if (manifest.monetization.type === "subscriptions") {
@@ -109,6 +113,15 @@ export function validateManifest(candidate: unknown): asserts candidate is ShipL
       if (offer?.type === "pay-as-you-go") { const maximum: Record<string, number> = { P1W: 12, P1M: 12, P2M: 6, P3M: 4, P6M: 2, P1Y: 1 }; if (offer.duration !== product.duration || !offer.numberOfPeriods || offer.numberOfPeriods > maximum[product.duration]) errors.push(`pay-as-you-go ${product.productId} must use the product duration with numberOfPeriods in the allowed range`); }
     }
   }
+  if (manifest.monetization.type === "non-consumables") {
+    const presentation = manifest.monetization.purchasePresentation;
+    if (presentation.subscriptionPeriodVisibleBeforePurchase !== "not-applicable" || presentation.offerTermsVisibleBeforePurchase !== "not-applicable" || presentation.termsAndPrivacyLinksVisibleBeforePurchase !== "not-applicable") errors.push("non-consumable purchase presentation must mark subscription-only disclosures not-applicable");
+  }
+  if (manifest.monetization.type === "subscriptions") {
+    const presentation = manifest.monetization.purchasePresentation;
+    if (presentation.subscriptionPeriodVisibleBeforePurchase !== true || presentation.termsAndPrivacyLinksVisibleBeforePurchase !== true) errors.push("subscription purchase presentation must show billing period plus Terms and Privacy links before purchase");
+    if (manifest.monetization.products.some((product) => product.introductoryOffer) && presentation.offerTermsVisibleBeforePurchase !== true) errors.push("subscription introductory-offer terms must be visible before purchase");
+  }
   const unique = (label: string, values: string[]): void => { if (new Set(values).size !== values.length) errors.push(`${label} must not contain duplicates`); };
   unique("dataProcessing categories", manifest.dataProcessing.map((item) => item.category));
   unique("external processor names", manifest.externalProcessors.map((item) => item.name));
@@ -116,6 +129,14 @@ export function validateManifest(candidate: unknown): asserts candidate is ShipL
   unique("secondary target confirmations", manifest.secondaryTargetConfirmations.map((item) => item.bundleId));
   for (const item of manifest.dataProcessing) { unique(`dataProcessing ${item.category} purposes`, item.purpose); unique(`dataProcessing ${item.category} evidence`, item.evidence || []); }
   for (const item of manifest.externalProcessors) { unique(`external processor ${item.name} data categories`, item.dataCategories); unique(`external processor ${item.name} evidence`, item.evidence || []); }
+  if (manifest.aiDataSharing.enabled) {
+    unique("AI dataSent entries", manifest.aiDataSharing.dataSent);
+    unique("AI processorNames", manifest.aiDataSharing.processorNames);
+    unique("AI consent evidence", manifest.aiDataSharing.consent.evidence);
+    unique("AI privacy-policy evidence", manifest.aiDataSharing.privacyPolicy.evidence);
+    for (const evidence of [...manifest.aiDataSharing.consent.evidence, ...manifest.aiDataSharing.privacyPolicy.evidence]) try { safeRelativePath(evidence, "AI disclosure evidence"); } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
+    if (/^(?:continue|next|ok|yes)$/i.test(manifest.aiDataSharing.consent.affirmativeAction.trim())) errors.push("AI consent affirmativeAction must clearly say data will be sent, not use a generic Continue/OK label");
+  }
   for (const item of manifest.externalServiceDecisions) unique(`external service decision ${item.finding} evidence`, item.evidence);
   for (const item of manifest.secondaryTargetConfirmations) unique(`secondary target ${item.bundleId} evidence`, item.evidence);
   collectSecrets(manifest, "", errors);
