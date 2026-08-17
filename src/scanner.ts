@@ -25,24 +25,28 @@ export async function analyzeRepository(repository: string): Promise<AnalysisRep
   };
   const scanText = async (file: string): Promise<void> => {
     const content = await readText(file); const source = relative(root, file);
-    const kind: Evidence["kind"] = file.endsWith("Info.plist") ? "plist" : file.endsWith(".entitlements") ? "entitlement" : file.endsWith("PrivacyInfo.xcprivacy") ? "privacy-manifest" : file.endsWith(".storekit") ? "storekit" : file.endsWith("project.yml") || file.endsWith(".pbxproj") || file.endsWith(".xcconfig") ? "project-setting" : "source-heuristic";
-    const matched = (regex: RegExp, key: string): void => { for (const match of content.matchAll(regex)) push(key, match[1].trim(), { source, excerpt: match[0].slice(0, 220), confidence: kind === "source-heuristic" ? "medium" : "high", kind }); };
-    matched(/PRODUCT_BUNDLE_IDENTIFIER\s*=\s*([^;\n]+)/g, "bundleId");
-    matched(/MARKETING_VERSION\s*=\s*([^;\n]+)/g, "version"); matched(/CURRENT_PROJECT_VERSION\s*=\s*([^;\n]+)/g, "build"); matched(/IPHONEOS_DEPLOYMENT_TARGET\s*=\s*([^;\n]+)/g, "deploymentTarget"); matched(/TARGETED_DEVICE_FAMILY\s*=\s*([^;\n]+)/g, "deviceFamily");
-    for (const permission of PERMISSION_KEYS) {
-      const escaped = permission.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const purposePattern = new RegExp(`INFOPLIST_KEY_${escaped}\\s*(?:=|:)\\s*(?:\\\"([^\\\"]*)\\\"|'([^']*)'|([^;\\n]+))`, "g");
-      for (const match of content.matchAll(purposePattern)) {
-        const purpose = (match[1] || match[2] || match[3] || "").trim();
-        if (purpose && !/\$\([^)]*\)/.test(purpose)) push(`permission:${permission}`, purpose, { source, excerpt: `${permission}: ${purpose}`.slice(0, 220), confidence: "high", kind });
+    const projectSettingSource = file.endsWith("project.yml") || file.endsWith(".pbxproj") || file.endsWith(".xcconfig");
+    const kind: Evidence["kind"] = file.endsWith("Info.plist") ? "plist" : file.endsWith(".entitlements") ? "entitlement" : file.endsWith("PrivacyInfo.xcprivacy") ? "privacy-manifest" : file.endsWith(".storekit") ? "storekit" : projectSettingSource ? "project-setting" : "source-heuristic";
+    const productionSettings = projectSettingSource ? productionSettingText(file, content, source, questions) : content;
+    const matched = (regex: RegExp, key: string, input = content): void => { for (const match of input.matchAll(regex)) push(key, match[1].trim(), { source, excerpt: match[0].slice(0, 220), confidence: kind === "source-heuristic" ? "medium" : "high", kind }); };
+    if (projectSettingSource) {
+      matched(/PRODUCT_BUNDLE_IDENTIFIER\s*=\s*([^;\n]+)/g, "bundleId", productionSettings);
+      matched(/MARKETING_VERSION\s*=\s*([^;\n]+)/g, "version", productionSettings); matched(/CURRENT_PROJECT_VERSION\s*=\s*([^;\n]+)/g, "build", productionSettings); matched(/IPHONEOS_DEPLOYMENT_TARGET\s*=\s*([^;\n]+)/g, "deploymentTarget", productionSettings); matched(/TARGETED_DEVICE_FAMILY\s*=\s*([^;\n]+)/g, "deviceFamily", productionSettings);
+      for (const permission of PERMISSION_KEYS) {
+        const escaped = permission.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const purposePattern = new RegExp(`INFOPLIST_KEY_${escaped}\\s*(?:=|:)\\s*(?:\\\"([^\\\"]*)\\\"|'([^']*)'|([^;\\n]+))`, "g");
+        for (const match of productionSettings.matchAll(purposePattern)) {
+          const purpose = (match[1] || match[2] || match[3] || "").trim();
+          if (purpose && !/\$\([^)]*\)/.test(purpose)) push(`permission:${permission}`, purpose, { source, excerpt: `${permission}: ${purpose}`.slice(0, 220), confidence: "high", kind });
+        }
+      }
+      for (const match of productionSettings.matchAll(/INFOPLIST_KEY_ITSAppUsesNonExemptEncryption\s*(?:=|:)\s*(YES|NO|true|false)\b/gi)) {
+        const declared = /^(?:YES|true)$/i.test(match[1]) ? "true" : "false";
+        push("encryption", declared, { source, excerpt: "INFOPLIST_KEY_ITSAppUsesNonExemptEncryption", confidence: "high", kind });
       }
     }
-    for (const match of content.matchAll(/INFOPLIST_KEY_ITSAppUsesNonExemptEncryption\s*(?:=|:)\s*(YES|NO|true|false)\b/gi)) {
-      const declared = /^(?:YES|true)$/i.test(match[1]) ? "true" : "false";
-      push("encryption", declared, { source, excerpt: "INFOPLIST_KEY_ITSAppUsesNonExemptEncryption", confidence: "high", kind });
-    }
     if (file.endsWith("project.yml")) {
-      try { const yaml = parse(content) as Record<string, unknown>; const appName = typeof yaml.name === "string" ? yaml.name : undefined; if (appName) push("appName", appName, { source, excerpt: `name: ${appName}`, confidence: "high", kind: "project-setting" }); for (const key of ["PRODUCT_BUNDLE_IDENTIFIER", "MARKETING_VERSION", "CURRENT_PROJECT_VERSION", "IPHONEOS_DEPLOYMENT_TARGET"]) { const regex = new RegExp(`${key}["']?\\s*:\\s*["']?([^,}\\n"']+)`, "g"); matched(regex, ({ PRODUCT_BUNDLE_IDENTIFIER: "bundleId", MARKETING_VERSION: "version", CURRENT_PROJECT_VERSION: "build", IPHONEOS_DEPLOYMENT_TARGET: "deploymentTarget" } as Record<string, string>)[key]); } matched(/TARGETED_DEVICE_FAMILY["']?\s*:\s*["']?([0-9,]+)/g, "deviceFamily"); const encryption = content.match(/(?:INFOPLIST_KEY_)?ITSAppUsesNonExemptEncryption\s*:\s*(true|false|YES|NO)\b/i)?.[1]; if (encryption) push("encryption", /^(?:true|YES)$/i.test(encryption) ? "true" : "false", { source, excerpt: "ITSAppUsesNonExemptEncryption", confidence: "high", kind: "project-setting" }); else if (content.includes("ITSAppUsesNonExemptEncryption")) push("encryption", "declared", { source, confidence: "medium", kind: "project-setting" }); } catch { questions.add(`Could not parse ${source}; verify project settings manually.`); }
+      try { const yaml = parse(content) as Record<string, unknown>; const appName = typeof yaml.name === "string" ? yaml.name : undefined; if (appName) push("appName", appName, { source, excerpt: `name: ${appName}`, confidence: "high", kind: "project-setting" }); for (const key of ["PRODUCT_BUNDLE_IDENTIFIER", "MARKETING_VERSION", "CURRENT_PROJECT_VERSION", "IPHONEOS_DEPLOYMENT_TARGET"]) { const regex = new RegExp(`${key}["']?\\s*:\\s*["']?([^,}\\n"']+)`, "g"); matched(regex, ({ PRODUCT_BUNDLE_IDENTIFIER: "bundleId", MARKETING_VERSION: "version", CURRENT_PROJECT_VERSION: "build", IPHONEOS_DEPLOYMENT_TARGET: "deploymentTarget" } as Record<string, string>)[key], productionSettings); } matched(/TARGETED_DEVICE_FAMILY["']?\s*:\s*["']?([0-9,]+)/g, "deviceFamily", productionSettings); const encryption = productionSettings.match(/(?:INFOPLIST_KEY_)?ITSAppUsesNonExemptEncryption\s*:\s*(true|false|YES|NO)\b/i)?.[1]; if (encryption) push("encryption", /^(?:true|YES)$/i.test(encryption) ? "true" : "false", { source, excerpt: "ITSAppUsesNonExemptEncryption", confidence: "high", kind: "project-setting" }); else if (productionSettings.includes("ITSAppUsesNonExemptEncryption")) push("encryption", "declared", { source, confidence: "medium", kind: "project-setting" }); } catch { questions.add(`Could not parse ${source}; verify project settings manually.`); }
     }
     if (file.endsWith("Info.plist")) {
       for (const key of PERMISSION_KEYS) { const regex = new RegExp(`<key>${key}</key>\\s*<string>([^<]*)</string>`, "g"); for (const match of content.matchAll(regex)) push(`permission:${key}`, match[1], { source, excerpt: match[0], confidence: "confirmed", kind }); }
@@ -61,7 +65,7 @@ export async function analyzeRepository(repository: string): Promise<AnalysisRep
         const dynamicAt = match[0].indexOf("${");
         const literal = dynamicAt >= 0 ? match[0].slice(0, dynamicAt) : match[0];
         const endpoint = normalizeEndpoint(literal.replace(/[),.;]+$/, ""));
-        if (!endpoint) continue;
+        if (!endpoint) { questions.add(`${source} contains a malformed HTTP(S) endpoint literal; inspect the contained source manually.`); continue; }
         push("endpoint", endpoint, { source, excerpt: `Endpoint: ${endpoint}`, confidence: "low", kind: "source-heuristic" });
         if (dynamicAt >= 0) questions.add(`${source} contains a dynamic endpoint expression beginning ${endpoint}; verify the resolved destination manually.`);
       }
@@ -116,6 +120,20 @@ export async function analyzeRepository(repository: string): Promise<AnalysisRep
 
 function isTestOnlySource(source: string): boolean { const parts = source.split("/"); const basename = parts.at(-1) || ""; return parts.some((component) => /(?:UI)?Tests$|^(?:scripts?|benchmarks?)$/i.test(component)) || /(?:\.test|\.spec)\.[cm]?[jt]sx?$/i.test(basename) || /(?:UI)?Tests?\.xcconfig$/i.test(basename); }
 function isScannerToolingSource(source: string): boolean { const parts = source.split("/"); return parts.includes("app-store-screenshots") || (parts.at(-1) || "").endsWith(".d.ts"); }
+function productionSettingText(file: string, content: string, source: string, questions: Set<string>): string {
+  if (file.endsWith(".xcconfig") && isAlternateConfigurationName(path.basename(file))) {
+    questions.add(`Excluded alternate build configuration ${source} from production release-setting inference.`);
+    return "";
+  }
+  if (!file.endsWith(".pbxproj")) return stripProjectSettingComments(content);
+  const configurations = [...content.matchAll(/\/\*\s*([^*]+?)\s*\*\/\s*=\s*\{[\s\S]*?buildSettings\s*=\s*\{([\s\S]*?)\};[\s\S]*?name\s*=\s*([^;]+);/g)];
+  if (!configurations.length) return stripProjectSettingComments(content);
+  const alternate = configurations.filter((match) => isAlternateConfigurationName(match[3].trim()) || isAlternateConfigurationName(match[1].trim()));
+  if (alternate.length) questions.add(`Excluded alternate Xcode build configuration(s) ${alternate.map((match) => match[3].trim() || match[1].trim()).sort().join(", ")} from production release-setting inference.`);
+  return stripProjectSettingComments(configurations.filter((match) => !alternate.includes(match)).map((match) => match[2]).join("\n"));
+}
+function isAlternateConfigurationName(name: string): boolean { return /(?:^|[ _.-])(?:debug|staging|development|dev)(?:$|[ _.-])/i.test(name) || /^(?:debug|staging|development|dev)$/i.test(name); }
+function stripProjectSettingComments(content: string): string { return content.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|\s)\/\/.*$/gm, "$1"); }
 function normalizeEndpoint(value: string): string {
   const raw = value.trim().replace(/[),.;`]+$/, "");
   try {
@@ -127,10 +145,7 @@ function normalizeEndpoint(value: string): string {
     const parameterNames = [...new Set([...url.searchParams.keys()])].sort();
     const query = parameterNames.length ? `?${parameterNames.map((name) => encodeURIComponent(name)).join("&")}` : "";
     return `${url.protocol.toLowerCase()}//${url.host.toLowerCase()}${redactedEndpointPath(url.pathname)}${query}`;
-  } catch {
-    const withoutFragmentOrQuery = raw.replace(/[?#][\s\S]*$/, "").replace(/\/\/[^/@]*@/, "//");
-    return withoutFragmentOrQuery;
-  }
+  } catch { return ""; }
 }
 function redactedEndpointPath(pathname: string): string {
   const segments = pathname.split("/");
