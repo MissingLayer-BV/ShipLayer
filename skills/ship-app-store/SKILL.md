@@ -15,7 +15,7 @@ Use the repository's `shiplayer` CLI for all deterministic work. Do not recreate
 4. Update and validate `shiplayer.yml`, then run `shiplayer prepare <repo>` and `shiplayer check <repo>`.
 5. Preview every generated screenshot, metadata field, privacy/support page, review note, and preflight warning with the user.
 6. Run `shiplayer plan <repo>` first. Use `--remote` only with the user's credentials configured as environment variables; it is read-only.
-7. Treat `apply` and `submit` as separate explicit user-authorized gates. Do not pass their confirmation flags on the user's behalf. If ShipLayer marks an operation manual/unsupported, explain that it did not happen.
+7. Treat `apply` and `submit` as separate explicit user-authorized gates. Do not pass their confirmation flags on the user's behalf. In v0.1 explicit execution reports a manual/unsupported handoff and exits 3; explain that no operation happened.
 
 ## Safety
 

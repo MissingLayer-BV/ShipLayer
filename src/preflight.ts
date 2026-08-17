@@ -6,14 +6,18 @@ import { analyzeRepository, findValue } from "./scanner.js";
 import { resolveContained, walkRepository } from "./fs.js";
 import { inspectImage } from "./image.js";
 
-const APPLE_SCREENSHOT_DIMENSIONS = new Set([
+const IPHONE_SCREENSHOT_DIMENSIONS = new Set([
   "1320x2868", // iPhone 6.9-inch
+  "1290x2796", // iPhone 6.9-inch
   "1260x2736", // iPhone 6.7-inch
   "1242x2688", // iPhone 6.5-inch
-  "1284x2778", // iPhone 6.5-inch legacy
+  "1284x2778" // iPhone 6.5-inch legacy
+]);
+const IPAD_SCREENSHOT_DIMENSIONS = new Set([
   "2064x2752", // iPad 13-inch
   "2048x2732" // iPad 12.9-inch
 ]);
+const APPLE_CATEGORIES = new Set(["Books", "Business", "Developer Tools", "Education", "Entertainment", "Finance", "Food & Drink", "Games", "Graphics & Design", "Health & Fitness", "Lifestyle", "Magazines & Newspapers", "Medical", "Music", "Navigation", "News", "Photo & Video", "Productivity", "Reference", "Shopping", "Social Networking", "Sports", "Travel", "Utilities", "Weather"]);
 
 type Add = (id: string, severity: CheckResult["severity"], message: string, remediation?: string) => void;
 
@@ -26,6 +30,8 @@ export async function preflight(repository: string, manifest: ShipLayerManifest,
   addRequired(add, "app.bundle-id", app.bundleId, "Bundle ID is missing.", "Confirm the production bundle ID.");
   addRequired(add, "build.version", Boolean(app.version && app.build), "Version or build is missing.", "Confirm the archive version/build before upload.");
   addRequired(add, "app.primary-category", app.primaryCategory, "Primary App Store category is missing.", "Choose app.primaryCategory.");
+  if (app.primaryCategory && !APPLE_CATEGORIES.has(app.primaryCategory)) add("app.primary-category.allowed", "block", `${app.primaryCategory} is not an Apple App Store primary category.`, "Choose an Apple category name from the current App Store Connect list.");
+  if (app.secondaryCategory && !APPLE_CATEGORIES.has(app.secondaryCategory)) add("app.secondary-category.allowed", "block", `${app.secondaryCategory} is not an Apple App Store secondary category.`, "Choose an Apple category name from the current App Store Connect list.");
   addRequired(add, "contacts.support-url", isHttps(manifest.contacts.supportUrl), "A public HTTPS Support URL is required.", "Set contacts.supportUrl.");
   addRequired(add, "contacts.privacy-url", isHttps(manifest.contacts.privacyUrl), "A public HTTPS Privacy Policy URL is required.", "Set contacts.privacyUrl after legal review.");
   addRequired(add, "contacts.copyright", manifest.contacts.copyright, "Copyright is missing.", "Set contacts.copyright.");
@@ -56,10 +62,15 @@ export async function preflight(repository: string, manifest: ShipLayerManifest,
   await sourceConsistencyChecks(repository, manifest, add);
 
   if (remoteRequested) {
-    const references = [manifest.sync.appStoreConnectKeyIdEnv, manifest.sync.issuerIdEnv, manifest.sync.privateKeyPathEnv].filter((value): value is string => Boolean(value));
-    const missing = references.filter((name) => !process.env[name]);
-    if (missing.length) add("asc.credentials", "block", `Remote App Store Connect discovery is missing environment variables: ${missing.join(", ")}.`, "Set them locally; never put secrets in shiplayer.yml.");
-    else add("asc.credentials", "pass", "Remote App Store Connect credential references are available.");
+    const pairs = [["key ID", manifest.sync.appStoreConnectKeyIdEnv], ["issuer ID", manifest.sync.issuerIdEnv], ["private-key path", manifest.sync.privateKeyPathEnv]] as const;
+    const missingReferences = pairs.filter(([, reference]) => !reference).map(([label]) => label);
+    const missingValues = pairs.filter(([, reference]) => reference && !process.env[reference]).map(([, reference]) => reference as string);
+    if (missingReferences.length || missingValues.length) add("asc.credentials", "block", `Remote App Store Connect discovery lacks ${[...missingReferences, ...missingValues].join(", ")}.`, "Set all three environment-variable references and values locally; never put secrets in shiplayer.yml.");
+    else {
+      const keyPath = process.env[manifest.sync.privateKeyPathEnv as string] as string;
+      try { if (!(await readFile(keyPath, "utf8")).trim()) throw new Error("empty"); add("asc.credentials", "pass", "Remote App Store Connect credential references and private-key file are readable."); }
+      catch { add("asc.credentials", "block", "Remote App Store Connect private-key path is unreadable.", "Set the private-key path environment variable to a readable local .p8 file; never put key material in shiplayer.yml."); }
+    }
   }
 
   const summary = summarize(results);
@@ -125,7 +136,8 @@ function exportComplianceCheck(manifest: ShipLayerManifest, add: Add): void {
 
 function confirmationChecks(manifest: ShipLayerManifest, add: Add): void {
   for (const [key, value] of Object.entries(manifest.confirmations)) {
-    if (value === "confirmed" || value === "not-applicable") add(`confirmation.${key}`, "pass", `${key} declaration is ${value}.`);
+    if (key === "ageRating" && value !== "confirmed") add(`confirmation.${key}`, "block", "The App Store age-rating questionnaire requires explicit human completion.", "Complete the current App Store Connect age-rating questionnaire and confirm it here.");
+    else if (value === "confirmed" || value === "not-applicable") add(`confirmation.${key}`, "pass", `${key} declaration is ${value}.`);
     else add(`confirmation.${key}`, "block", `${key} declaration requires explicit human confirmation.`, "Confirm only after reviewing the App Store Connect/legal requirement.");
   }
   for (const item of [...manifest.dataProcessing, ...manifest.externalProcessors]) {
@@ -140,6 +152,7 @@ function confirmationChecks(manifest: ShipLayerManifest, add: Add): void {
 function monetizationChecks(manifest: ShipLayerManifest, add: Add): void {
   const money = manifest.monetization;
   if (money.type === "free") { add("monetization", "pass", "Free app with no declared IAP."); return; }
+  if (manifest.confirmations.paidAgreements !== "confirmed") add("confirmation.paidAgreements", "block", "Paid Apps agreement must be explicitly confirmed for paid monetization.", "Activate and confirm the Paid Apps agreement, tax, banking, and applicable business information.");
   if (money.type === "paid-app") { add("monetization", "pass", `Paid app price point ${money.pricePointReference} is declared.`); return; }
   if (money.type === "non-consumables") {
     addRequired(add, "iap.confirmation", money.confirmation === "confirmed", "Non-consumable configuration needs human confirmation.", "Confirm price, availability, paywall, restore, and review assets.");
@@ -175,7 +188,7 @@ function screenshotConfigurationChecks(manifest: ShipLayerManifest, add: Add): v
     if (!manifest.app.deviceFamilies.includes(config.family)) add(`screenshots.${key}.unsupported-family`, "block", `${config.family} screenshots are configured but the app does not declare that device family.`);
     if (!manifest.app.locales.includes(config.locale)) add(`screenshots.${key}.unsupported-locale`, "block", `${config.locale} screenshots are configured but app.locales does not include it.`);
     const dimensions = `${config.requiredDimensions.width}x${config.requiredDimensions.height}`;
-    if (!isAcceptedScreenshotDimensions(config.requiredDimensions.width, config.requiredDimensions.height)) add(`screenshots.${key}.accepted-dimensions`, "block", `${dimensions} is not one of ShipLayer's supported Apple screenshot dimensions.`, "Use a supported device class or update ShipLayer after verifying Apple's current requirements.");
+    if (!isFamilyScreenshotDimensions(config.family, config.requiredDimensions.width, config.requiredDimensions.height)) add(`screenshots.${key}.accepted-dimensions`, "block", `${dimensions} is not a supported ${config.family} App Store screenshot dimension.`, "Use a supported device class or update ShipLayer after verifying Apple's current requirements.");
   }
   for (const family of manifest.app.deviceFamilies) {
     if (!manifest.screenshots.configurations.some((item) => item.family === family && item.locale === manifest.app.primaryLocale)) add(`screenshots.${family}.${manifest.app.primaryLocale}`, "block", `No primary-locale screenshot configuration exists for supported ${family}.`, "Add actual App Store screenshot coverage for the primary locale.");
@@ -203,7 +216,7 @@ async function screenshotChecks(repository: string, manifest: ShipLayerManifest,
       const details = await inspectImage(path.join(directory, image));
       const imageId = `${id}.${image}`;
       if (!details) { add(imageId, "block", `Could not inspect ${image}; use a readable PNG/JPEG without alpha.`); continue; }
-      if (!isAcceptedScreenshotDimensions(details.width, details.height)) add(`${imageId}.accepted-dimensions`, "block", `${image} is ${details.width}×${details.height}, which is not an accepted App Store screenshot dimension.`, "Export an accepted iPhone or iPad screenshot size.");
+      if (!isFamilyScreenshotDimensions(config.family, details.width, details.height)) add(`${imageId}.accepted-dimensions`, "block", `${image} is ${details.width}×${details.height}, which is not an accepted ${config.family} App Store screenshot dimension.`, "Export an accepted screenshot size for the configured family.");
       else if (!sameOrientationOrReverse(details.width, details.height, config.requiredDimensions.width, config.requiredDimensions.height)) add(`${imageId}.dimensions`, "block", `${image} is ${details.width}×${details.height}; config requests ${config.requiredDimensions.width}×${config.requiredDimensions.height}.`, "Export exactly the configured Apple display size, in portrait or landscape orientation.");
       else add(`${imageId}.dimensions`, "pass", `${image} matches configured dimensions.`);
       if (details.alpha) add(`${imageId}.alpha`, "block", `${image} has an alpha channel.`, "Export a flattened PNG/JPEG without transparency.");
@@ -246,7 +259,7 @@ async function purchaseAssetChecks(repository: string, manifest: ShipLayerManife
       const details = await inspectImage(image);
       if (!details) add(`purchase.${product.productId}.asset`, "block", `Review screenshot for ${product.productId} is missing, symlinked, or unreadable: ${product.reviewScreenshot}.`);
       else if (details.alpha) add(`purchase.${product.productId}.asset-alpha`, "block", `Review screenshot for ${product.productId} has alpha.`);
-      else if (!isAcceptedScreenshotDimensions(details.width, details.height)) add(`purchase.${product.productId}.asset-dimensions`, "block", `Review screenshot for ${product.productId} is ${details.width}×${details.height}; upload an accepted App Store screenshot dimension.`);
+      else if (!isReviewScreenshotDimension(manifest, details.width, details.height)) add(`purchase.${product.productId}.asset-dimensions`, "block", `Review screenshot for ${product.productId} is ${details.width}×${details.height}; upload a supported screenshot dimension for this app.`);
       else add(`purchase.${product.productId}.asset`, "pass", `Review screenshot exists for ${product.productId}.`);
     } catch { add(`purchase.${product.productId}.asset`, "block", `Review screenshot for ${product.productId} is missing or unreadable: ${product.reviewScreenshot}.`); }
   }
@@ -262,6 +275,19 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
     else add(`consistency.${key}`, "block", `Manifest ${key} (${expected}) disagrees with source evidence (${detected}).`, "Update the manifest or source setting.");
   };
   compare("bundleId", manifest.app.bundleId); compare("version", manifest.app.version); compare("build", manifest.app.build);
+  const declaredPermissions = new Set(manifest.permissions.map((permission) => permission.key));
+  for (const finding of report.findings.filter((item) => item.key.startsWith("permission:"))) {
+    const key = finding.key.slice("permission:".length);
+    if (!declaredPermissions.has(key)) add(`source.permission.${key}`, "block", `Source evidence declares ${key}, but the manifest has no matching permission declaration.`, "Add a human-confirmed permission declaration or remove the source capability.");
+  }
+  for (const permission of manifest.permissions) if (!report.findings.some((finding) => finding.key === `permission:${permission.key}`) && !(permission.evidence || []).length) add(`manifest.permission.${permission.key}`, "warn", `${permission.key} has no scanner evidence or manifest evidence path.`, "Verify the purpose string and add source evidence if this permission is used.");
+  for (const finding of report.findings.filter((item) => item.key.startsWith("thirdPartySdkCandidate:") || item.key === "endpoint")) {
+    const findingId = `${finding.key}:${Array.isArray(finding.value) ? finding.value.join(",") : String(finding.value)}`;
+    const decision = manifest.externalServiceDecisions.find((item) => item.finding === findingId);
+    if (!decision || decision.confirmation !== "confirmed" || !decision.reason || !decision.evidence.length) { add(`source.external.${findingId}`, "block", `Source heuristic '${findingId}' has no confirmed processor/disposition decision.`, "Declare the processor or explicitly record why it is not an external processor, with source evidence."); continue; }
+    if (decision.disposition === "declared-processor" && !manifest.externalProcessors.some((processor) => processor.confirmation === "confirmed" && processor.evidence?.some((evidence) => decision.evidence.includes(evidence)))) add(`source.external.${findingId}`, "block", `Processor decision for '${findingId}' is not linked to a confirmed external processor evidence record.`, "Add the matching external processor with confirmed data categories and evidence.");
+    else add(`source.external.${findingId}`, "pass", `Source heuristic '${findingId}' has a human-confirmed disposition.`);
+  }
   const storeKit = report.findings.find((finding) => finding.key === "storekitProductId")?.value;
   const sourceIds = new Set(Array.isArray(storeKit) ? storeKit.filter((value): value is string => typeof value === "string") : typeof storeKit === "string" ? [storeKit] : []);
   const manifestIds = new Set(manifest.monetization.type === "subscriptions" || manifest.monetization.type === "non-consumables" ? manifest.monetization.products.map((product) => product.productId) : []);
@@ -269,5 +295,6 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
   for (const id of manifestIds) if (sourceIds.size && !sourceIds.has(id)) add(`manifest.${id}`, "block", `Manifest product ${id} is absent from StoreKit evidence.`);
 }
 
-function isAcceptedScreenshotDimensions(width: number, height: number): boolean { return APPLE_SCREENSHOT_DIMENSIONS.has(`${width}x${height}`) || APPLE_SCREENSHOT_DIMENSIONS.has(`${height}x${width}`); }
+function isFamilyScreenshotDimensions(family: "iphone" | "ipad", width: number, height: number): boolean { const supported = family === "iphone" ? IPHONE_SCREENSHOT_DIMENSIONS : IPAD_SCREENSHOT_DIMENSIONS; return supported.has(`${width}x${height}`) || supported.has(`${height}x${width}`); }
+function isReviewScreenshotDimension(manifest: ShipLayerManifest, width: number, height: number): boolean { return manifest.app.deviceFamilies.some((family) => isFamilyScreenshotDimensions(family, width, height)); }
 function sameOrientationOrReverse(width: number, height: number, expectedWidth: number, expectedHeight: number): boolean { return (width === expectedWidth && height === expectedHeight) || (width === expectedHeight && height === expectedWidth); }

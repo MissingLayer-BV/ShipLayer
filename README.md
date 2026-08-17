@@ -30,8 +30,8 @@ Use `npx shiplayer ...` after publishing the package or link the local executabl
 | `check <repo> [--json]` | Preflight. Returns exit status 2 when blockers remain. |
 | `plan <repo> [--remote]` | Offline App Store Connect plan, or explicit authenticated read/discovery only. |
 | `capture <repo>` | Produces a deterministic screenshot-harness hand-off; v0.1 never fabricates or runs a generic capture command. |
-| `apply <repo>` | Dry-run by default. `--apply --yes-i-understand` remains manual-only in v0.1. |
-| `submit <repo>` | Separate final gate. v0.1 deliberately keeps final submission manual. |
+| `apply <repo>` | Dry-run by default. `--apply --yes-i-understand` reports the manual handoff and exits 3 because v0.1 has no tested write adapter. |
+| `submit <repo>` | Separate final gate. `--submit --yes-submit` reports the manual handoff and exits 3 because v0.1 deliberately does not submit. |
 
 No command creates a GitHub Action, triggers cloud CI, or uses a paid service.
 
@@ -49,7 +49,7 @@ No command creates a GitHub Action, triggers cloud CI, or uses a paid service.
 
 ## Manifest
 
-The checked-in [JSON Schema](src/schema.json) and runtime validation cover identity, metadata, permissions, processors, review access, screenshot matrices, signing, release settings, and monetization. For subscriptions, provide a group, base territory, monthly/yearly (or supported custom) durations, levels, product IDs, localizations, price references, introductory offers, family sharing, review assets, paywall navigation, restore path, and explicit confirmation.
+The checked-in [JSON Schema](src/schema.json) and runtime validation cover identity, metadata, permissions, processors, review access, screenshot matrices, signing, release settings, and monetization. For subscriptions, provide a group with localized display names, base territory, monthly/yearly (or supported custom) durations, levels, Apple-safe product IDs, product localizations, price references, introductory offers, family sharing, review assets, paywall navigation, restore path, and explicit confirmation. Introductory offers model free trials, pay up front, and pay as you go (including the required number of periods); ShipLayer rejects combinations that do not match Apple's current duration rules.
 
 See [fixtures/subscription-shiplayer.yml](fixtures/subscription-shiplayer.yml) for a complete fictional subscription example.
 

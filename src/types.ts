@@ -44,6 +44,13 @@ export interface ExternalProcessor {
   confirmation: Confirmation;
   evidence?: string[];
 }
+export interface ExternalServiceDecision {
+  finding: string;
+  disposition: "declared-processor" | "not-an-external-processor";
+  reason: string;
+  evidence: string[];
+  confirmation: Confirmation;
+}
 
 export interface DataProcessing {
   category: string;
@@ -71,7 +78,7 @@ export type Monetization =
   | { type: "free" }
   | { type: "paid-app"; pricePointReference: string }
   | { type: "non-consumables"; products: Array<{ productId: string; referenceName: string; localizations: Record<string, { displayName: string; description: string }>; pricePointReference: string; familySharing: boolean; reviewNotes: string; reviewScreenshot: string }>; paywallNavigation: string; restorePath: string; confirmation: Confirmation }
-  | { type: "subscriptions"; group: { referenceName: string; subscriptionGroupId?: string }; baseTerritory: string; products: SubscriptionProduct[]; paywallNavigation: string; restorePath: string; termsUrl: string; privacyUrl: string; disclosureConfirmation: Confirmation; confirmation: Confirmation };
+  | { type: "subscriptions"; group: { referenceName: string; subscriptionGroupId?: string; localizations: Record<string, { displayName: string }> }; baseTerritory: string; products: SubscriptionProduct[]; paywallNavigation: string; restorePath: string; termsUrl: string; privacyUrl: string; disclosureConfirmation: Confirmation; confirmation: Confirmation };
 
 export interface ScreenshotScenario {
   id: string;
@@ -104,6 +111,7 @@ export interface ShipLayerManifest {
   permissions: Array<{ key: string; purpose?: string; confirmation: Confirmation; evidence?: string[] }>;
   dataProcessing: DataProcessing[];
   externalProcessors: ExternalProcessor[];
+  externalServiceDecisions: ExternalServiceDecision[];
   review: { contact?: { firstName?: string; lastName?: string; email?: string; phone?: string }; demoAccount?: { required: boolean; usernameEnv?: string; passwordEnv?: string; setupInstructions?: string }; notes?: string; recordingScenarios: ScreenshotScenario[]; sampleData?: string[] };
   screenshots: { scenarios: ScreenshotScenario[]; configurations: Array<{ device: string; family: "iphone" | "ipad"; locale: string; requiredDimensions: { width: number; height: number } }>; rawOutputDir: string; marketingProjectPath?: string };
   monetization: Monetization;

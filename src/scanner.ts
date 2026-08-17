@@ -39,6 +39,16 @@ export async function analyzeRepository(repository: string): Promise<AnalysisRep
   for (const file of walked.files.filter((file) => /(?:project\.yml|project\.pbxproj|Info\.plist|\.entitlements|PrivacyInfo\.xcprivacy|\.storekit|\.swift|\.m|\.mm|\.h)$/.test(file))) { try { await scanText(file); } catch { questions.add(`Unable to read or parse ${relative(root, file)}; inspect it manually.`); } }
   for (const [key, entries] of Object.entries(settings)) {
     const values = [...new Set(entries.map((entry) => entry.value))]; const primary = values[0]; if (values.length > 1 && ["bundleId", "version", "build", "deploymentTarget", "deviceFamily", "encryption"].includes(key)) contradictions.push(`${key} has conflicting values: ${values.join(", ")}.`);
+    if (key === "bundleId" && values.length > 1) {
+      const sorted = [...values].sort((left, right) => left.length - right.length || left.localeCompare(right)); const appBundle = sorted[0]; const secondary = sorted.slice(1);
+      if (secondary.every((candidate) => candidate.startsWith(`${appBundle}.`))) {
+        const contradictionIndex = contradictions.findIndex((item) => item.startsWith("bundleId has conflicting values:"));
+        if (contradictionIndex >= 0) contradictions.splice(contradictionIndex, 1);
+        const appEntries = entries.filter((entry) => entry.value === appBundle); findings.push({ key: "bundleId", value: appBundle, evidence: appEntries.map((entry) => entry.evidence), confidence: appEntries.some((entry) => entry.evidence.confidence === "confirmed") ? "confirmed" : "high" });
+        findings.push({ key: "secondaryBundleId", value: secondary, evidence: entries.filter((entry) => secondary.includes(entry.value)).map((entry) => entry.evidence), confidence: "medium", proposal: true, message: "Secondary target bundle IDs may be app extensions/widgets. Confirm their target types and release configuration manually." });
+        questions.add(`Confirm whether secondary bundle IDs (${secondary.join(", ")}) are extensions/widgets rather than additional App Store apps.`); continue;
+      }
+    }
     const processorCandidate = key.startsWith("thirdPartySdkCandidate:") || key === "endpoint";
     const appleFramework = key.startsWith("framework:");
     findings.push({ key, value: values.length === 1 ? primary : values, evidence: entries.map((entry) => entry.evidence), confidence: entries.some((entry) => entry.evidence.confidence === "confirmed") ? "confirmed" : entries.some((entry) => entry.evidence.confidence === "high") ? "high" : "medium", proposal: processorCandidate, message: processorCandidate ? "Heuristic finding only; confirm whether this is an external processor or declared data use." : appleFramework ? "Apple framework usage detected; this is not by itself an external processor or privacy declaration." : undefined });

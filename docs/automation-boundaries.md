@@ -10,6 +10,6 @@ ShipLayer can prepare facts, drafts, asset plans, and an idempotent remote chang
 | App Store Connect | JWT-based read/discovery. Writes are reported as manual until independently tested. |
 | Subscriptions/IAP | Validate manifest and generate checklist/review notes; human verifies StoreKit/App Store Connect state. |
 | Initial app record, agreements, tax/banking, trader | Human/App Store Connect UI only. |
-| Final submission | Separate human-controlled gate; v0.1 intentionally does not submit. |
+| Apply / final submission | Preview is safe. Explicit `--apply` / `--submit` flags report a manual handoff and exit 3 because v0.1 intentionally has no write or submission adapter. |
 
 Never add secret keys to a manifest, fixture, generated package, or terminal output. Never browser-scrape App Store Connect.

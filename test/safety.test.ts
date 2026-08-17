@@ -9,6 +9,7 @@ import { safeRelativePath, walkRepository } from "../src/fs.js";
 import { preflight as runPreflight } from "../src/preflight.js";
 import type { AnalysisReport, PreflightReport } from "../src/types.js";
 import { png, readyManifest, writeReadyAssets } from "./helpers.js";
+import { inspectImage } from "../src/image.js";
 
 const analysis = (repository: string): AnalysisReport => ({ schemaVersion: 1, repository, scannedAt: "x", project: { xcodeProjects: [], workspaces: [], projectYml: [] }, findings: [], contradictions: [], unresolvedQuestions: [], ignored: { directories: [], filesOverLimit: 0, filesScanned: 0, unreadable: [], symlinksIgnored: [], truncated: false } });
 const preflight: PreflightReport = { repository: ".", results: [], summary: { pass: 0, warn: 0, block: 0 }, canPrepare: true, canApply: false, canSubmit: false };
@@ -73,4 +74,11 @@ test("purchase review assets must be full valid App Store screenshots", async ()
   await writeFile(path.join(root, "review/unlock.png"), png(1, 1));
   const report = await runPreflight(root, manifest);
   assert.ok(report.results.some((item) => item.id.includes("purchase.com.example.unlock.asset-dimensions") && item.severity === "block"));
+});
+test("image inspection rejects empty PNG streams and empty JPEG scans", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-decode-"));
+  const fakePng = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), png(1320, 2868).subarray(8, 33), Buffer.from([0, 0, 0, 0, 73, 68, 65, 84, 53, 175, 6, 30]), png(1320, 2868).subarray(-12)]);
+  const fakeJpeg = Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x0b, 0x08, 0x0b, 0x34, 0x05, 0x28, 0x01, 0x01, 0x11, 0x00, 0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3f, 0x00, 0xff, 0xd9]);
+  await writeFile(path.join(root, "empty.png"), fakePng); await writeFile(path.join(root, "empty.jpg"), fakeJpeg);
+  assert.equal(await inspectImage(path.join(root, "empty.png")), undefined); assert.equal(await inspectImage(path.join(root, "empty.jpg")), undefined);
 });

@@ -39,6 +39,7 @@ dataProcessing:
     usedForTracking: false
     confirmation: confirmed
 externalProcessors: []
+externalServiceDecisions: []
 review:
   contact:
     firstName: Ada
@@ -72,7 +73,7 @@ screenshots:
   marketingProjectPath: design/app-store-screenshots
 monetization:
   type: subscriptions
-  group: {referenceName: ReceiptLoop Pro}
+  group: {referenceName: ReceiptLoop Pro, localizations: {en-US: {displayName: ReceiptLoop Pro}}}
   baseTerritory: USA
   products:
     - productId: com.example.receiptloop.monthly
