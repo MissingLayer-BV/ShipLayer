@@ -199,7 +199,14 @@ async function iconChecks(repository: string, add: Add): Promise<void> {
   if (!iconCatalog) { add("assets.app-icon", "block", "No AppIcon.appiconset was found.", "Add an app icon asset catalog."); return; }
   add("assets.app-icon", "pass", `App icon asset catalog found at ${path.relative(repository, iconCatalog)}.`);
   const folder = path.dirname(iconCatalog);
-  if (!files.some((file) => path.dirname(file) === folder && /\.(png|jpe?g)$/i.test(file))) add("assets.app-icon-images", "block", "The AppIcon asset catalog has no raster image files.", "Add and verify app icon raster assets before upload.");
+  const rasterFiles = files.filter((file) => path.dirname(file) === folder && /\.(png|jpe?g)$/i.test(file));
+  if (!rasterFiles.length) { add("assets.app-icon-images", "block", "The AppIcon asset catalog has no raster image files.", "Add and verify app icon raster assets before upload."); return; }
+  try {
+    const contents = JSON.parse(await readFile(iconCatalog, "utf8")) as { images?: Array<{ filename?: unknown }> };
+    const declared = (contents.images || []).map((image) => image.filename).filter((file): file is string => typeof file === "string" && file.length > 0);
+    if (!declared.length) add("assets.app-icon-declarations", "block", "AppIcon Contents.json does not declare any raster icon filename.", "Generate/assign the required app icon image assets.");
+    for (const filename of declared) if (!rasterFiles.some((file) => path.basename(file) === filename)) add(`assets.app-icon.${filename}`, "block", `AppIcon Contents.json references missing raster file ${filename}.`, "Add the referenced icon image or update Contents.json.");
+  } catch { add("assets.app-icon-contents", "block", "AppIcon Contents.json is unreadable or malformed.", "Regenerate the app icon asset catalog."); }
 }
 
 async function purchaseAssetChecks(repository: string, manifest: ShipLayerManifest, add: Add): Promise<void> {
