@@ -66,6 +66,8 @@ export async function preflight(repository: string, manifest: ShipLayerManifest,
   exportComplianceCheck(manifest, add);
   confirmationChecks(manifest, add);
   monetizationChecks(manifest, add);
+  await aiDataSharingChecks(repository, manifest, add);
+  await purchasePresentationChecks(repository, manifest, add);
   screenshotConfigurationChecks(manifest, add);
   await screenshotChecks(repository, manifest, add);
   await purchaseAssetChecks(repository, manifest, add);
@@ -160,6 +162,86 @@ function confirmationChecks(manifest: ShipLayerManifest, add: Add): void {
   }
   for (const item of manifest.dataProcessing) if (item.confirmation === "confirmed" && (!item.purpose.length || item.linkedToIdentity === "unknown" || item.usedForTracking === "unknown")) add(`privacy.${item.category}.details`, "block", `${item.category} is marked confirmed but purpose, identity linkage, or tracking is still unknown.`, "Record explicit App Privacy answers before submission.");
   for (const item of manifest.externalProcessors) if (item.confirmation === "confirmed" && (!item.purpose || !item.dataCategories.length)) add(`privacy.${item.name}.details`, "block", `${item.name} is marked confirmed but its purpose or data categories are incomplete.`, "Record explicit processor data handling before submission.");
+  for (const item of manifest.externalProcessors) if (item.protectionConfirmation !== "confirmed") add(`privacy.${item.name}.protection`, "block", `${item.name} has no confirmation of equal or stronger data protection.`, "Review the processor policy/contract and confirm the privacy policy's equal-protection statement before submission.");
+}
+
+async function aiDataSharingChecks(repository: string, manifest: ShipLayerManifest, add: Add): Promise<void> {
+  const aiPipelineProcessors = manifest.externalProcessors.filter((processor) => processor.aiPipelineRecipient);
+  const sharing = manifest.aiDataSharing;
+  if (!sharing.enabled) {
+    if (aiPipelineProcessors.length) add("ai-sharing.declaration", "block", `AI-pipeline recipients are declared (${aiPipelineProcessors.map((item) => item.name).join(", ")}) but aiDataSharing.enabled is false.`, "Model the exact AI data, recipients, in-context consent, and matching privacy-policy evidence. No-retention/no-training controls do not mean data was not shared.");
+    else add("ai-sharing.declaration", "pass", "No AI processor or AI data sharing is declared.");
+    return;
+  }
+
+  const referenced = sharing.processorNames.map((name) => manifest.externalProcessors.find((processor) => processor.name === name));
+  if (referenced.some((processor) => !processor)) add("ai-sharing.processors", "block", "AI disclosure names a recipient that is absent from externalProcessors.", "Declare every network/AI recipient with its policy, categories, purpose, and protection confirmation.");
+  else if (referenced.some((processor) => !processor?.aiPipelineRecipient)) add("ai-sharing.processors", "block", "AI disclosure names a processor that is not marked as an AI-pipeline recipient.", "Mark only processors that receive data in this AI feature as aiPipelineRecipient and keep unrelated analytics/payment processors out of the AI disclosure.");
+  else if (aiPipelineProcessors.some((processor) => !sharing.processorNames.includes(processor.name))) add("ai-sharing.processors", "block", "At least one declared AI provider or intermediary is missing from the in-app recipient list.", "Name every AI provider and intermediary marked aiPipelineRecipient before transmission.");
+  else if (referenced.some((processor) => processor?.confirmation !== "confirmed" || processor.protectionConfirmation !== "confirmed")) add("ai-sharing.processors", "block", "AI sharing references a processor whose handling or equal-protection review is unconfirmed.", "Confirm each recipient only after reviewing its role, data policy, and protection obligations.");
+  else add("ai-sharing.processors", "pass", `AI sharing names ${sharing.processorNames.join(", ")}.`);
+
+  const consentReady = sharing.consent.shownBeforeTransmission
+    && sharing.consent.privacyPolicyLinkVisible
+    && sharing.consent.confirmation === "confirmed"
+    && /(?:send|share|upload|transmit)/i.test(sharing.consent.affirmativeAction)
+    && Boolean(sharing.consent.declinePath);
+  if (!consentReady) add("ai-sharing.consent", "block", "The in-context AI disclosure/permission is incomplete or uses a generic affirmative action.", "Before transmission, state what is sent, name who receives it and why, provide a visible privacy link and non-AI decline path, and use an explicit action such as 'Allow and send to AI'.");
+  else add("ai-sharing.consent", "pass", "AI sharing has a human-confirmed, explicit pre-transmission consent flow and decline path.");
+
+  const policy = sharing.privacyPolicy;
+  const policyReady = policy.identifiesDataAndCollectionMethod
+    && policy.identifiesAllUses
+    && policy.namesAllProcessors
+    && policy.explainsRetentionAndDeletion
+    && policy.confirmsEqualProtection
+    && policy.confirmation === "confirmed";
+  if (!policyReady) add("ai-sharing.privacy-policy", "block", "The AI privacy-policy declaration does not cover all Apple privacy requirements.", "Describe the data and collection method, every use and processor, retention/deletion, consent withdrawal, and equal protection.");
+  else add("ai-sharing.privacy-policy", "pass", "AI sharing has a human-confirmed matching privacy-policy declaration.");
+
+  const consentText = await evidenceText(repository, sharing.consent.evidence);
+  const policyText = await evidenceText(repository, sharing.privacyPolicy.evidence);
+  const consentSourceRoleValid = sharing.consent.evidence.every(isProductionSourceEvidencePath);
+  const policyEvidenceRoleValid = sharing.privacyPolicy.evidence.every(isPolicyEvidencePath);
+  if (!consentSourceRoleValid) add("ai-sharing.consent-source-role", "block", "AI consent evidence must reference production app source, not tests, scripts, fixtures, generated declarations, or documentation.", "Reference contained production Swift/Objective-C source that renders the disclosure before network transmission.");
+  if (!policyEvidenceRoleValid) add("ai-sharing.policy-source-role", "block", "AI privacy-policy evidence must reference a public static policy artifact, not app code, tests, fixtures, samples, tooling, or generated release artifacts.", "Reference contained .md, .markdown, .html, .htm, or .txt policy content that is published as the app's privacy policy.");
+  if (!consentText.complete) add("ai-sharing.consent-evidence", "block", "AI consent evidence is missing, symlinked, unreadable, or oversized.", "Reference contained production source that renders the disclosure before network transmission.");
+  else {
+    const consentSource = stripNonReleaseConditionalCompilation(stripCodeComments(consentText.text));
+    const visibleDisclosure = visibleTextEvidence(consentSource).toLocaleLowerCase("en-US");
+    const missing = sharing.processorNames.filter((name) => !visibleDisclosure.includes(name.toLocaleLowerCase("en-US")));
+    const missingData = sharing.dataSent.filter((data) => !visibleDisclosure.includes(data.toLocaleLowerCase("en-US")));
+    const purposeVisible = visibleDisclosure.includes(sharing.purpose.toLocaleLowerCase("en-US"));
+    const buttonLabels = visibleUICallArguments(consentSource, new Set(["Button"])).map((value) => value.toLocaleLowerCase("en-US"));
+    const actionVisible = buttonLabels.some((value) => value.includes(sharing.consent.affirmativeAction.toLocaleLowerCase("en-US")));
+    const declineVisible = buttonLabels.some((value) => value.includes(sharing.consent.declinePath.toLocaleLowerCase("en-US")));
+    const privacyLinkVisible = visibleUICallArguments(consentSource, new Set(["Link", "NavigationLink"])).some((value) => /privacy(?:\s+policy)?/i.test(value));
+    if (missing.length) add("ai-sharing.consent-recipients", "block", `The in-app consent evidence does not visibly name: ${missing.join(", ")}.`, "Use exact user-facing recipient names in the disclosure shown before transmission.");
+    if (missingData.length) add("ai-sharing.consent-data", "block", `The in-app consent evidence does not visibly identify: ${missingData.join(", ")}.`, "State the exact personal data sent before transmission, not only that AI is used.");
+    if (!purposeVisible) add("ai-sharing.consent-purpose", "block", "The in-app consent evidence does not visibly state the declared processing purpose.", "Explain why the data is sent before requesting permission.");
+    if (!actionVisible) add("ai-sharing.consent-action", "block", `The in-app consent evidence does not render the declared affirmative action “${sharing.consent.affirmativeAction}”.`, "Render an affirmative action that explicitly says data will be sent, shared, uploaded, or transmitted.");
+    if (!declineVisible) add("ai-sharing.consent-decline", "block", `The in-app consent evidence does not render the declared non-AI path “${sharing.consent.declinePath}”.`, "Render a clear local/manual path that does not transmit data.");
+    if (!privacyLinkVisible) add("ai-sharing.consent-privacy-link", "block", "The in-app consent evidence does not render a visible Privacy Policy link.", "Add a visible Link or NavigationLink labeled Privacy/Privacy Policy to the pre-transmission disclosure.");
+    if (consentSourceRoleValid && !missing.length && !missingData.length && purposeVisible && actionVisible && declineVisible && privacyLinkVisible) add("ai-sharing.consent-evidence", "pass", "Production consent evidence names every recipient, the data and purpose, and renders the declared actions and Privacy Policy link.");
+  }
+  if (!policyText.complete) add("ai-sharing.policy-evidence", "block", "AI privacy-policy evidence is missing, symlinked, unreadable, or oversized.", "Reference the public policy source containing the confirmed AI disclosures.");
+  else {
+    const policySource = policyText.entries.map((entry) => stripPolicyEvidenceComments(entry.text)).join("\n");
+    const normalizedPolicy = policySource.toLocaleLowerCase("en-US");
+    const missing = sharing.processorNames.filter((name) => !normalizedPolicy.includes(name.toLocaleLowerCase("en-US")));
+    const missingData = sharing.dataSent.filter((data) => !normalizedPolicy.includes(data.toLocaleLowerCase("en-US")));
+    const purposeVisible = normalizedPolicy.includes(sharing.purpose.toLocaleLowerCase("en-US"));
+    const collectionMethodVisible = /\b(?:select|choose|capture|photograph|upload|send|transmit|submit|provide(?:d)?)\b/i.test(policySource);
+    const retentionVisible = /\b(?:retain(?:ed|s|ing)?|retention|delet(?:e|ed|ion)|eras(?:e|ed|ure)|remov(?:e|ed|al)|stor(?:e|ed|age)|keep|discard(?:ed|s)?)\b/i.test(policySource);
+    if (missing.length) add("ai-sharing.policy-recipients", "block", `Privacy-policy evidence does not name: ${missing.join(", ")}.`, "Name every processor that receives AI feature data.");
+    if (missingData.length) add("ai-sharing.policy-data", "block", `Privacy-policy evidence does not identify: ${missingData.join(", ")}.`, "Describe what is collected/transmitted and how it is obtained.");
+    if (!purposeVisible) add("ai-sharing.policy-purpose", "block", "Privacy-policy evidence does not state the declared AI processing purpose/all uses.", "State every use of the transmitted data, including the exact declared AI feature purpose.");
+    if (!collectionMethodVisible) add("ai-sharing.policy-collection-method", "block", "Privacy-policy evidence does not explain how the app obtains or transmits the AI feature data.", "Explain whether users select, capture, upload, send, or otherwise provide the data.");
+    if (!retentionVisible) add("ai-sharing.policy-retention", "block", "Privacy-policy evidence does not explain retention or deletion.", "Describe processor/app retention and deletion behavior, including limited logs where applicable.");
+    const equalProtection = /(?:same|equal).{0,60}protect|protect.{0,60}(?:same|equal)/is.test(policySource);
+    if (!equalProtection) add("ai-sharing.policy-protection", "block", "Privacy-policy evidence does not confirm that third-party processors provide the same or equal protection.", "Add the processor-protection statement required by App Review after legal review.");
+    if (policyEvidenceRoleValid && !missing.length && !missingData.length && purposeVisible && collectionMethodVisible && retentionVisible && equalProtection) add("ai-sharing.policy-evidence", "pass", "Privacy-policy evidence covers recipients, data, collection/transmission, purpose, retention/deletion, and same-or-equal protection.");
+  }
 }
 
 function monetizationChecks(manifest: ShipLayerManifest, add: Add): void {
@@ -184,6 +266,94 @@ function monetizationChecks(manifest: ShipLayerManifest, add: Add): void {
   if (money.termsOfUse.confirmation !== "confirmed") add("subscriptions.terms-of-use", "block", "Terms of Use/EULA selection requires human confirmation.", "Choose Apple Standard EULA or custom terms only after legal review.");
   else add("subscriptions.terms-of-use", "pass", `Subscription Terms of Use is ${money.termsOfUse.type}.`);
   for (const product of money.products) productChecks("subscription", product, manifest.app.locales, add);
+}
+
+async function purchasePresentationChecks(repository: string, manifest: ShipLayerManifest, add: Add): Promise<void> {
+  const money = manifest.monetization;
+  if (money.type !== "non-consumables" && money.type !== "subscriptions") return;
+  const presentation = money.purchasePresentation;
+  const declared = presentation.confirmation === "confirmed"
+    && presentation.localizedPriceSource === "storekit-display-price"
+    && presentation.localizedPriceVisibleBeforePurchase
+    && presentation.purchaseDisabledUntilPriceLoaded;
+  if (!declared) add("purchase.presentation", "block", "Purchase presentation does not guarantee a localized StoreKit price before payment starts.", "Load Product first, visibly render Product.displayPrice, and keep purchase disabled while the product/price is loading or unavailable.");
+  else add("purchase.presentation", "pass", "Purchase presentation declares visible StoreKit-localized pricing before purchase.");
+
+  if (money.type === "subscriptions") {
+    if (presentation.subscriptionPeriodVisibleBeforePurchase !== true || presentation.termsAndPrivacyLinksVisibleBeforePurchase !== true) add("purchase.subscription-disclosures", "block", "Subscription billing period or Terms/Privacy links are not confirmed visible before purchase.");
+    if (money.products.some((product) => product.introductoryOffer) && presentation.offerTermsVisibleBeforePurchase !== true) add("purchase.offer-disclosures", "block", "Introductory-offer terms are not confirmed visible before purchase.");
+  }
+
+  const source = await evidenceText(repository, presentation.sourceEvidence);
+  const tests = await evidenceText(repository, presentation.testEvidence);
+  const sourceRoleValid = presentation.sourceEvidence.every(isProductionSourceEvidencePath);
+  const testRoleValid = presentation.testEvidence.every(isTestSourceEvidencePath);
+  if (!sourceRoleValid) add("purchase.presentation-source-role", "block", "Purchase source evidence must reference production app source, not tests, fixtures, scripts, generated declarations, or documentation.", "Reference the contained production Swift/Objective-C paywall source.");
+  if (!testRoleValid) add("purchase.presentation-test-role", "block", "Purchase test evidence must reference conventional test source paths.", "Reference contained UI/unit/snapshot test source under a Tests or UITests target/path.");
+  if (!source.complete) add("purchase.presentation-source", "block", "Purchase presentation source evidence is missing, symlinked, unreadable, or oversized.", "Reference production StoreKit/paywall source files.");
+  else {
+    const sourceCode = stripNonReleaseConditionalCompilation(stripCodeComments(source.text));
+    const customProductViewStyle = hasUnverifiedCustomProductViewStyle(sourceCode);
+    const customSubscriptionControlStyle = hasUnverifiedCustomSubscriptionStoreControlStyle(sourceCode);
+    const renderedProductView = hasRenderedSwiftUICall(sourceCode, "ProductView");
+    const renderedStoreView = money.type === "non-consumables" && hasRenderedSwiftUICall(sourceCode, "StoreView");
+    const customStyledMerchandising = customProductViewStyle && (renderedProductView || renderedStoreView);
+    const productView = !customStyledMerchandising && renderedProductView;
+    const renderedSubscriptionStoreView = hasRenderedSwiftUICall(sourceCode, "SubscriptionStoreView");
+    const customStyledSubscriptionStore = customSubscriptionControlStyle && renderedSubscriptionStoreView;
+    const subscriptionStoreView = !customStyledSubscriptionStore && renderedSubscriptionStoreView;
+    const storeView = !customStyledMerchandising && renderedStoreView;
+    const storeKitMerchandisingView = productView || subscriptionStoreView || storeView;
+    const localizedPriceRendered = storeKitMerchandisingView || hasVisibleLocalizedPrice(sourceCode);
+    const unavailableStateRendered = storeKitMerchandisingView || hasUnavailablePurchaseState(sourceCode);
+    if (!localizedPriceRendered) add("purchase.localized-price-source", "block", "Purchase evidence does not visibly render StoreKit Product.displayPrice or a StoreKit merchandising view.", "Render displayPrice in Text/Button/Label (directly or through a displayed local value); an unused displayPrice read is insufficient.");
+    if (customStyledMerchandising) add("purchase.custom-product-view-style", "block", "Purchase evidence applies an unverified custom ProductViewStyle, so StoreKit-owned price and loading presentation cannot be assumed.", "Use a built-in .automatic, .compact, .regular, or .large productViewStyle, or replace the custom style with a fully evidenced custom paywall.");
+    if (customStyledSubscriptionStore) add("purchase.custom-subscription-control-style", "block", "Subscription evidence applies an unverified custom SubscriptionStoreControlStyle, so automatic price, period, and offer presentation cannot be assumed.", "Use a built-in .automatic, .buttons, .picker, .prominentPicker, .compactPicker, .pagedPicker, or .pagedProminentPicker subscriptionStoreControlStyle, or replace it with a fully evidenced custom paywall.");
+    if (!storeKitMerchandisingView && !/\.purchase\s*\(/.test(sourceCode)) add("purchase.call-source", "block", "Purchase evidence does not include a StoreKit purchase call or a supported StoreKit-owned merchandising view.", "Reference the source that starts StoreKit purchase after price availability, or ProductView/SubscriptionStoreView.");
+    if (!unavailableStateRendered) add("purchase.unavailable-source", "block", "Purchase evidence does not keep payment unavailable while product/price data is loading or unavailable.", "Disable or withhold the purchase action until Product loads and render an explicit loading/unavailable/retry state.");
+
+    if (money.type === "subscriptions") {
+      const periodRendered = subscriptionStoreView || hasVisibleSubscriptionPeriod(sourceCode);
+      const legalLinksRendered = subscriptionStoreView || hasVisibleTermsAndPrivacyLinks(sourceCode);
+      const offerRendered = !money.products.some((product) => product.introductoryOffer) || subscriptionStoreView || hasVisibleOfferTerms(sourceCode);
+      if (!periodRendered) add("purchase.subscription-period-source", "block", "Subscription source evidence does not visibly render the billing period before purchase.", "Show the subscription period/renewal cadence alongside the localized price.");
+      if (!offerRendered) add("purchase.offer-terms-source", "block", "Subscription source evidence does not visibly render applicable introductory-offer terms.", "Show the trial/introductory duration and what happens after the offer before purchase.");
+      if (!legalLinksRendered) add("purchase.legal-links-source", "block", "Subscription source evidence does not visibly render both Terms of Use and Privacy Policy links.", "Render visible Terms and Privacy links using the declared public URLs.");
+    }
+
+    if (sourceRoleValid) {
+      const sourceHasAll = !customStyledMerchandising && !customStyledSubscriptionStore && localizedPriceRendered
+        && (storeKitMerchandisingView || /\.purchase\s*\(/.test(sourceCode))
+        && unavailableStateRendered
+        && (money.type !== "subscriptions" || ((subscriptionStoreView || hasVisibleSubscriptionPeriod(sourceCode))
+          && (subscriptionStoreView || hasVisibleTermsAndPrivacyLinks(sourceCode))
+          && (!money.products.some((product) => product.introductoryOffer) || subscriptionStoreView || hasVisibleOfferTerms(sourceCode))));
+      if (sourceHasAll) add("purchase.presentation-source", "pass", "Production evidence visibly presents StoreKit pricing, unavailable/loading behavior, purchase handling, and applicable subscription disclosures.");
+    }
+  }
+  if (!tests.complete) add("purchase.presentation-tests", "block", "Purchase presentation test evidence is missing, symlinked, unreadable, or oversized.", "Add a UI or snapshot test proving the localized price is visible before the purchase action and no purchase can start while unavailable.");
+  else {
+    const testSource = stripCodeComments(tests.text);
+    const testBodies = credibleSwiftTestBodies(testSource);
+    if (!testBodies) add("purchase.presentation-test-container", "block", "Purchase test evidence is not contained in a credible XCTest or Swift Testing test method.", "Reference compiling test source with import XCTest, an XCTestCase test method, or import Testing and an @Test function.");
+    const assertions = assertionEvidence(testBodies);
+    const positiveAssertions = assertions.filter(isPositiveVisibilityAssertion);
+    const visiblePriceTested = positiveAssertions.some((value) => /(?:displayPrice|paywall\.price|localized.{0,30}price|price.{0,30}(?:visible|exist|label))/is.test(value));
+    const unavailableTested = assertions.some(isPurchaseUnavailableAssertion);
+    if (!visiblePriceTested) add("purchase.presentation-tests", "block", "Test evidence does not assert that the localized price is visible before purchase.", "Add a focused UI/snapshot assertion for visible localized pricing.");
+    if (!unavailableTested) add("purchase.unavailable-tests", "block", "Test evidence does not assert that purchase is disabled/unavailable before Product pricing loads.", "Add a focused assertion that the purchase action is disabled or absent in the loading/unavailable state.");
+    let subscriptionTestsReady = true;
+    if (money.type === "subscriptions") {
+      const periodTested = positiveAssertions.some((value) => /(?:paywall\.period|billing.{0,30}period|subscription.{0,30}period|(?:week|month|year).{0,30}(?:visible|exist|label))/is.test(value));
+      const legalLinksTested = positiveAssertions.some((value) => /(?:terms|terms of use)/i.test(value)) && positiveAssertions.some((value) => /privacy(?: policy)?/i.test(value));
+      const offerTested = !money.products.some((product) => product.introductoryOffer) || positiveAssertions.some((value) => /(?:paywall\.offer|introductory|free trial|trial.{0,30}(?:visible|exist|label))/is.test(value));
+      if (!periodTested) add("purchase.subscription-period-tests", "block", "Test evidence does not assert that the subscription billing period is visible.", "Assert the period/renewal cadence is present before purchase.");
+      if (!offerTested) add("purchase.offer-terms-tests", "block", "Test evidence does not assert that applicable introductory-offer terms are visible.", "Assert the trial/introductory terms are present before purchase.");
+      if (!legalLinksTested) add("purchase.legal-links-tests", "block", "Test evidence does not assert that both Terms and Privacy links are visible.", "Assert both legal links exist on the paywall.");
+      subscriptionTestsReady = periodTested && offerTested && legalLinksTested;
+    }
+    if (testRoleValid && Boolean(testBodies) && visiblePriceTested && unavailableTested && subscriptionTestsReady) add("purchase.presentation-tests", "pass", "Test evidence covers visible localized pricing, unavailable state, and applicable subscription disclosures.");
+  }
 }
 
 function productChecks(prefix: string, product: { productId: string; pricePointReference: string; localizations: Record<string, { displayName: string; description: string }>; familySharing: boolean; reviewNotes: string; reviewScreenshot: string }, locales: string[], add: Add): void {
@@ -438,13 +608,531 @@ function isRelevantSourcePath(file: string): boolean {
   const normalized = file.replace(/\\/g, "/");
   return !isNonProductionSourcePath(normalized) && /(?:^|\/)(?:project\.yml|project\.pbxproj|Info\.plist|\.xcconfig|PrivacyInfo\.xcprivacy|[^/]+\.(?:swift|m|mm|h|ts|tsx|js|jsx|mjs|cjs|mts|cts|entitlements|storekit))$/i.test(normalized);
 }
-function isNonProductionSourcePath(file: string): boolean { const parts = file.replace(/\\/g, "/").split("/"); const basename = parts.at(-1) || ""; return parts.includes("app-store-screenshots") || /\.d\.ts$/i.test(basename) || parts.some((component) => /(?:UI)?Tests$|^(?:scripts?|benchmarks?)$/i.test(component)) || /(?:\.test|\.spec)\.[cm]?[jt]sx?$/i.test(basename) || /(?:UI)?Tests?\.xcconfig$/i.test(basename); }
+function isNonProductionSourcePath(file: string): boolean { const parts = file.replace(/\\/g, "/").split("/"); const basename = parts.at(-1) || ""; return parts.includes("app-store-screenshots") || /\.d\.ts$/i.test(basename) || parts.some((component) => /(?:UI)?Tests$|^(?:scripts?|benchmarks?)$/i.test(component)) || /(?:UI)?Tests?\.(?:swift|m|mm)$/i.test(basename) || /(?:\.test|\.spec)\.[cm]?[jt]sx?$/i.test(basename) || /(?:UI)?Tests?\.xcconfig$/i.test(basename); }
+function isProductionSourceEvidencePath(file: string): boolean {
+  const normalized = file.replace(/\\/g, "/");
+  const parts = normalized.split("/");
+  return !isNonProductionSourcePath(normalized)
+    && !parts.some((component) => /^(?:fixtures?|samples?|docs?|testdata)$/i.test(component))
+    && /\.(?:swift|m|mm)$/i.test(normalized);
+}
+function isTestSourceEvidencePath(file: string): boolean {
+  const normalized = file.replace(/\\/g, "/");
+  return isNonProductionSourcePath(normalized) && /\.(?:swift|m|mm)$/i.test(normalized);
+}
+function isPolicyEvidencePath(file: string): boolean {
+  const normalized = file.replace(/\\/g, "/");
+  const parts = normalized.split("/");
+  return !isNonProductionSourcePath(normalized)
+    && !parts.some((component) => /^(?:fixtures?|samples?|testdata|shiplayer-release|release|dist|build|deriveddata|node_modules|scripts?|tools?)$/i.test(component))
+    && /\.(?:md|markdown|html?|txt)$/i.test(normalized);
+}
+function stripCodeComments(source: string): string {
+  let output = "";
+  let index = 0;
+  let state: "normal" | "string" | "multiline-string" | "line-comment" | "block-comment" = "normal";
+  let blockDepth = 0;
+  while (index < source.length) {
+    if (state === "normal") {
+      if (source.startsWith("//", index)) { state = "line-comment"; index += 2; continue; }
+      if (source.startsWith("/*", index)) { state = "block-comment"; blockDepth = 1; index += 2; continue; }
+      if (source.startsWith('"""', index)) { output += '"""'; state = "multiline-string"; index += 3; continue; }
+      if (source[index] === '"') { output += source[index]; state = "string"; index++; continue; }
+      output += source[index++];
+      continue;
+    }
+    if (state === "line-comment") {
+      if (source[index] === "\n") { output += "\n"; state = "normal"; }
+      index++;
+      continue;
+    }
+    if (state === "block-comment") {
+      if (source.startsWith("/*", index)) { blockDepth++; index += 2; continue; }
+      if (source.startsWith("*/", index)) { blockDepth--; index += 2; if (blockDepth === 0) state = "normal"; continue; }
+      if (source[index] === "\n") output += "\n";
+      index++;
+      continue;
+    }
+    if (state === "multiline-string") {
+      if (source.startsWith('"""', index)) { output += '"""'; state = "normal"; index += 3; continue; }
+      output += source[index++];
+      continue;
+    }
+    output += source[index];
+    if (source[index] === "\\" && index + 1 < source.length) output += source[++index];
+    else if (source[index] === '"') state = "normal";
+    index++;
+  }
+  return output;
+}
+function stripNonReleaseConditionalCompilation(source: string): string {
+  type ConditionalFrame = { parentActive: boolean; selected: boolean; uncertainPrior: boolean };
+  const frames: ConditionalFrame[] = [];
+  const output: string[] = [];
+  let active = true;
+  for (const line of source.split(/(?<=\n)/)) {
+    const directive = line.match(/^\s*#(if|elseif)\s+(.+?)\s*$/);
+    if (directive?.[1] === "if") {
+      const eligibility = conditionalCompilationEligibility(directive[2]);
+      frames.push({ parentActive: active, selected: eligibility === "eligible", uncertainPrior: eligibility === "unknown" });
+      active = active && eligibility === "eligible";
+      output.push(line.endsWith("\n") ? "\n" : "");
+      continue;
+    }
+    if (directive?.[1] === "elseif") {
+      const frame = frames.at(-1);
+      if (frame) {
+        const eligibility = conditionalCompilationEligibility(directive[2]);
+        active = frame.parentActive && !frame.selected && !frame.uncertainPrior && eligibility === "eligible";
+        if (active) frame.selected = true;
+        if (!frame.selected && eligibility === "unknown") frame.uncertainPrior = true;
+      }
+      output.push(line.endsWith("\n") ? "\n" : "");
+      continue;
+    }
+    if (/^\s*#else\b/.test(line)) {
+      const frame = frames.at(-1);
+      if (frame) { active = frame.parentActive && !frame.selected && !frame.uncertainPrior; if (active) frame.selected = true; }
+      output.push(line.endsWith("\n") ? "\n" : "");
+      continue;
+    }
+    if (/^\s*#endif\b/.test(line)) {
+      const frame = frames.pop();
+      if (frame) active = frame.parentActive;
+      output.push(line.endsWith("\n") ? "\n" : "");
+      continue;
+    }
+    output.push(active ? line : (line.endsWith("\n") ? "\n" : ""));
+  }
+  return output.join("");
+}
+function conditionalCompilationEligibility(condition: string): "eligible" | "excluded" | "unknown" {
+  const value = stripOuterParentheses(condition.replace(/\s+/g, " ").trim());
+  const orTerms = value.split(/\s*\|\|\s*/);
+  if (orTerms.length > 1) {
+    const results = orTerms.map(conditionalCompilationEligibility);
+    return results.includes("eligible") ? "eligible" : results.every((item) => item === "excluded") ? "excluded" : "unknown";
+  }
+  const andTerms = value.split(/\s*&&\s*/);
+  if (andTerms.length > 1) {
+    const results = andTerms.map(conditionalCompilationEligibility);
+    return results.includes("excluded") ? "excluded" : results.every((item) => item === "eligible") ? "eligible" : "unknown";
+  }
+  if (/^false$/i.test(value) || /^DEBUG$/i.test(value) || /^targetEnvironment\s*\(\s*simulator\s*\)$/i.test(value) || /^os\s*\(\s*(?:macOS|tvOS|watchOS|visionOS)\s*\)$/i.test(value) || /^!\s*os\s*\(\s*iOS\s*\)$/i.test(value) || /^!\s*canImport\s*\(\s*(?:StoreKit|SwiftUI)\s*\)$/i.test(value)) return "excluded";
+  if (/^true$/i.test(value) || /^!\s*DEBUG$/i.test(value) || /^!\s*targetEnvironment\s*\(\s*simulator\s*\)$/i.test(value) || /^os\s*\(\s*iOS\s*\)$/i.test(value) || /^!\s*os\s*\(\s*(?:macOS|tvOS|watchOS|visionOS)\s*\)$/i.test(value) || /^canImport\s*\(\s*(?:StoreKit|SwiftUI)\s*\)$/i.test(value)) return "eligible";
+  return "unknown";
+}
+function stripPolicyEvidenceComments(source: string): string { return source.replace(/<!--[\s\S]*?-->/g, ""); }
+function assertionEvidence(source: string): string[] {
+  const evidence: string[] = [];
+  for (const match of source.matchAll(/(?:\bXCTAssert[A-Za-z]*|#expect|\bassertSnapshot)\s*\(/g)) {
+    const start = match.index;
+    const opening = source.indexOf("(", start);
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = opening; index < source.length && index - opening <= 2_000; index++) {
+      const character = source[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (character === "\\") escaped = true;
+        else if (character === '"') inString = false;
+        continue;
+      }
+      if (character === '"') { inString = true; continue; }
+      if (character === "(") depth++;
+      else if (character === ")" && --depth === 0) { evidence.push(source.slice(start, index + 1)); break; }
+    }
+  }
+  return evidence;
+}
+function isPositiveVisibilityAssertion(evidence: string): boolean {
+  if (/\bassertSnapshot\s*\(/.test(evidence)) return true;
+  const argumentsList = callArguments(evidence);
+  if (!argumentsList.length) return false;
+  if (/^\s*(?:XCTAssert|XCTAssertTrue|#expect)\s*\(/.test(evidence)) return isDirectVisibilityExpression(argumentsList[0]);
+  if (!/^\s*XCTAssertEqual\s*\(/.test(evidence) || argumentsList.length < 2) return false;
+  const left = stripOuterParentheses(argumentsList[0]);
+  const right = stripOuterParentheses(argumentsList[1]);
+  return (isDirectVisibilityExpression(left) && right === "true") || (left === "true" && isDirectVisibilityExpression(right));
+}
+function isPurchaseUnavailableAssertion(evidence: string): boolean {
+  if (!/(?:purchase|buy|subscribe|unlock|canPurchase|isEnabled)/i.test(evidence)) return false;
+  const argumentsList = callArguments(evidence);
+  if (!argumentsList.length) return false;
+  if (/^\s*XCTAssertFalse\s*\(/.test(evidence)) return isDirectAvailabilityState(argumentsList[0]);
+  if (/^\s*XCTAssertEqual\s*\(/.test(evidence) && argumentsList.length >= 2) {
+    const left = stripOuterParentheses(argumentsList[0]);
+    const right = stripOuterParentheses(argumentsList[1]);
+    return (isDirectAvailabilityState(left) && right === "false") || (left === "false" && isDirectAvailabilityState(right));
+  }
+  if (!/^\s*(?:XCTAssertTrue|XCTAssert|#expect)\s*\(/.test(evidence)) return false;
+  const expression = stripOuterParentheses(argumentsList[0]);
+  if (expression.startsWith("!")) return isDirectAvailabilityState(stripOuterParentheses(expression.slice(1)));
+  const comparison = splitDirectBooleanComparison(expression);
+  if (!comparison) return false;
+  const [left, operator, right] = comparison;
+  return (isDirectAvailabilityState(left) && ((operator === "==" && right === "false") || (operator === "!=" && right === "true")))
+    || (isDirectAvailabilityState(right) && ((operator === "==" && left === "false") || (operator === "!=" && left === "true")));
+}
+function isDirectVisibilityExpression(expression: string): boolean {
+  const value = maskStringLiterals(stripOuterParentheses(expression));
+  if (/!(?!=)/.test(value) || hasTopLevelBooleanOrTernaryOperator(value)) return false;
+  return /(?:\.exists\b|\.waitForExistence\s*\([^()]*\))\s*$/.test(value);
+}
+function isDirectAvailabilityState(expression: string): boolean {
+  const value = maskStringLiterals(stripOuterParentheses(expression));
+  if (/!(?!=)/.test(value) || hasTopLevelBooleanOrTernaryOperator(value)) return false;
+  return /(?:\.isEnabled\b|\.exists\b|\bcanPurchase\b)\s*$/.test(value);
+}
+function hasTopLevelBooleanOrTernaryOperator(source: string): boolean {
+  let parentheses = 0;
+  let brackets = 0;
+  let braces = 0;
+  for (let index = 0; index < source.length; index++) {
+    const character = source[index];
+    if (character === "(") parentheses++;
+    else if (character === ")") parentheses--;
+    else if (character === "[") brackets++;
+    else if (character === "]") brackets--;
+    else if (character === "{") braces++;
+    else if (character === "}") braces--;
+    else if (parentheses === 0 && brackets === 0 && braces === 0) {
+      if (source.startsWith("&&", index) || source.startsWith("||", index) || source.startsWith("==", index) || source.startsWith("!=", index)) return true;
+      if (character === ":" || (character === "?" && source[index + 1] !== ".")) return true;
+    }
+  }
+  return false;
+}
+function splitDirectBooleanComparison(expression: string): [string, "==" | "!=", string] | undefined {
+  const value = stripOuterParentheses(expression);
+  const match = value.match(/^([\s\S]+?)\s*(==|!=)\s*([\s\S]+)$/);
+  if (!match || /(?:&&|\|\|)/.test(value)) return undefined;
+  return [stripOuterParentheses(match[1]), match[2] as "==" | "!=", stripOuterParentheses(match[3])];
+}
+function maskStringLiterals(source: string): string { return source.replace(/"(?:\\.|[^"\\])*"/g, '""'); }
+function stripOuterParentheses(source: string): string {
+  let value = source.trim();
+  while (value.startsWith("(") && matchingDelimiter(value, 0, "(", ")", value.length) === value.length - 1) value = value.slice(1, -1).trim();
+  return value;
+}
+function callArguments(source: string): string[] {
+  const opening = source.indexOf("(");
+  if (opening < 0) return [];
+  const closing = matchingDelimiter(source, opening, "(", ")", source.length);
+  return closing < 0 ? [] : splitTopLevelArguments(source.slice(opening + 1, closing));
+}
+function splitTopLevelArguments(source: string): string[] {
+  const values: string[] = [];
+  let start = 0;
+  let parentheses = 0;
+  let brackets = 0;
+  let braces = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < source.length; index++) {
+    const character = source[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') { inString = true; continue; }
+    if (character === "(") parentheses++;
+    else if (character === ")") parentheses--;
+    else if (character === "[") brackets++;
+    else if (character === "]") brackets--;
+    else if (character === "{") braces++;
+    else if (character === "}") braces--;
+    else if (character === "," && parentheses === 0 && brackets === 0 && braces === 0) { values.push(source.slice(start, index).trim()); start = index + 1; }
+  }
+  values.push(source.slice(start).trim());
+  return values.filter(Boolean);
+}
+function visibleUICallArguments(source: string, names: Set<string>): string[] {
+  const argumentsList: string[] = [];
+  for (const match of source.matchAll(/\b(Text|Button|Label|Link|NavigationLink)\s*\(/g)) {
+    if (!names.has(match[1])) continue;
+    const opening = source.indexOf("(", match.index);
+    const closing = matchingDelimiter(source, opening, "(", ")", 2_000);
+    if (closing < 0) continue;
+    const rawArguments = source.slice(opening + 1, closing);
+    if (match[1] === "Text" || match[1] === "Label") { argumentsList.push(rawArguments); continue; }
+    const visibleParts: string[] = [];
+    const firstArgument = splitTopLevelArguments(rawArguments)[0];
+    if (firstArgument && !/^[A-Za-z_]\w*\s*:/.test(firstArgument)) visibleParts.push(firstArgument);
+    const firstClosure = closureImmediatelyAfter(source, closing + 1);
+    if (firstClosure) {
+      const explicitLabel = labeledClosureImmediatelyAfter(source, firstClosure.end + 1, "label");
+      if (explicitLabel) visibleParts.push(explicitLabel.body);
+      else if (/\b(?:action|destination)\s*:/.test(rawArguments)) visibleParts.push(firstClosure.body);
+    }
+    if (visibleParts.length) argumentsList.push(visibleParts.join("\n"));
+  }
+  for (const match of source.matchAll(/\b(Button|Label|Link|NavigationLink)\s*\{/g)) {
+    if (!names.has(match[1])) continue;
+    const opening = source.indexOf("{", match.index);
+    const closing = matchingDelimiter(source, opening, "{", "}", 3_000);
+    if (closing < 0) continue;
+    const label = labeledClosureImmediatelyAfter(source, closing + 1, "label");
+    if (label) argumentsList.push(label.body);
+  }
+  return argumentsList;
+}
+function closureImmediatelyAfter(source: string, start: number): { body: string; end: number } | undefined {
+  const offset = source.slice(start).search(/\S/);
+  const opening = offset < 0 ? -1 : start + offset;
+  if (opening < 0 || source[opening] !== "{") return undefined;
+  const closing = matchingDelimiter(source, opening, "{", "}", 3_000);
+  return closing < 0 ? undefined : { body: source.slice(opening + 1, closing), end: closing };
+}
+function labeledClosureImmediatelyAfter(source: string, start: number, label: string): { body: string; end: number } | undefined {
+  const match = source.slice(start, start + 1_000).match(new RegExp(`^\\s*${label}\\s*:\\s*\\{`));
+  if (!match) return undefined;
+  const opening = start + match[0].lastIndexOf("{");
+  const closing = matchingDelimiter(source, opening, "{", "}", 3_000);
+  return closing < 0 ? undefined : { body: source.slice(opening + 1, closing), end: closing };
+}
+function matchingDelimiter(source: string, opening: number, open: string, close: string, limit: number): number {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = opening; index < source.length && index - opening <= limit; index++) {
+    const character = source[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') { inString = true; continue; }
+    if (character === open) depth++;
+    else if (character === close && --depth === 0) return index;
+  }
+  return -1;
+}
+function balancedBlock(source: string, opening: number, limit = 50_000): string {
+  const closing = matchingDelimiter(source, opening, "{", "}", limit);
+  return closing < 0 ? "" : source.slice(opening + 1, closing);
+}
+function credibleSwiftTestBodies(source: string): string {
+  const bodies: string[] = [];
+  if (/\bimport\s+XCTest\b/.test(source) && /:\s*XCTestCase\b/.test(source)) {
+    for (const match of source.matchAll(/\bfunc\s+test[A-Za-z0-9_]*\s*\([^)]*\)[^{]*\{/g)) {
+      const opening = source.indexOf("{", match.index);
+      const body = balancedBlock(source, opening);
+      if (body) bodies.push(body);
+    }
+  }
+  if (/\bimport\s+Testing\b/.test(source)) {
+    for (const match of source.matchAll(/@Test(?:\s*\([^)]*\))?[\s\S]{0,500}?\bfunc\s+[A-Za-z_]\w*\s*\([^)]*\)[^{]*\{/g)) {
+      const opening = source.indexOf("{", match.index);
+      const body = balancedBlock(source, opening);
+      if (body) bodies.push(body);
+    }
+  }
+  return bodies.join("\n");
+}
+function hasRenderedSwiftUICall(source: string, name: "ProductView" | "SubscriptionStoreView" | "StoreView"): boolean {
+  for (const match of source.matchAll(new RegExp(`\\b${name}\\s*\\(`, "g"))) {
+    if (!isInsideAssignmentExpression(source, match.index)) return true;
+  }
+  return false;
+}
+function isInsideAssignmentExpression(source: string, index: number): boolean {
+  for (const declaration of source.matchAll(/\b(?:let|var)\s+[A-Za-z_]\w*(?:\s*:\s*[^=\n]+)?\s*=(?!=)/g)) {
+    if (declaration.index >= index || isConditionalBinding(source, declaration.index)) continue;
+    const equals = declaration.index + declaration[0].lastIndexOf("=");
+    if (index > equals && index < swiftInitializerEnd(source, equals + 1)) return true;
+  }
+  return false;
+}
+function isConditionalBinding(source: string, declaration: number): boolean {
+  const boundary = Math.max(source.lastIndexOf("{", declaration), source.lastIndexOf("}", declaration), source.lastIndexOf(";", declaration));
+  return /\b(?:if|guard|while|for)\b[\s\S]*$/.test(source.slice(boundary + 1, declaration));
+}
+function swiftInitializerEnd(source: string, start: number): number {
+  let parentheses = 0;
+  let brackets = 0;
+  let braces = 0;
+  let inString = false;
+  let escaped = false;
+  let lastSignificant = "=";
+  for (let index = start; index < source.length; index++) {
+    const character = source[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') { inString = true; lastSignificant = character; continue; }
+    if (character === "(") parentheses++;
+    else if (character === ")") parentheses--;
+    else if (character === "[") brackets++;
+    else if (character === "]") brackets--;
+    else if (character === "{") braces++;
+    else if (character === "}") braces--;
+    if (parentheses === 0 && brackets === 0 && braces === 0) {
+      if (character === ";") return index;
+      if (character === "\n" && !/[=([{,:+\-*/?&|.]$/.test(lastSignificant)) return index;
+    }
+    if (!/\s/.test(character)) lastSignificant = character;
+  }
+  return source.length;
+}
+function hasUnverifiedCustomProductViewStyle(source: string): boolean {
+  for (const match of source.matchAll(/\.productViewStyle\s*\(/g)) {
+    const opening = source.indexOf("(", match.index);
+    const closing = matchingDelimiter(source, opening, "(", ")", 1_000);
+    if (closing < 0) return true;
+    const style = stripOuterParentheses(source.slice(opening + 1, closing));
+    if (!/^\.(?:automatic|compact|regular|large)$/.test(style)) return true;
+  }
+  return false;
+}
+function hasUnverifiedCustomSubscriptionStoreControlStyle(source: string): boolean {
+  for (const match of source.matchAll(/\.subscriptionStoreControlStyle\s*\(/g)) {
+    const opening = source.indexOf("(", match.index);
+    const closing = matchingDelimiter(source, opening, "(", ")", 1_000);
+    if (closing < 0) return true;
+    const style = stripOuterParentheses(splitTopLevelArguments(source.slice(opening + 1, closing))[0] ?? "");
+    if (!/^\.(?:automatic|buttons|picker|prominentPicker|compactPicker|pagedPicker|pagedProminentPicker)$/.test(style)) return true;
+  }
+  return false;
+}
+function visibleTextEvidence(source: string): string {
+  const visibleSource = maskHiddenControlClosures(source);
+  const visibleArguments = visibleUICallArguments(visibleSource, new Set(["Text", "Label"]));
+  const resolved = [...visibleArguments];
+  for (const match of visibleSource.matchAll(/\b(?:let|var)\s+([A-Za-z_]\w*)\s*=\s*"([^"\n]{1,2000})"/g)) {
+    const nearbySource = visibleSource.slice(match.index, match.index + 2_000);
+    const nearbyVisible = visibleUICallArguments(nearbySource, new Set(["Text", "Label"]));
+    const reference = new RegExp(`\\b${match[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`);
+    if (nearbyVisible.some((value) => reference.test(value))) resolved.push(match[2]);
+  }
+  return resolved.join("\n");
+}
+function maskHiddenControlClosures(source: string): string {
+  const ranges: Array<[number, number]> = [];
+  for (const match of source.matchAll(/\b(Button|Link|NavigationLink)\s*\(/g)) {
+    const opening = source.indexOf("(", match.index);
+    const closing = matchingDelimiter(source, opening, "(", ")", 2_000);
+    if (closing < 0) continue;
+    const rawArguments = source.slice(opening + 1, closing);
+    for (const hidden of rawArguments.matchAll(/\b(?:action|destination)\s*:\s*\{/g)) {
+      const hiddenOpening = opening + 1 + hidden.index + hidden[0].lastIndexOf("{");
+      const hiddenClosing = matchingDelimiter(source, hiddenOpening, "{", "}", 3_000);
+      if (hiddenClosing >= 0) ranges.push([hiddenOpening, hiddenClosing]);
+    }
+    const firstClosure = closureImmediatelyAfter(source, closing + 1);
+    if (!firstClosure) continue;
+    const firstArgument = splitTopLevelArguments(rawArguments)[0];
+    const explicitLabel = labeledClosureImmediatelyAfter(source, firstClosure.end + 1, "label");
+    if (explicitLabel || (firstArgument && !/^[A-Za-z_]\w*\s*:/.test(firstArgument))) ranges.push([source.indexOf("{", closing + 1), firstClosure.end]);
+  }
+  for (const match of source.matchAll(/\b(Button|Link|NavigationLink)\s*\{/g)) {
+    const opening = source.indexOf("{", match.index);
+    const closing = matchingDelimiter(source, opening, "{", "}", 3_000);
+    if (closing >= 0) ranges.push([opening, closing]);
+  }
+  if (!ranges.length) return source;
+  const characters = [...source];
+  for (const [start, end] of ranges) for (let index = start; index <= end; index++) if (characters[index] !== "\n") characters[index] = " ";
+  return characters.join("");
+}
+function hasVisibleLocalizedPrice(source: string): boolean {
+  const visibleArguments = visibleUICallArguments(source, new Set(["Text", "Button", "Label"]));
+  if (visibleArguments.some((value) => /\.displayPrice\b/.test(value))) return true;
+  for (const match of source.matchAll(/\b(?:let|var)\s+([A-Za-z_]\w*)\s*=\s*[^\n;]*\.displayPrice\b/g)) {
+    const name = match[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (visibleArguments.some((value) => new RegExp(`\\\\\\(${name}\\b`).test(value))) return true;
+  }
+  return false;
+}
+function hasUnavailablePurchaseState(source: string): boolean {
+  for (const branch of source.matchAll(/\bif\s+let\s+[^{}\n]*(?:product|price)[^{}]*\{/gi)) {
+    const opening = source.indexOf("{", branch.index);
+    const body = balancedBlock(source, opening);
+    if (/\bButton\s*(?:\(|\{)/.test(body) && /\.purchase\s*\(/.test(body)) return true;
+  }
+  for (const button of purchaseButtonEvidence(source)) {
+    if (!/\.purchase\s*\(/.test(button.core)) continue;
+    if (button.disabledPredicates.some(isSafePurchaseDisabledPredicate)) return true;
+  }
+  return false;
+}
+function purchaseButtonEvidence(source: string): Array<{ core: string; disabledPredicates: string[] }> {
+  const evidence: Array<{ core: string; disabledPredicates: string[] }> = [];
+  for (const match of source.matchAll(/\bButton\s*(\(|\{)/g)) {
+    const opening = source.indexOf(match[1], match.index);
+    const closing = matchingDelimiter(source, opening, match[1], match[1] === "(" ? ")" : "}", 5_000);
+    if (closing < 0) continue;
+    let end = closing;
+    const firstClosure = match[1] === "(" ? closureImmediatelyAfter(source, closing + 1) : undefined;
+    if (firstClosure) end = firstClosure.end;
+    const labelClosure = labeledClosureImmediatelyAfter(source, end + 1, "label");
+    if (labelClosure) end = labelClosure.end;
+    const disabledPredicates: string[] = [];
+    let cursor = end + 1;
+    while (cursor < source.length) {
+      const whitespace = source.slice(cursor).match(/^\s*/)?.[0].length || 0;
+      cursor += whitespace;
+      const modifier = source.slice(cursor).match(/^\.([A-Za-z_]\w*)\s*\(/);
+      if (!modifier) break;
+      const modifierOpening = cursor + modifier[0].lastIndexOf("(");
+      const modifierClosing = matchingDelimiter(source, modifierOpening, "(", ")", 2_000);
+      if (modifierClosing < 0) break;
+      if (modifier[1] === "disabled") disabledPredicates.push(source.slice(modifierOpening + 1, modifierClosing));
+      cursor = modifierClosing + 1;
+    }
+    evidence.push({ core: source.slice(match.index, end + 1), disabledPredicates });
+  }
+  return evidence;
+}
+function isSafePurchaseDisabledPredicate(predicate: string): boolean {
+  const value = stripOuterParentheses(predicate).replace(/\s+/g, " ").trim();
+  if (/(?:&&|\|\|)/.test(value)) return false;
+  if (/^(?:[A-Za-z_]\w*\.)*(?:isLoading|loading|priceLoading|productLoading)$/i.test(value)) return true;
+  if (/^(?:[A-Za-z_]\w*\.)*(?:product|price)\s*==\s*nil$/i.test(value)) return true;
+  return /^!\s*(?:[A-Za-z_]\w*\.)*(?:isAvailable|available|canPurchase|priceLoaded|productLoaded)$/i.test(value);
+}
+function hasVisibleSubscriptionPeriod(source: string): boolean {
+  return visibleUICallArguments(source, new Set(["Text", "Button", "Label"])).some((value) => /(?:subscriptionPeriod|billing\s+period|billed\s+(?:weekly|monthly|yearly)|renews?\s+(?:weekly|monthly|yearly)|per\s+(?:week|month|year))/i.test(value));
+}
+function hasVisibleOfferTerms(source: string): boolean {
+  return visibleUICallArguments(source, new Set(["Text", "Button", "Label"])).some((value) => /(?:introductory\s+offer|free\s+trial|trial\s+(?:then|followed|renews|for)|offer\s+terms)/i.test(value));
+}
+function hasVisibleTermsAndPrivacyLinks(source: string): boolean {
+  const links = visibleUICallArguments(source, new Set(["Link", "NavigationLink"]));
+  const hasTermsLink = links.some((value) => /(?:terms|terms of use)/i.test(value));
+  const hasPrivacyLink = links.some((value) => /privacy(?: policy)?/i.test(value));
+  return hasTermsLink && hasPrivacyLink;
+}
 async function validEvidencePaths(repository: string, evidence: string[]): Promise<Set<string>> {
   const valid = new Set<string>();
   for (const value of evidence) {
     try { const target = await resolveContained(repository, value, "evidence path"); const details = await lstat(target); if (details.isFile() && !details.isSymbolicLink()) valid.add(value); } catch { /* invalid evidence is intentionally excluded */ }
   }
   return valid;
+}
+async function evidenceText(repository: string, evidence: string[]): Promise<{ complete: boolean; text: string; entries: Array<{ path: string; text: string }> }> {
+  const chunks: string[] = [];
+  const entries: Array<{ path: string; text: string }> = [];
+  for (const value of evidence) {
+    try {
+      const target = await resolveContained(repository, value, "evidence path");
+      const details = await lstat(target);
+      if (!details.isFile() || details.isSymbolicLink() || details.size > 1_000_000) return { complete: false, text: "", entries: [] };
+      const text = await readFile(target, "utf8");
+      chunks.push(text);
+      entries.push({ path: value, text });
+    } catch {
+      return { complete: false, text: "", entries: [] };
+    }
+  }
+  return { complete: evidence.length > 0 && chunks.length === evidence.length, text: chunks.join("\n"), entries };
 }
 function isFamilyScreenshotDimensions(family: "iphone" | "ipad", width: number, height: number): boolean { const supported = family === "iphone" ? IPHONE_SCREENSHOT_DIMENSIONS : IPAD_SCREENSHOT_DIMENSIONS; return supported.has(`${width}x${height}`) || supported.has(`${height}x${width}`); }
 async function nonEmptySafeIconBundle(directory: string): Promise<boolean> {

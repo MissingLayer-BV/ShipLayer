@@ -11,6 +11,7 @@
     "permissions",
     "dataProcessing",
     "externalProcessors",
+    "aiDataSharing",
     "externalServiceDecisions",
     "secondaryTargetConfirmations",
     "review",
@@ -66,6 +67,12 @@
       "items": {
         "$ref": "#/$defs/processor"
       }
+    },
+    "aiDataSharing": {
+      "oneOf": [
+        { "$ref": "#/$defs/aiDataSharingDisabled" },
+        { "$ref": "#/$defs/aiDataSharingEnabled" }
+      ]
     },
     "externalServiceDecisions": {
       "type": "array",
@@ -395,13 +402,23 @@
       "additionalProperties": false,
       "required": [
         "name",
+        "kind",
+        "aiPipelineRecipient",
         "purpose",
         "dataCategories",
+        "privacyPolicyUrl",
+        "protectionConfirmation",
         "confirmation"
       ],
       "properties": {
         "name": {
           "$ref": "#/$defs/nonEmpty"
+        },
+        "kind": {
+          "enum": ["ai", "network", "analytics", "payments", "other"]
+        },
+        "aiPipelineRecipient": {
+          "type": "boolean"
         },
         "purpose": {
           "$ref": "#/$defs/dataPurpose"
@@ -413,6 +430,12 @@
             "$ref": "#/$defs/dataCategory"
           }
         },
+        "privacyPolicyUrl": {
+          "$ref": "#/$defs/url"
+        },
+        "protectionConfirmation": {
+          "$ref": "#/$defs/confirmation"
+        },
         "confirmation": {
           "$ref": "#/$defs/confirmation"
         },
@@ -422,6 +445,76 @@
             "$ref": "#/$defs/repoPath"
           }
         }
+      }
+    },
+    "aiDataSharingDisabled": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "const": false }
+      }
+    },
+    "aiDataSharingEnabled": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "dataSent", "purpose", "processorNames", "consent", "privacyPolicy"],
+      "properties": {
+        "enabled": { "const": true },
+        "dataSent": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/nonEmpty" }
+        },
+        "purpose": { "$ref": "#/$defs/nonEmpty" },
+        "processorNames": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/nonEmpty" }
+        },
+        "consent": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["shownBeforeTransmission", "affirmativeAction", "declinePath", "privacyPolicyLinkVisible", "evidence", "confirmation"],
+          "properties": {
+            "shownBeforeTransmission": { "type": "boolean" },
+            "affirmativeAction": { "$ref": "#/$defs/nonEmpty" },
+            "declinePath": { "$ref": "#/$defs/nonEmpty" },
+            "privacyPolicyLinkVisible": { "type": "boolean" },
+            "evidence": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/repoPath" } },
+            "confirmation": { "$ref": "#/$defs/confirmation" }
+          }
+        },
+        "privacyPolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["identifiesDataAndCollectionMethod", "identifiesAllUses", "namesAllProcessors", "explainsRetentionAndDeletion", "confirmsEqualProtection", "evidence", "confirmation"],
+          "properties": {
+            "identifiesDataAndCollectionMethod": { "type": "boolean" },
+            "identifiesAllUses": { "type": "boolean" },
+            "namesAllProcessors": { "type": "boolean" },
+            "explainsRetentionAndDeletion": { "type": "boolean" },
+            "confirmsEqualProtection": { "type": "boolean" },
+            "evidence": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/repoPath" } },
+            "confirmation": { "$ref": "#/$defs/confirmation" }
+          }
+        }
+      }
+    },
+    "purchasePresentation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["localizedPriceSource", "localizedPriceVisibleBeforePurchase", "purchaseDisabledUntilPriceLoaded", "subscriptionPeriodVisibleBeforePurchase", "offerTermsVisibleBeforePurchase", "termsAndPrivacyLinksVisibleBeforePurchase", "sourceEvidence", "testEvidence", "confirmation"],
+      "properties": {
+        "localizedPriceSource": { "const": "storekit-display-price" },
+        "localizedPriceVisibleBeforePurchase": { "type": "boolean" },
+        "purchaseDisabledUntilPriceLoaded": { "type": "boolean" },
+        "subscriptionPeriodVisibleBeforePurchase": { "oneOf": [{ "type": "boolean" }, { "const": "not-applicable" }] },
+        "offerTermsVisibleBeforePurchase": { "oneOf": [{ "type": "boolean" }, { "const": "not-applicable" }] },
+        "termsAndPrivacyLinksVisibleBeforePurchase": { "oneOf": [{ "type": "boolean" }, { "const": "not-applicable" }] },
+        "sourceEvidence": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/repoPath" } },
+        "testEvidence": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/repoPath" } },
+        "confirmation": { "$ref": "#/$defs/confirmation" }
       }
     },
     "externalServiceDecision": {
@@ -869,6 +962,7 @@
         "products",
         "paywallNavigation",
         "restorePath",
+        "purchasePresentation",
         "confirmation"
       ],
       "properties": {
@@ -888,6 +982,9 @@
         "restorePath": {
           "$ref": "#/$defs/nonEmpty"
         },
+        "purchasePresentation": {
+          "$ref": "#/$defs/purchasePresentation"
+        },
         "confirmation": {
           "$ref": "#/$defs/confirmation"
         }
@@ -904,6 +1001,7 @@
         "products",
         "paywallNavigation",
         "restorePath",
+        "purchasePresentation",
         "termsUrl",
         "termsOfUse",
         "privacyUrl",
@@ -972,6 +1070,9 @@
         },
         "restorePath": {
           "$ref": "#/$defs/nonEmpty"
+        },
+        "purchasePresentation": {
+          "$ref": "#/$defs/purchasePresentation"
         },
         "termsUrl": {
           "$ref": "#/$defs/url"

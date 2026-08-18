@@ -39,11 +39,42 @@ export interface LocaleCopy {
 
 export interface ExternalProcessor {
   name: string;
+  kind: "ai" | "network" | "analytics" | "payments" | "other";
+  /** True only when this processor receives data in the declared AI feature pipeline. */
+  aiPipelineRecipient: boolean;
   purpose: string;
   dataCategories: string[];
+  privacyPolicyUrl: string;
+  protectionConfirmation: Confirmation;
   confirmation: Confirmation;
   evidence?: string[];
 }
+
+export type AIDataSharing =
+  | { enabled: false }
+  | {
+      enabled: true;
+      dataSent: string[];
+      purpose: string;
+      processorNames: string[];
+      consent: {
+        shownBeforeTransmission: boolean;
+        affirmativeAction: string;
+        declinePath: string;
+        privacyPolicyLinkVisible: boolean;
+        evidence: string[];
+        confirmation: Confirmation;
+      };
+      privacyPolicy: {
+        identifiesDataAndCollectionMethod: boolean;
+        identifiesAllUses: boolean;
+        namesAllProcessors: boolean;
+        explainsRetentionAndDeletion: boolean;
+        confirmsEqualProtection: boolean;
+        evidence: string[];
+        confirmation: Confirmation;
+      };
+  };
 export interface ExternalServiceDecision {
   finding: string;
   disposition: "declared-processor" | "not-an-external-processor";
@@ -80,11 +111,23 @@ export interface SubscriptionProduct {
   reviewScreenshot: string;
 }
 
+export interface PurchasePresentation {
+  localizedPriceSource: "storekit-display-price";
+  localizedPriceVisibleBeforePurchase: boolean;
+  purchaseDisabledUntilPriceLoaded: boolean;
+  subscriptionPeriodVisibleBeforePurchase: boolean | "not-applicable";
+  offerTermsVisibleBeforePurchase: boolean | "not-applicable";
+  termsAndPrivacyLinksVisibleBeforePurchase: boolean | "not-applicable";
+  sourceEvidence: string[];
+  testEvidence: string[];
+  confirmation: Confirmation;
+}
+
 export type Monetization =
   | { type: "free" }
   | { type: "paid-app"; pricePointReference: string }
-  | { type: "non-consumables"; products: Array<{ productId: string; referenceName: string; localizations: Record<string, { displayName: string; description: string }>; pricePointReference: string; familySharing: boolean; reviewNotes: string; reviewScreenshot: string }>; paywallNavigation: string; restorePath: string; confirmation: Confirmation }
-  | { type: "subscriptions"; group: { referenceName: string; subscriptionGroupId?: string; localizations: Record<string, { displayName: string }> }; baseTerritory: string; baseTerritoryConfirmation: Confirmation; products: SubscriptionProduct[]; paywallNavigation: string; restorePath: string; termsUrl: string; termsOfUse: { type: "apple-standard-eula" | "custom"; confirmation: Confirmation }; privacyUrl: string; disclosureConfirmation: Confirmation; confirmation: Confirmation };
+  | { type: "non-consumables"; products: Array<{ productId: string; referenceName: string; localizations: Record<string, { displayName: string; description: string }>; pricePointReference: string; familySharing: boolean; reviewNotes: string; reviewScreenshot: string }>; paywallNavigation: string; restorePath: string; purchasePresentation: PurchasePresentation; confirmation: Confirmation }
+  | { type: "subscriptions"; group: { referenceName: string; subscriptionGroupId?: string; localizations: Record<string, { displayName: string }> }; baseTerritory: string; baseTerritoryConfirmation: Confirmation; products: SubscriptionProduct[]; paywallNavigation: string; restorePath: string; purchasePresentation: PurchasePresentation; termsUrl: string; termsOfUse: { type: "apple-standard-eula" | "custom"; confirmation: Confirmation }; privacyUrl: string; disclosureConfirmation: Confirmation; confirmation: Confirmation };
 
 export interface ScreenshotScenario {
   id: string;
@@ -121,6 +164,7 @@ export interface ShipLayerManifest {
   permissions: Array<{ key: string; purpose?: string; confirmation: Confirmation; evidence?: string[] }>;
   dataProcessing: DataProcessing[];
   externalProcessors: ExternalProcessor[];
+  aiDataSharing: AIDataSharing;
   externalServiceDecisions: ExternalServiceDecision[];
   secondaryTargetConfirmations: SecondaryTargetConfirmation[];
   review: { contact?: { firstName?: string; lastName?: string; email?: string; phone?: string }; demoAccount?: { required: boolean; usernameEnv?: string; passwordEnv?: string; setupInstructions?: string; credentialsEnteredConfirmation?: Confirmation }; notes?: string; recordingScenarios: ScreenshotScenario[]; sampleData?: string[] };
