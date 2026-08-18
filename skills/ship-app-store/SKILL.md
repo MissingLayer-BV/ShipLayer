@@ -19,10 +19,10 @@ Use the repository's `shiplayer` CLI for all deterministic work. Do not recreate
 
 ## App Review hard gates
 
-- For any third-party AI feature, require `aiDataSharing.enabled: true`, exact data sent, purpose, every intermediary/provider recipient, and evidence of a disclosure shown before transmission. The affirmative action must explicitly say data is being sent; a generic Continue/OK action is insufficient. Require a visible privacy-policy link and a local/non-AI decline path.
-- Require matching privacy-policy evidence that explains how the data is obtained, every use and recipient, retention/deletion, and that processors provide the same or equal protection. Do not treat terms-only disclosure as sufficient.
-- For every non-consumable or subscription, require production evidence that StoreKit `Product.displayPrice` is visible before purchase and that purchase is disabled while product/price loading fails. Require a UI or snapshot assertion for the price. Never approve a hard-coded price.
-- For subscriptions, also require the billing period, applicable offer terms, and Terms/Privacy links to be visible before purchase.
+- For any third-party AI feature, require `aiDataSharing.enabled: true`, exact data sent, purpose, and every intermediary/provider recipient. Mark every processor in that feature pipeline `aiPipelineRecipient: true` while keeping unrelated analytics/payments `false`. Production consent source—not test/fixture/docs text—must render the declared affirmative action, non-AI decline path, and Privacy Policy link before transmission. The affirmative action must explicitly say data is sent/shared/uploaded/transmitted.
+- Require matching privacy-policy evidence that explains how data is obtained/transmitted, every use and recipient, retention/deletion, and same-or-equal processor protection. Do not treat terms-only disclosure or manifest booleans as sufficient.
+- For every non-consumable or subscription, require production evidence that StoreKit `Product.displayPrice` reaches visible UI and that a custom purchase action is disabled/withheld while product/price is loading or unavailable. `ProductView`/`SubscriptionStoreView` may own the purchase action. Require conventional test-source assertions for both visible pricing and the unavailable state. Never approve hard-coded or unused prices.
+- For subscriptions, also require production and test evidence that the billing period, applicable offer terms, and Terms/Privacy links are visible before purchase.
 
 ## Safety
 

@@ -403,6 +403,7 @@
       "required": [
         "name",
         "kind",
+        "aiPipelineRecipient",
         "purpose",
         "dataCategories",
         "privacyPolicyUrl",
@@ -415,6 +416,9 @@
         },
         "kind": {
           "enum": ["ai", "network", "analytics", "payments", "other"]
+        },
+        "aiPipelineRecipient": {
+          "type": "boolean"
         },
         "purpose": {
           "$ref": "#/$defs/dataPurpose"

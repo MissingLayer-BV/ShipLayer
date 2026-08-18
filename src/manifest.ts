@@ -135,7 +135,7 @@ export function validateManifest(candidate: unknown): asserts candidate is ShipL
     unique("AI consent evidence", manifest.aiDataSharing.consent.evidence);
     unique("AI privacy-policy evidence", manifest.aiDataSharing.privacyPolicy.evidence);
     for (const evidence of [...manifest.aiDataSharing.consent.evidence, ...manifest.aiDataSharing.privacyPolicy.evidence]) try { safeRelativePath(evidence, "AI disclosure evidence"); } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
-    if (/^(?:continue|next|ok|yes)$/i.test(manifest.aiDataSharing.consent.affirmativeAction.trim())) errors.push("AI consent affirmativeAction must clearly say data will be sent, not use a generic Continue/OK label");
+    if (!/(?:send|share|upload|transmit)/i.test(manifest.aiDataSharing.consent.affirmativeAction)) errors.push("AI consent affirmativeAction must clearly say data will be sent, shared, uploaded, or transmitted");
   }
   for (const item of manifest.externalServiceDecisions) unique(`external service decision ${item.finding} evidence`, item.evidence);
   for (const item of manifest.secondaryTargetConfirmations) unique(`secondary target ${item.bundleId} evidence`, item.evidence);

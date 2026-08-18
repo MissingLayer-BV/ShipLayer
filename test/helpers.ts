@@ -45,7 +45,31 @@ export async function writeReadyAssets(root: string, manifest: ShipLayerManifest
   const screenshotDir = path.join(root, manifest.screenshots.rawOutputDir, "iphone", "en-US"); await mkdir(screenshotDir, { recursive: true }); await writeFile(path.join(screenshotDir, "home.png"), png(1320, 2868));
   if (manifest.monetization.type === "non-consumables" || manifest.monetization.type === "subscriptions") {
     for (const product of manifest.monetization.products) { const target = path.join(root, product.reviewScreenshot); await mkdir(path.dirname(target), { recursive: true }); await writeFile(target, png(1320, 2868)); }
-    const source = path.join(root, "Sources/Paywall.swift"); await mkdir(path.dirname(source), { recursive: true }); await writeFile(source, "let price = product.displayPrice\nButton(\"Buy for \\(price)\") { Task { try await product.purchase() } }\n");
-    const uiTest = path.join(root, "Tests/PaywallUITests.swift"); await mkdir(path.dirname(uiTest), { recursive: true }); await writeFile(uiTest, "XCTAssertTrue(app.staticTexts[\"paywall.price\"].waitForExistence(timeout: 5))\n");
+    const subscriptionDisclosures = manifest.monetization.type === "subscriptions"
+      ? `let termsURL = URL(string: configuredTermsURL)!
+let privacyURL = URL(string: configuredPrivacyURL)!
+Text("Billed monthly").accessibilityIdentifier("paywall.period")
+Text("3-day free trial, then renews monthly").accessibilityIdentifier("paywall.offer")
+Link("Terms of Use", destination: termsURL)
+Link("Privacy Policy", destination: privacyURL)\n`
+      : "";
+    const source = path.join(root, "Sources/Paywall.swift"); await mkdir(path.dirname(source), { recursive: true }); await writeFile(source, `let product: Product?
+if let product {
+  Text(product.displayPrice).accessibilityIdentifier("paywall.price")
+  ${subscriptionDisclosures}Button("Buy for \\(product.displayPrice)") { Task { try await product.purchase() } }
+    .accessibilityIdentifier("paywall.purchase")
+} else {
+  ProgressView("Loading price")
+  Button("Price unavailable") {}.disabled(true).accessibilityIdentifier("paywall.purchase")
+}\n`);
+    const subscriptionTests = manifest.monetization.type === "subscriptions"
+      ? `XCTAssertTrue(app.staticTexts["paywall.period"].exists)
+XCTAssertTrue(app.staticTexts["paywall.offer"].exists) // free trial terms
+XCTAssertTrue(app.links["Terms of Use"].exists)
+XCTAssertTrue(app.links["Privacy Policy"].exists)\n`
+      : "";
+    const uiTest = path.join(root, "Tests/PaywallUITests.swift"); await mkdir(path.dirname(uiTest), { recursive: true }); await writeFile(uiTest, `XCTAssertTrue(app.staticTexts["paywall.price"].waitForExistence(timeout: 5))
+XCTAssertFalse(app.buttons["paywall.purchase"].isEnabled)
+${subscriptionTests}`);
   }
 }

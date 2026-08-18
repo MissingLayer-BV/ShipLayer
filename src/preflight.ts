@@ -166,24 +166,25 @@ function confirmationChecks(manifest: ShipLayerManifest, add: Add): void {
 }
 
 async function aiDataSharingChecks(repository: string, manifest: ShipLayerManifest, add: Add): Promise<void> {
-  const aiProcessors = manifest.externalProcessors.filter((processor) => processor.kind === "ai");
+  const aiPipelineProcessors = manifest.externalProcessors.filter((processor) => processor.aiPipelineRecipient);
   const sharing = manifest.aiDataSharing;
   if (!sharing.enabled) {
-    if (aiProcessors.length) add("ai-sharing.declaration", "block", `AI processors are declared (${aiProcessors.map((item) => item.name).join(", ")}) but aiDataSharing.enabled is false.`, "Model the exact AI data, recipients, in-context consent, and matching privacy-policy evidence. No-retention/no-training controls do not mean data was not shared.");
+    if (aiPipelineProcessors.length) add("ai-sharing.declaration", "block", `AI-pipeline recipients are declared (${aiPipelineProcessors.map((item) => item.name).join(", ")}) but aiDataSharing.enabled is false.`, "Model the exact AI data, recipients, in-context consent, and matching privacy-policy evidence. No-retention/no-training controls do not mean data was not shared.");
     else add("ai-sharing.declaration", "pass", "No AI processor or AI data sharing is declared.");
     return;
   }
 
   const referenced = sharing.processorNames.map((name) => manifest.externalProcessors.find((processor) => processor.name === name));
   if (referenced.some((processor) => !processor)) add("ai-sharing.processors", "block", "AI disclosure names a recipient that is absent from externalProcessors.", "Declare every network/AI recipient with its policy, categories, purpose, and protection confirmation.");
-  else if (aiProcessors.some((processor) => !sharing.processorNames.includes(processor.name))) add("ai-sharing.processors", "block", "At least one declared AI processor is missing from the in-app recipient list.", "Name every AI provider and intermediary that receives the data before transmission.");
+  else if (referenced.some((processor) => !processor?.aiPipelineRecipient)) add("ai-sharing.processors", "block", "AI disclosure names a processor that is not marked as an AI-pipeline recipient.", "Mark only processors that receive data in this AI feature as aiPipelineRecipient and keep unrelated analytics/payment processors out of the AI disclosure.");
+  else if (aiPipelineProcessors.some((processor) => !sharing.processorNames.includes(processor.name))) add("ai-sharing.processors", "block", "At least one declared AI provider or intermediary is missing from the in-app recipient list.", "Name every AI provider and intermediary marked aiPipelineRecipient before transmission.");
   else if (referenced.some((processor) => processor?.confirmation !== "confirmed" || processor.protectionConfirmation !== "confirmed")) add("ai-sharing.processors", "block", "AI sharing references a processor whose handling or equal-protection review is unconfirmed.", "Confirm each recipient only after reviewing its role, data policy, and protection obligations.");
   else add("ai-sharing.processors", "pass", `AI sharing names ${sharing.processorNames.join(", ")}.`);
 
   const consentReady = sharing.consent.shownBeforeTransmission
     && sharing.consent.privacyPolicyLinkVisible
     && sharing.consent.confirmation === "confirmed"
-    && !/^(?:continue|next|ok|yes)$/i.test(sharing.consent.affirmativeAction.trim())
+    && /(?:send|share|upload|transmit)/i.test(sharing.consent.affirmativeAction)
     && Boolean(sharing.consent.declinePath);
   if (!consentReady) add("ai-sharing.consent", "block", "The in-context AI disclosure/permission is incomplete or uses a generic affirmative action.", "Before transmission, state what is sent, name who receives it and why, provide a visible privacy link and non-AI decline path, and use an explicit action such as 'Allow and send to AI'.");
   else add("ai-sharing.consent", "pass", "AI sharing has a human-confirmed, explicit pre-transmission consent flow and decline path.");
@@ -200,24 +201,42 @@ async function aiDataSharingChecks(repository: string, manifest: ShipLayerManife
 
   const consentText = await evidenceText(repository, sharing.consent.evidence);
   const policyText = await evidenceText(repository, sharing.privacyPolicy.evidence);
+  const consentSourceRoleValid = sharing.consent.evidence.every(isProductionSourceEvidencePath);
+  if (!consentSourceRoleValid) add("ai-sharing.consent-source-role", "block", "AI consent evidence must reference production app source, not tests, scripts, fixtures, generated declarations, or documentation.", "Reference contained production Swift/Objective-C source that renders the disclosure before network transmission.");
   if (!consentText.complete) add("ai-sharing.consent-evidence", "block", "AI consent evidence is missing, symlinked, unreadable, or oversized.", "Reference contained production source that renders the disclosure before network transmission.");
   else {
-    const missing = sharing.processorNames.filter((name) => !consentText.text.toLocaleLowerCase("en-US").includes(name.toLocaleLowerCase("en-US")));
-    const missingData = sharing.dataSent.filter((data) => !consentText.text.toLocaleLowerCase("en-US").includes(data.toLocaleLowerCase("en-US")));
+    const normalizedConsent = consentText.text.toLocaleLowerCase("en-US");
+    const missing = sharing.processorNames.filter((name) => !normalizedConsent.includes(name.toLocaleLowerCase("en-US")));
+    const missingData = sharing.dataSent.filter((data) => !normalizedConsent.includes(data.toLocaleLowerCase("en-US")));
+    const purposeVisible = normalizedConsent.includes(sharing.purpose.toLocaleLowerCase("en-US"));
+    const buttonLabels = visibleUICallArguments(consentText.text, new Set(["Button"])).map((value) => value.toLocaleLowerCase("en-US"));
+    const actionVisible = buttonLabels.some((value) => value.includes(sharing.consent.affirmativeAction.toLocaleLowerCase("en-US")));
+    const declineVisible = buttonLabels.some((value) => value.includes(sharing.consent.declinePath.toLocaleLowerCase("en-US")));
+    const privacyLinkVisible = visibleUICallArguments(consentText.text, new Set(["Link", "NavigationLink"])).some((value) => /privacy(?:\s+policy)?/i.test(value));
     if (missing.length) add("ai-sharing.consent-recipients", "block", `The in-app consent evidence does not visibly name: ${missing.join(", ")}.`, "Use exact user-facing recipient names in the disclosure shown before transmission.");
     if (missingData.length) add("ai-sharing.consent-data", "block", `The in-app consent evidence does not visibly identify: ${missingData.join(", ")}.`, "State the exact personal data sent before transmission, not only that AI is used.");
-    if (!consentText.text.toLocaleLowerCase("en-US").includes(sharing.purpose.toLocaleLowerCase("en-US"))) add("ai-sharing.consent-purpose", "block", "The in-app consent evidence does not visibly state the declared processing purpose.", "Explain why the data is sent before requesting permission.");
-    if (!missing.length && !missingData.length && consentText.text.toLocaleLowerCase("en-US").includes(sharing.purpose.toLocaleLowerCase("en-US"))) add("ai-sharing.consent-evidence", "pass", "In-app consent evidence names every recipient, the data sent, and its purpose.");
+    if (!purposeVisible) add("ai-sharing.consent-purpose", "block", "The in-app consent evidence does not visibly state the declared processing purpose.", "Explain why the data is sent before requesting permission.");
+    if (!actionVisible) add("ai-sharing.consent-action", "block", `The in-app consent evidence does not render the declared affirmative action “${sharing.consent.affirmativeAction}”.`, "Render an affirmative action that explicitly says data will be sent, shared, uploaded, or transmitted.");
+    if (!declineVisible) add("ai-sharing.consent-decline", "block", `The in-app consent evidence does not render the declared non-AI path “${sharing.consent.declinePath}”.`, "Render a clear local/manual path that does not transmit data.");
+    if (!privacyLinkVisible) add("ai-sharing.consent-privacy-link", "block", "The in-app consent evidence does not render a visible Privacy Policy link.", "Add a visible Link or NavigationLink labeled Privacy/Privacy Policy to the pre-transmission disclosure.");
+    if (consentSourceRoleValid && !missing.length && !missingData.length && purposeVisible && actionVisible && declineVisible && privacyLinkVisible) add("ai-sharing.consent-evidence", "pass", "Production consent evidence names every recipient, the data and purpose, and renders the declared actions and Privacy Policy link.");
   }
   if (!policyText.complete) add("ai-sharing.policy-evidence", "block", "AI privacy-policy evidence is missing, symlinked, unreadable, or oversized.", "Reference the public policy source containing the confirmed AI disclosures.");
   else {
-    const missing = sharing.processorNames.filter((name) => !policyText.text.toLocaleLowerCase("en-US").includes(name.toLocaleLowerCase("en-US")));
-    const missingData = sharing.dataSent.filter((data) => !policyText.text.toLocaleLowerCase("en-US").includes(data.toLocaleLowerCase("en-US")));
+    const normalizedPolicy = policyText.text.toLocaleLowerCase("en-US");
+    const missing = sharing.processorNames.filter((name) => !normalizedPolicy.includes(name.toLocaleLowerCase("en-US")));
+    const missingData = sharing.dataSent.filter((data) => !normalizedPolicy.includes(data.toLocaleLowerCase("en-US")));
+    const purposeVisible = normalizedPolicy.includes(sharing.purpose.toLocaleLowerCase("en-US"));
+    const collectionMethodVisible = /\b(?:select|choose|capture|photograph|upload|send|transmit|submit|provide(?:d)?)\b/i.test(policyText.text);
+    const retentionVisible = /\b(?:retain(?:ed|s|ing)?|retention|delet(?:e|ed|ion)|eras(?:e|ed|ure)|remov(?:e|ed|al)|stor(?:e|ed|age)|keep|discard(?:ed|s)?)\b/i.test(policyText.text);
     if (missing.length) add("ai-sharing.policy-recipients", "block", `Privacy-policy evidence does not name: ${missing.join(", ")}.`, "Name every processor that receives AI feature data.");
     if (missingData.length) add("ai-sharing.policy-data", "block", `Privacy-policy evidence does not identify: ${missingData.join(", ")}.`, "Describe what is collected/transmitted and how it is obtained.");
+    if (!purposeVisible) add("ai-sharing.policy-purpose", "block", "Privacy-policy evidence does not state the declared AI processing purpose/all uses.", "State every use of the transmitted data, including the exact declared AI feature purpose.");
+    if (!collectionMethodVisible) add("ai-sharing.policy-collection-method", "block", "Privacy-policy evidence does not explain how the app obtains or transmits the AI feature data.", "Explain whether users select, capture, upload, send, or otherwise provide the data.");
+    if (!retentionVisible) add("ai-sharing.policy-retention", "block", "Privacy-policy evidence does not explain retention or deletion.", "Describe processor/app retention and deletion behavior, including limited logs where applicable.");
     const equalProtection = /(?:same|equal).{0,60}protect|protect.{0,60}(?:same|equal)/is.test(policyText.text);
     if (!equalProtection) add("ai-sharing.policy-protection", "block", "Privacy-policy evidence does not confirm that third-party processors provide the same or equal protection.", "Add the processor-protection statement required by App Review after legal review.");
-    if (!missing.length && !missingData.length && equalProtection) add("ai-sharing.policy-evidence", "pass", "Privacy-policy evidence names every recipient and data category and confirms same or equal protection.");
+    if (!missing.length && !missingData.length && purposeVisible && collectionMethodVisible && retentionVisible && equalProtection) add("ai-sharing.policy-evidence", "pass", "Privacy-policy evidence covers recipients, data, collection/transmission, purpose, retention/deletion, and same-or-equal protection.");
   }
 }
 
@@ -263,13 +282,56 @@ async function purchasePresentationChecks(repository: string, manifest: ShipLaye
 
   const source = await evidenceText(repository, presentation.sourceEvidence);
   const tests = await evidenceText(repository, presentation.testEvidence);
+  const sourceRoleValid = presentation.sourceEvidence.every(isProductionSourceEvidencePath);
+  const testRoleValid = presentation.testEvidence.every(isTestSourceEvidencePath);
+  if (!sourceRoleValid) add("purchase.presentation-source-role", "block", "Purchase source evidence must reference production app source, not tests, fixtures, scripts, generated declarations, or documentation.", "Reference the contained production Swift/Objective-C paywall source.");
+  if (!testRoleValid) add("purchase.presentation-test-role", "block", "Purchase test evidence must reference conventional test source paths.", "Reference contained UI/unit/snapshot test source under a Tests or UITests target/path.");
   if (!source.complete) add("purchase.presentation-source", "block", "Purchase presentation source evidence is missing, symlinked, unreadable, or oversized.", "Reference production StoreKit/paywall source files.");
-  else if (!/\.displayPrice\b|\bProductView\s*\(/.test(source.text)) add("purchase.localized-price-source", "block", "Purchase evidence does not use StoreKit Product.displayPrice or ProductView.", "Render StoreKit's localized displayPrice; do not hard-code a currency or price.");
-  else if (!/\.purchase\s*\(/.test(source.text)) add("purchase.call-source", "block", "Purchase evidence does not include a StoreKit purchase call.", "Reference the source that starts StoreKit purchase after price availability.");
-  else add("purchase.presentation-source", "pass", "Production evidence uses StoreKit localized price and purchase APIs.");
+  else {
+    const storeKitMerchandisingView = /\b(?:ProductView|SubscriptionStoreView)\s*\(/.test(source.text);
+    const localizedPriceRendered = storeKitMerchandisingView || hasVisibleLocalizedPrice(source.text);
+    const unavailableStateRendered = storeKitMerchandisingView || hasUnavailablePurchaseState(source.text);
+    if (!localizedPriceRendered) add("purchase.localized-price-source", "block", "Purchase evidence does not visibly render StoreKit Product.displayPrice or a StoreKit merchandising view.", "Render displayPrice in Text/Button/Label (directly or through a displayed local value); an unused displayPrice read is insufficient.");
+    if (!storeKitMerchandisingView && !/\.purchase\s*\(/.test(source.text)) add("purchase.call-source", "block", "Purchase evidence does not include a StoreKit purchase call or a supported StoreKit-owned merchandising view.", "Reference the source that starts StoreKit purchase after price availability, or ProductView/SubscriptionStoreView.");
+    if (!unavailableStateRendered) add("purchase.unavailable-source", "block", "Purchase evidence does not keep payment unavailable while product/price data is loading or unavailable.", "Disable or withhold the purchase action until Product loads and render an explicit loading/unavailable/retry state.");
+
+    if (money.type === "subscriptions") {
+      const periodRendered = hasVisibleSubscriptionPeriod(source.text);
+      const legalLinksRendered = hasVisibleTermsAndPrivacyLinks(source.text);
+      const offerRendered = !money.products.some((product) => product.introductoryOffer) || hasVisibleOfferTerms(source.text);
+      if (!periodRendered) add("purchase.subscription-period-source", "block", "Subscription source evidence does not visibly render the billing period before purchase.", "Show the subscription period/renewal cadence alongside the localized price.");
+      if (!offerRendered) add("purchase.offer-terms-source", "block", "Subscription source evidence does not visibly render applicable introductory-offer terms.", "Show the trial/introductory duration and what happens after the offer before purchase.");
+      if (!legalLinksRendered) add("purchase.legal-links-source", "block", "Subscription source evidence does not visibly render both Terms of Use and Privacy Policy links.", "Render visible Terms and Privacy links using the declared public URLs.");
+    }
+
+    if (sourceRoleValid) {
+      const sourceHasAll = localizedPriceRendered
+        && (storeKitMerchandisingView || /\.purchase\s*\(/.test(source.text))
+        && unavailableStateRendered
+        && (money.type !== "subscriptions" || (hasVisibleSubscriptionPeriod(source.text)
+          && hasVisibleTermsAndPrivacyLinks(source.text)
+          && (!money.products.some((product) => product.introductoryOffer) || hasVisibleOfferTerms(source.text))));
+      if (sourceHasAll) add("purchase.presentation-source", "pass", "Production evidence visibly presents StoreKit pricing, unavailable/loading behavior, purchase handling, and applicable subscription disclosures.");
+    }
+  }
   if (!tests.complete) add("purchase.presentation-tests", "block", "Purchase presentation test evidence is missing, symlinked, unreadable, or oversized.", "Add a UI or snapshot test proving the localized price is visible before the purchase action and no purchase can start while unavailable.");
-  else if (!/(?:displayPrice|paywall\.price|localized.{0,30}price|price.{0,30}(?:visible|exist|label))/is.test(tests.text)) add("purchase.presentation-tests", "block", "Test evidence does not assert that the localized price is visible before purchase.", "Add a focused UI/snapshot assertion for visible price and enabled purchase state.");
-  else add("purchase.presentation-tests", "pass", "Test evidence covers visible purchase pricing.");
+  else {
+    const visiblePriceTested = /(?:displayPrice|paywall\.price|localized.{0,30}price|price.{0,30}(?:visible|exist|label))/is.test(tests.text);
+    const unavailableTested = /XCTAssertFalse\s*\([^)]*(?:isEnabled|exists)|#expect\s*\(\s*![^)]*(?:canPurchase|isEnabled|purchase)|XCTAssertEqual\s*\([^,]*(?:isEnabled|canPurchase)[^,]*,\s*false/is.test(tests.text);
+    if (!visiblePriceTested) add("purchase.presentation-tests", "block", "Test evidence does not assert that the localized price is visible before purchase.", "Add a focused UI/snapshot assertion for visible localized pricing.");
+    if (!unavailableTested) add("purchase.unavailable-tests", "block", "Test evidence does not assert that purchase is disabled/unavailable before Product pricing loads.", "Add a focused assertion that the purchase action is disabled or absent in the loading/unavailable state.");
+    let subscriptionTestsReady = true;
+    if (money.type === "subscriptions") {
+      const periodTested = /(?:paywall\.period|billing.{0,30}period|subscription.{0,30}period|(?:week|month|year).{0,30}(?:visible|exist|label))/is.test(tests.text);
+      const legalLinksTested = /(?:terms|terms of use)/i.test(tests.text) && /privacy(?: policy)?/i.test(tests.text) && /(?:XCTAssert|#expect)/.test(tests.text);
+      const offerTested = !money.products.some((product) => product.introductoryOffer) || /(?:paywall\.offer|introductory|free trial|trial.{0,30}(?:visible|exist|label))/is.test(tests.text);
+      if (!periodTested) add("purchase.subscription-period-tests", "block", "Test evidence does not assert that the subscription billing period is visible.", "Assert the period/renewal cadence is present before purchase.");
+      if (!offerTested) add("purchase.offer-terms-tests", "block", "Test evidence does not assert that applicable introductory-offer terms are visible.", "Assert the trial/introductory terms are present before purchase.");
+      if (!legalLinksTested) add("purchase.legal-links-tests", "block", "Test evidence does not assert that both Terms and Privacy links are visible.", "Assert both legal links exist on the paywall.");
+      subscriptionTestsReady = periodTested && offerTested && legalLinksTested;
+    }
+    if (testRoleValid && visiblePriceTested && unavailableTested && subscriptionTestsReady) add("purchase.presentation-tests", "pass", "Test evidence covers visible localized pricing, unavailable state, and applicable subscription disclosures.");
+  }
 }
 
 function productChecks(prefix: string, product: { productId: string; pricePointReference: string; localizations: Record<string, { displayName: string; description: string }>; familySharing: boolean; reviewNotes: string; reviewScreenshot: string }, locales: string[], add: Add): void {
@@ -525,6 +587,49 @@ function isRelevantSourcePath(file: string): boolean {
   return !isNonProductionSourcePath(normalized) && /(?:^|\/)(?:project\.yml|project\.pbxproj|Info\.plist|\.xcconfig|PrivacyInfo\.xcprivacy|[^/]+\.(?:swift|m|mm|h|ts|tsx|js|jsx|mjs|cjs|mts|cts|entitlements|storekit))$/i.test(normalized);
 }
 function isNonProductionSourcePath(file: string): boolean { const parts = file.replace(/\\/g, "/").split("/"); const basename = parts.at(-1) || ""; return parts.includes("app-store-screenshots") || /\.d\.ts$/i.test(basename) || parts.some((component) => /(?:UI)?Tests$|^(?:scripts?|benchmarks?)$/i.test(component)) || /(?:\.test|\.spec)\.[cm]?[jt]sx?$/i.test(basename) || /(?:UI)?Tests?\.xcconfig$/i.test(basename); }
+function isProductionSourceEvidencePath(file: string): boolean {
+  const normalized = file.replace(/\\/g, "/");
+  const parts = normalized.split("/");
+  return !isNonProductionSourcePath(normalized)
+    && !parts.some((component) => /^(?:fixtures?|samples?|docs?|testdata)$/i.test(component))
+    && /\.(?:swift|m|mm)$/i.test(normalized);
+}
+function isTestSourceEvidencePath(file: string): boolean {
+  const normalized = file.replace(/\\/g, "/");
+  return isNonProductionSourcePath(normalized) && /\.(?:swift|m|mm)$/i.test(normalized);
+}
+function visibleUICallArguments(source: string, names: Set<string>): string[] {
+  const argumentsList: string[] = [];
+  for (const match of source.matchAll(/\b(Text|Button|Label|Link|NavigationLink)\s*\(([\s\S]{0,600}?)\)/g)) if (names.has(match[1])) argumentsList.push(match[2]);
+  return argumentsList;
+}
+function hasVisibleLocalizedPrice(source: string): boolean {
+  const visibleArguments = visibleUICallArguments(source, new Set(["Text", "Button", "Label"]));
+  if (visibleArguments.some((value) => /\.displayPrice\b/.test(value))) return true;
+  for (const match of source.matchAll(/\b(?:let|var)\s+([A-Za-z_]\w*)\s*=\s*[^\n;]*\.displayPrice\b/g)) {
+    const name = match[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (visibleArguments.some((value) => new RegExp(`\\\\\\(${name}\\b`).test(value))) return true;
+  }
+  return false;
+}
+function hasUnavailablePurchaseState(source: string): boolean {
+  const explicitDisable = /\.disabled\s*\([^)]*(?:==\s*nil|!=\s*true|loading|available|canPurchase|priceLoaded|productLoaded)/is.test(source);
+  const optionalProduct = /(?:\bProduct\s*\?|\bif\s+let\s+\w*product\b|\bguard\s+let\s+\w*product\b)/i.test(source);
+  const fallback = /(?:ProgressView\s*\(|ContentUnavailableView\s*\(|price\s+unavailable|product\s+unavailable|try\s+again|loading)/i.test(source);
+  return explicitDisable || (optionalProduct && fallback && /\bButton\s*\(/.test(source));
+}
+function hasVisibleSubscriptionPeriod(source: string): boolean {
+  return visibleUICallArguments(source, new Set(["Text", "Button", "Label"])).some((value) => /(?:subscriptionPeriod|billing\s+period|billed\s+(?:weekly|monthly|yearly)|renews?\s+(?:weekly|monthly|yearly)|per\s+(?:week|month|year))/i.test(value));
+}
+function hasVisibleOfferTerms(source: string): boolean {
+  return visibleUICallArguments(source, new Set(["Text", "Button", "Label"])).some((value) => /(?:introductory\s+offer|free\s+trial|trial\s+(?:then|followed|renews|for)|offer\s+terms)/i.test(value));
+}
+function hasVisibleTermsAndPrivacyLinks(source: string): boolean {
+  const links = visibleUICallArguments(source, new Set(["Link", "NavigationLink"]));
+  const hasTermsLink = links.some((value) => /(?:terms|terms of use)/i.test(value));
+  const hasPrivacyLink = links.some((value) => /privacy(?: policy)?/i.test(value));
+  return hasTermsLink && hasPrivacyLink;
+}
 async function validEvidencePaths(repository: string, evidence: string[]): Promise<Set<string>> {
   const valid = new Set<string>();
   for (const value of evidence) {

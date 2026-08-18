@@ -40,6 +40,8 @@ export interface LocaleCopy {
 export interface ExternalProcessor {
   name: string;
   kind: "ai" | "network" | "analytics" | "payments" | "other";
+  /** True only when this processor receives data in the declared AI feature pipeline. */
+  aiPipelineRecipient: boolean;
   purpose: string;
   dataCategories: string[];
   privacyPolicyUrl: string;
