@@ -202,17 +202,20 @@ async function aiDataSharingChecks(repository: string, manifest: ShipLayerManife
   const consentText = await evidenceText(repository, sharing.consent.evidence);
   const policyText = await evidenceText(repository, sharing.privacyPolicy.evidence);
   const consentSourceRoleValid = sharing.consent.evidence.every(isProductionSourceEvidencePath);
+  const policyEvidenceRoleValid = sharing.privacyPolicy.evidence.every(isPolicyEvidencePath);
   if (!consentSourceRoleValid) add("ai-sharing.consent-source-role", "block", "AI consent evidence must reference production app source, not tests, scripts, fixtures, generated declarations, or documentation.", "Reference contained production Swift/Objective-C source that renders the disclosure before network transmission.");
+  if (!policyEvidenceRoleValid) add("ai-sharing.policy-source-role", "block", "AI privacy-policy evidence must reference public policy content or production policy-serving source, not tests, fixtures, samples, tooling, or generated release artifacts.", "Reference contained Markdown/HTML/text policy content or production source that serves the public privacy policy.");
   if (!consentText.complete) add("ai-sharing.consent-evidence", "block", "AI consent evidence is missing, symlinked, unreadable, or oversized.", "Reference contained production source that renders the disclosure before network transmission.");
   else {
-    const normalizedConsent = consentText.text.toLocaleLowerCase("en-US");
+    const consentSource = stripCodeComments(consentText.text);
+    const normalizedConsent = consentSource.toLocaleLowerCase("en-US");
     const missing = sharing.processorNames.filter((name) => !normalizedConsent.includes(name.toLocaleLowerCase("en-US")));
     const missingData = sharing.dataSent.filter((data) => !normalizedConsent.includes(data.toLocaleLowerCase("en-US")));
     const purposeVisible = normalizedConsent.includes(sharing.purpose.toLocaleLowerCase("en-US"));
-    const buttonLabels = visibleUICallArguments(consentText.text, new Set(["Button"])).map((value) => value.toLocaleLowerCase("en-US"));
+    const buttonLabels = visibleUICallArguments(consentSource, new Set(["Button"])).map((value) => value.toLocaleLowerCase("en-US"));
     const actionVisible = buttonLabels.some((value) => value.includes(sharing.consent.affirmativeAction.toLocaleLowerCase("en-US")));
     const declineVisible = buttonLabels.some((value) => value.includes(sharing.consent.declinePath.toLocaleLowerCase("en-US")));
-    const privacyLinkVisible = visibleUICallArguments(consentText.text, new Set(["Link", "NavigationLink"])).some((value) => /privacy(?:\s+policy)?/i.test(value));
+    const privacyLinkVisible = visibleUICallArguments(consentSource, new Set(["Link", "NavigationLink"])).some((value) => /privacy(?:\s+policy)?/i.test(value));
     if (missing.length) add("ai-sharing.consent-recipients", "block", `The in-app consent evidence does not visibly name: ${missing.join(", ")}.`, "Use exact user-facing recipient names in the disclosure shown before transmission.");
     if (missingData.length) add("ai-sharing.consent-data", "block", `The in-app consent evidence does not visibly identify: ${missingData.join(", ")}.`, "State the exact personal data sent before transmission, not only that AI is used.");
     if (!purposeVisible) add("ai-sharing.consent-purpose", "block", "The in-app consent evidence does not visibly state the declared processing purpose.", "Explain why the data is sent before requesting permission.");
@@ -236,7 +239,7 @@ async function aiDataSharingChecks(repository: string, manifest: ShipLayerManife
     if (!retentionVisible) add("ai-sharing.policy-retention", "block", "Privacy-policy evidence does not explain retention or deletion.", "Describe processor/app retention and deletion behavior, including limited logs where applicable.");
     const equalProtection = /(?:same|equal).{0,60}protect|protect.{0,60}(?:same|equal)/is.test(policyText.text);
     if (!equalProtection) add("ai-sharing.policy-protection", "block", "Privacy-policy evidence does not confirm that third-party processors provide the same or equal protection.", "Add the processor-protection statement required by App Review after legal review.");
-    if (!missing.length && !missingData.length && purposeVisible && collectionMethodVisible && retentionVisible && equalProtection) add("ai-sharing.policy-evidence", "pass", "Privacy-policy evidence covers recipients, data, collection/transmission, purpose, retention/deletion, and same-or-equal protection.");
+    if (policyEvidenceRoleValid && !missing.length && !missingData.length && purposeVisible && collectionMethodVisible && retentionVisible && equalProtection) add("ai-sharing.policy-evidence", "pass", "Privacy-policy evidence covers recipients, data, collection/transmission, purpose, retention/deletion, and same-or-equal protection.");
   }
 }
 
@@ -288,17 +291,19 @@ async function purchasePresentationChecks(repository: string, manifest: ShipLaye
   if (!testRoleValid) add("purchase.presentation-test-role", "block", "Purchase test evidence must reference conventional test source paths.", "Reference contained UI/unit/snapshot test source under a Tests or UITests target/path.");
   if (!source.complete) add("purchase.presentation-source", "block", "Purchase presentation source evidence is missing, symlinked, unreadable, or oversized.", "Reference production StoreKit/paywall source files.");
   else {
-    const storeKitMerchandisingView = /\b(?:ProductView|SubscriptionStoreView)\s*\(/.test(source.text);
-    const localizedPriceRendered = storeKitMerchandisingView || hasVisibleLocalizedPrice(source.text);
-    const unavailableStateRendered = storeKitMerchandisingView || hasUnavailablePurchaseState(source.text);
+    const sourceCode = stripCodeComments(source.text);
+    const storeKitMerchandisingView = /\b(?:ProductView|SubscriptionStoreView)\s*\(/.test(sourceCode);
+    const subscriptionStoreView = /\bSubscriptionStoreView\s*\(/.test(sourceCode);
+    const localizedPriceRendered = storeKitMerchandisingView || hasVisibleLocalizedPrice(sourceCode);
+    const unavailableStateRendered = storeKitMerchandisingView || hasUnavailablePurchaseState(sourceCode);
     if (!localizedPriceRendered) add("purchase.localized-price-source", "block", "Purchase evidence does not visibly render StoreKit Product.displayPrice or a StoreKit merchandising view.", "Render displayPrice in Text/Button/Label (directly or through a displayed local value); an unused displayPrice read is insufficient.");
-    if (!storeKitMerchandisingView && !/\.purchase\s*\(/.test(source.text)) add("purchase.call-source", "block", "Purchase evidence does not include a StoreKit purchase call or a supported StoreKit-owned merchandising view.", "Reference the source that starts StoreKit purchase after price availability, or ProductView/SubscriptionStoreView.");
+    if (!storeKitMerchandisingView && !/\.purchase\s*\(/.test(sourceCode)) add("purchase.call-source", "block", "Purchase evidence does not include a StoreKit purchase call or a supported StoreKit-owned merchandising view.", "Reference the source that starts StoreKit purchase after price availability, or ProductView/SubscriptionStoreView.");
     if (!unavailableStateRendered) add("purchase.unavailable-source", "block", "Purchase evidence does not keep payment unavailable while product/price data is loading or unavailable.", "Disable or withhold the purchase action until Product loads and render an explicit loading/unavailable/retry state.");
 
     if (money.type === "subscriptions") {
-      const periodRendered = hasVisibleSubscriptionPeriod(source.text);
-      const legalLinksRendered = hasVisibleTermsAndPrivacyLinks(source.text);
-      const offerRendered = !money.products.some((product) => product.introductoryOffer) || hasVisibleOfferTerms(source.text);
+      const periodRendered = subscriptionStoreView || hasVisibleSubscriptionPeriod(sourceCode);
+      const legalLinksRendered = subscriptionStoreView || hasVisibleTermsAndPrivacyLinks(sourceCode);
+      const offerRendered = !money.products.some((product) => product.introductoryOffer) || subscriptionStoreView || hasVisibleOfferTerms(sourceCode);
       if (!periodRendered) add("purchase.subscription-period-source", "block", "Subscription source evidence does not visibly render the billing period before purchase.", "Show the subscription period/renewal cadence alongside the localized price.");
       if (!offerRendered) add("purchase.offer-terms-source", "block", "Subscription source evidence does not visibly render applicable introductory-offer terms.", "Show the trial/introductory duration and what happens after the offer before purchase.");
       if (!legalLinksRendered) add("purchase.legal-links-source", "block", "Subscription source evidence does not visibly render both Terms of Use and Privacy Policy links.", "Render visible Terms and Privacy links using the declared public URLs.");
@@ -306,25 +311,28 @@ async function purchasePresentationChecks(repository: string, manifest: ShipLaye
 
     if (sourceRoleValid) {
       const sourceHasAll = localizedPriceRendered
-        && (storeKitMerchandisingView || /\.purchase\s*\(/.test(source.text))
+        && (storeKitMerchandisingView || /\.purchase\s*\(/.test(sourceCode))
         && unavailableStateRendered
-        && (money.type !== "subscriptions" || (hasVisibleSubscriptionPeriod(source.text)
-          && hasVisibleTermsAndPrivacyLinks(source.text)
-          && (!money.products.some((product) => product.introductoryOffer) || hasVisibleOfferTerms(source.text))));
+        && (money.type !== "subscriptions" || ((subscriptionStoreView || hasVisibleSubscriptionPeriod(sourceCode))
+          && (subscriptionStoreView || hasVisibleTermsAndPrivacyLinks(sourceCode))
+          && (!money.products.some((product) => product.introductoryOffer) || subscriptionStoreView || hasVisibleOfferTerms(sourceCode))));
       if (sourceHasAll) add("purchase.presentation-source", "pass", "Production evidence visibly presents StoreKit pricing, unavailable/loading behavior, purchase handling, and applicable subscription disclosures.");
     }
   }
   if (!tests.complete) add("purchase.presentation-tests", "block", "Purchase presentation test evidence is missing, symlinked, unreadable, or oversized.", "Add a UI or snapshot test proving the localized price is visible before the purchase action and no purchase can start while unavailable.");
   else {
-    const visiblePriceTested = /(?:displayPrice|paywall\.price|localized.{0,30}price|price.{0,30}(?:visible|exist|label))/is.test(tests.text);
-    const unavailableTested = /XCTAssertFalse\s*\([^)]*(?:isEnabled|exists)|#expect\s*\(\s*![^)]*(?:canPurchase|isEnabled|purchase)|XCTAssertEqual\s*\([^,]*(?:isEnabled|canPurchase)[^,]*,\s*false/is.test(tests.text);
+    const testSource = stripCodeComments(tests.text);
+    const assertions = assertionEvidence(testSource);
+    const positiveAssertions = assertions.filter(isPositiveVisibilityAssertion);
+    const visiblePriceTested = positiveAssertions.some((value) => /(?:displayPrice|paywall\.price|localized.{0,30}price|price.{0,30}(?:visible|exist|label))/is.test(value));
+    const unavailableTested = assertions.some((value) => /(?:purchase|buy|subscribe|unlock|canPurchase|isEnabled)/i.test(value) && /(?:XCTAssertFalse|#expect\s*\(\s*!|XCTAssertEqual[\s\S]{0,300},\s*false|(?:not|false).{0,30}exist)/i.test(value));
     if (!visiblePriceTested) add("purchase.presentation-tests", "block", "Test evidence does not assert that the localized price is visible before purchase.", "Add a focused UI/snapshot assertion for visible localized pricing.");
     if (!unavailableTested) add("purchase.unavailable-tests", "block", "Test evidence does not assert that purchase is disabled/unavailable before Product pricing loads.", "Add a focused assertion that the purchase action is disabled or absent in the loading/unavailable state.");
     let subscriptionTestsReady = true;
     if (money.type === "subscriptions") {
-      const periodTested = /(?:paywall\.period|billing.{0,30}period|subscription.{0,30}period|(?:week|month|year).{0,30}(?:visible|exist|label))/is.test(tests.text);
-      const legalLinksTested = /(?:terms|terms of use)/i.test(tests.text) && /privacy(?: policy)?/i.test(tests.text) && /(?:XCTAssert|#expect)/.test(tests.text);
-      const offerTested = !money.products.some((product) => product.introductoryOffer) || /(?:paywall\.offer|introductory|free trial|trial.{0,30}(?:visible|exist|label))/is.test(tests.text);
+      const periodTested = positiveAssertions.some((value) => /(?:paywall\.period|billing.{0,30}period|subscription.{0,30}period|(?:week|month|year).{0,30}(?:visible|exist|label))/is.test(value));
+      const legalLinksTested = positiveAssertions.some((value) => /(?:terms|terms of use)/i.test(value)) && positiveAssertions.some((value) => /privacy(?: policy)?/i.test(value));
+      const offerTested = !money.products.some((product) => product.introductoryOffer) || positiveAssertions.some((value) => /(?:paywall\.offer|introductory|free trial|trial.{0,30}(?:visible|exist|label))/is.test(value));
       if (!periodTested) add("purchase.subscription-period-tests", "block", "Test evidence does not assert that the subscription billing period is visible.", "Assert the period/renewal cadence is present before purchase.");
       if (!offerTested) add("purchase.offer-terms-tests", "block", "Test evidence does not assert that applicable introductory-offer terms are visible.", "Assert the trial/introductory terms are present before purchase.");
       if (!legalLinksTested) add("purchase.legal-links-tests", "block", "Test evidence does not assert that both Terms and Privacy links are visible.", "Assert both legal links exist on the paywall.");
@@ -586,7 +594,7 @@ function isRelevantSourcePath(file: string): boolean {
   const normalized = file.replace(/\\/g, "/");
   return !isNonProductionSourcePath(normalized) && /(?:^|\/)(?:project\.yml|project\.pbxproj|Info\.plist|\.xcconfig|PrivacyInfo\.xcprivacy|[^/]+\.(?:swift|m|mm|h|ts|tsx|js|jsx|mjs|cjs|mts|cts|entitlements|storekit))$/i.test(normalized);
 }
-function isNonProductionSourcePath(file: string): boolean { const parts = file.replace(/\\/g, "/").split("/"); const basename = parts.at(-1) || ""; return parts.includes("app-store-screenshots") || /\.d\.ts$/i.test(basename) || parts.some((component) => /(?:UI)?Tests$|^(?:scripts?|benchmarks?)$/i.test(component)) || /(?:\.test|\.spec)\.[cm]?[jt]sx?$/i.test(basename) || /(?:UI)?Tests?\.xcconfig$/i.test(basename); }
+function isNonProductionSourcePath(file: string): boolean { const parts = file.replace(/\\/g, "/").split("/"); const basename = parts.at(-1) || ""; return parts.includes("app-store-screenshots") || /\.d\.ts$/i.test(basename) || parts.some((component) => /(?:UI)?Tests$|^(?:scripts?|benchmarks?)$/i.test(component)) || /(?:UI)?Tests?\.(?:swift|m|mm)$/i.test(basename) || /(?:\.test|\.spec)\.[cm]?[jt]sx?$/i.test(basename) || /(?:UI)?Tests?\.xcconfig$/i.test(basename); }
 function isProductionSourceEvidencePath(file: string): boolean {
   const normalized = file.replace(/\\/g, "/");
   const parts = normalized.split("/");
@@ -597,6 +605,80 @@ function isProductionSourceEvidencePath(file: string): boolean {
 function isTestSourceEvidencePath(file: string): boolean {
   const normalized = file.replace(/\\/g, "/");
   return isNonProductionSourcePath(normalized) && /\.(?:swift|m|mm)$/i.test(normalized);
+}
+function isPolicyEvidencePath(file: string): boolean {
+  const normalized = file.replace(/\\/g, "/");
+  const parts = normalized.split("/");
+  return !isNonProductionSourcePath(normalized)
+    && !parts.some((component) => /^(?:fixtures?|samples?|testdata|shiplayer-release|release|dist|build|deriveddata|node_modules|scripts?|tools?)$/i.test(component))
+    && /\.(?:md|markdown|html?|txt|swift|[cm]?[jt]sx?|mjs|cjs|mts|cts)$/i.test(normalized);
+}
+function stripCodeComments(source: string): string {
+  let output = "";
+  let index = 0;
+  let state: "normal" | "string" | "multiline-string" | "line-comment" | "block-comment" = "normal";
+  let blockDepth = 0;
+  while (index < source.length) {
+    if (state === "normal") {
+      if (source.startsWith("//", index)) { state = "line-comment"; index += 2; continue; }
+      if (source.startsWith("/*", index)) { state = "block-comment"; blockDepth = 1; index += 2; continue; }
+      if (source.startsWith('"""', index)) { output += '"""'; state = "multiline-string"; index += 3; continue; }
+      if (source[index] === '"') { output += source[index]; state = "string"; index++; continue; }
+      output += source[index++];
+      continue;
+    }
+    if (state === "line-comment") {
+      if (source[index] === "\n") { output += "\n"; state = "normal"; }
+      index++;
+      continue;
+    }
+    if (state === "block-comment") {
+      if (source.startsWith("/*", index)) { blockDepth++; index += 2; continue; }
+      if (source.startsWith("*/", index)) { blockDepth--; index += 2; if (blockDepth === 0) state = "normal"; continue; }
+      if (source[index] === "\n") output += "\n";
+      index++;
+      continue;
+    }
+    if (state === "multiline-string") {
+      if (source.startsWith('"""', index)) { output += '"""'; state = "normal"; index += 3; continue; }
+      output += source[index++];
+      continue;
+    }
+    output += source[index];
+    if (source[index] === "\\" && index + 1 < source.length) output += source[++index];
+    else if (source[index] === '"') state = "normal";
+    index++;
+  }
+  return output;
+}
+function assertionEvidence(source: string): string[] {
+  const evidence: string[] = [];
+  for (const match of source.matchAll(/(?:\bXCTAssert[A-Za-z]*|#expect|\bassertSnapshot)\s*\(/g)) {
+    const start = match.index;
+    const opening = source.indexOf("(", start);
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = opening; index < source.length && index - opening <= 2_000; index++) {
+      const character = source[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (character === "\\") escaped = true;
+        else if (character === '"') inString = false;
+        continue;
+      }
+      if (character === '"') { inString = true; continue; }
+      if (character === "(") depth++;
+      else if (character === ")" && --depth === 0) { evidence.push(source.slice(start, index + 1)); break; }
+    }
+  }
+  return evidence;
+}
+function isPositiveVisibilityAssertion(evidence: string): boolean {
+  return /\bXCTAssert(?:True|NotNil)?\s*\(/.test(evidence)
+    || /\bXCTAssertEqual\s*\([\s\S]{0,1000},\s*true\b/.test(evidence)
+    || /#expect\s*\(\s*(?![!])/.test(evidence)
+    || /\bassertSnapshot\s*\(/.test(evidence);
 }
 function visibleUICallArguments(source: string, names: Set<string>): string[] {
   const argumentsList: string[] = [];
