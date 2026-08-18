@@ -727,6 +727,38 @@ test("nested known Apple framework guards preserve iOS release evidence", async 
   assert.equal(report.results.filter((item) => item.id.startsWith("purchase.") && item.severity === "block").length, 0);
 });
 
+test("inverse known Apple framework guards select the iOS release else branch", async () => {
+  for (const framework of ["StoreKit", "SwiftUI"]) {
+    const root = await mkdtemp(path.join(tmpdir(), `shiplayer-inverse-known-framework-${framework}-`));
+    const manifest = readyManifest("non-consumables");
+    await writeReadyAssets(root, manifest);
+    await writeFile(path.join(root, "Sources/Paywall.swift"), `#if !canImport(${framework})
+Text("Unavailable")
+#else
+struct Paywall: View { var body: some View { ProductView(id: "com.example.unlock") } }
+#endif
+`);
+    const report = await preflight(root, manifest);
+    assert.equal(report.results.filter((item) => item.id.startsWith("purchase.") && item.severity === "block").length, 0, framework);
+  }
+});
+
+test("an inverse custom framework guard cannot make its else branch release evidence", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-inverse-custom-framework-"));
+  const manifest = readyManifest("non-consumables");
+  await writeReadyAssets(root, manifest);
+  await writeFile(path.join(root, "Sources/Paywall.swift"), `#if !canImport(CustomPaywall)
+Text("Fallback")
+#else
+ProductView(id: "com.example.unlock")
+#endif
+struct EmptyPaywall: View { var body: some View { Text("Empty") } }
+`);
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "purchase.localized-price-source" && item.severity === "block"));
+  assert.equal(report.results.some((item) => item.id === "purchase.presentation-source" && item.severity === "pass"), false);
+});
+
 test("coexisting optional product and fallback do not prove purchase is withheld", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-unsafe-force-purchase-"));
   const manifest = readyManifest("non-consumables");
