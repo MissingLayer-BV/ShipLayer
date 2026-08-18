@@ -330,7 +330,7 @@ async function purchasePresentationChecks(repository: string, manifest: ShipLaye
     const assertions = assertionEvidence(testBodies);
     const positiveAssertions = assertions.filter(isPositiveVisibilityAssertion);
     const visiblePriceTested = positiveAssertions.some((value) => /(?:displayPrice|paywall\.price|localized.{0,30}price|price.{0,30}(?:visible|exist|label))/is.test(value));
-    const unavailableTested = assertions.some((value) => /(?:purchase|buy|subscribe|unlock|canPurchase|isEnabled)/i.test(value) && /(?:XCTAssertFalse|#expect\s*\(\s*!|XCTAssertEqual[\s\S]{0,300},\s*false|(?:not|false).{0,30}exist)/i.test(value));
+    const unavailableTested = assertions.some(isPurchaseUnavailableAssertion);
     if (!visiblePriceTested) add("purchase.presentation-tests", "block", "Test evidence does not assert that the localized price is visible before purchase.", "Add a focused UI/snapshot assertion for visible localized pricing.");
     if (!unavailableTested) add("purchase.unavailable-tests", "block", "Test evidence does not assert that purchase is disabled/unavailable before Product pricing loads.", "Add a focused assertion that the purchase action is disabled or absent in the loading/unavailable state.");
     let subscriptionTestsReady = true;
@@ -688,6 +688,22 @@ function isPositiveVisibilityAssertion(evidence: string): boolean {
   if (/^\s*(?:XCTAssert|XCTAssertTrue|#expect)\s*\(/.test(evidence)) return true;
   return /^\s*XCTAssertEqual\s*\(/.test(evidence) && /\btrue\b/.test(operators);
 }
+function isPurchaseUnavailableAssertion(evidence: string): boolean {
+  if (!/(?:purchase|buy|subscribe|unlock|canPurchase|isEnabled)/i.test(evidence)) return false;
+  const operators = evidence.replace(/"(?:\\.|[^"\\])*"/g, '""');
+  const state = /(?:\.isEnabled\b|\.exists\b|\bcanPurchase\b)/;
+  if (!state.test(operators)) return false;
+  if (/^\s*XCTAssertFalse\s*\(/.test(evidence)) return !/!(?!=)|\b(?:false|true)\b|==|!=/.test(operators);
+  if (/^\s*XCTAssertEqual\s*\(/.test(evidence)) {
+    const directState = String.raw`[^,=!<>]{0,300}(?:\.isEnabled\b|\.exists\b|\bcanPurchase\b)[^,=!<>]{0,100}`;
+    return new RegExp(`^\\s*XCTAssertEqual\\s*\\(\\s*(?:${directState},\\s*false\\b|false\\s*,${directState})`).test(operators);
+  }
+  if (!/^\s*(?:XCTAssertTrue|XCTAssert|#expect)\s*\(/.test(evidence)) return false;
+  const bangCount = operators.match(/!(?!=)/g)?.length || 0;
+  const falseComparison = /(?:\.isEnabled\b|\.exists\b|\bcanPurchase\b)\s*(?:==\s*false|!=\s*true)|(?:false\s*==|true\s*!=)\s*(?:[^,)]{0,200})(?:\.isEnabled\b|\.exists\b|\bcanPurchase\b)/.test(operators);
+  if (bangCount === 1 && !/\bfalse\b/.test(operators)) return /!\s*\(*\s*[^,)]{0,300}(?:\.isEnabled\b|\.exists\b|\bcanPurchase\b)/.test(operators);
+  return bangCount === 0 && falseComparison;
+}
 function visibleUICallArguments(source: string, names: Set<string>): string[] {
   const argumentsList: string[] = [];
   for (const match of source.matchAll(/\b(Text|Button|Label|Link|NavigationLink)\s*\(/g)) {
@@ -701,6 +717,21 @@ function visibleUICallArguments(source: string, names: Set<string>): string[] {
     if (closureOpening >= 0 && source[closureOpening] === "{") {
       const closureClosing = matchingDelimiter(source, closureOpening, "{", "}", 3_000);
       if (closureClosing >= 0) value += `\n${source.slice(closureOpening + 1, closureClosing)}`;
+    }
+    argumentsList.push(value);
+  }
+  for (const match of source.matchAll(/\b(Button|Label|Link|NavigationLink)\s*\{/g)) {
+    if (!names.has(match[1])) continue;
+    const opening = source.indexOf("{", match.index);
+    const closing = matchingDelimiter(source, opening, "{", "}", 3_000);
+    if (closing < 0) continue;
+    let value = source.slice(opening + 1, closing);
+    const remainder = source.slice(closing + 1, closing + 1 + 1_000);
+    const label = remainder.match(/^\s*label\s*:\s*\{/);
+    if (label) {
+      const labelOpening = closing + 1 + (label.index || 0) + label[0].lastIndexOf("{");
+      const labelClosing = matchingDelimiter(source, labelOpening, "{", "}", 3_000);
+      if (labelClosing >= 0) value += `\n${source.slice(labelOpening + 1, labelClosing)}`;
     }
     argumentsList.push(value);
   }
@@ -748,9 +779,22 @@ function credibleSwiftTestBodies(source: string): string {
 }
 function hasRenderedSwiftUICall(source: string, name: "ProductView" | "SubscriptionStoreView" | "StoreView"): boolean {
   for (const match of source.matchAll(new RegExp(`\\b${name}\\s*\\(`, "g"))) {
-    const statementStart = Math.max(source.lastIndexOf("{", match.index), source.lastIndexOf("}", match.index), source.lastIndexOf(";", match.index)) + 1;
-    const prefix = source.slice(statementStart, match.index);
-    if (!/(?:\b(?:let|var)\s+)?[A-Za-z_]\w*(?:\s*:\s*[^=;{}]+)?\s*=\s*$/s.test(prefix)) return true;
+    if (!isInsideAssignmentExpression(source, match.index)) return true;
+  }
+  return false;
+}
+function isInsideAssignmentExpression(source: string, index: number): boolean {
+  const lineStart = source.lastIndexOf("\n", index) + 1;
+  const linePrefix = source.slice(lineStart, index);
+  if (/(?:^|[^=!<>])=(?!=)/.test(linePrefix)) return true;
+  let cursor = lineStart - 1;
+  while (cursor >= 0) {
+    const previousStart = source.lastIndexOf("\n", cursor - 1) + 1;
+    const previousLine = source.slice(previousStart, cursor + 1).trim();
+    if (!previousLine) { cursor = previousStart - 1; continue; }
+    if (!/[=\[(,]$/.test(previousLine)) return false;
+    if (/(?:^|[^=!<>])=(?!=)/.test(previousLine)) return true;
+    cursor = previousStart - 1;
   }
   return false;
 }

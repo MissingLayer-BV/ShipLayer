@@ -121,6 +121,24 @@ Link(destination: privacyURL) { Text("Privacy Policy") }
   assert.ok(report.results.some((item) => item.id === "ai-sharing.consent-evidence" && item.severity === "pass"));
 });
 
+test("AI consent accepts no-parentheses SwiftUI label closures", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-ai-label-closures-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  addCompleteAISharing(manifest);
+  await writeAISharingEvidence(root);
+  await writeFile(path.join(root, "Sources/AIConsent.swift"), `Text("Cloudflare OpenRouter Alibaba Cloud International ${DATA_SENT} ${PURPOSE}")
+Button { send() } label: { Text("Allow and send to AI") }
+Button { manual() } label: { Text("Keep on device and enter manually") }
+NavigationLink { PrivacyView() } label: { Text("Privacy Policy") }
+`);
+  const report = await preflight(root, manifest);
+  for (const id of ["ai-sharing.consent-action", "ai-sharing.consent-decline", "ai-sharing.consent-privacy-link"]) {
+    assert.equal(report.results.some((item) => item.id === id && item.severity === "block"), false, id);
+  }
+  assert.ok(report.results.some((item) => item.id === "ai-sharing.consent-evidence" && item.severity === "pass"));
+});
+
 test("AI policy evidence must cover purpose, collection method, and retention or deletion", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-ai-policy-"));
   const manifest = readyManifest();
@@ -338,6 +356,24 @@ test("top-level assertions are not credible purchase test evidence", async () =>
   assert.equal(report.results.some((item) => item.id === "purchase.presentation-tests" && item.severity === "pass"), false);
 });
 
+test("double-negative unavailable assertions do not prove purchase is disabled", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-purchase-double-negative-"));
+  const manifest = readyManifest("non-consumables");
+  await writeReadyAssets(root, manifest);
+  await writeFile(path.join(root, "Tests/PaywallUITests.swift"), `import XCTest
+final class PaywallUITests: XCTestCase {
+  func testPaywall() {
+    XCTAssertTrue(app.staticTexts["paywall.price"].exists)
+    XCTAssertFalse(app.buttons["paywall.purchase"].isEnabled == false)
+    XCTAssertEqual(app.buttons["paywall.purchase"].isEnabled == false, false)
+  }
+}
+`);
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "purchase.unavailable-tests" && item.severity === "block"));
+  assert.equal(report.results.some((item) => item.id === "purchase.presentation-tests" && item.severity === "pass"), false);
+});
+
 test("purchase evidence accepts a localized displayPrice value that reaches visible UI", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-price-dataflow-"));
   const manifest = readyManifest("non-consumables");
@@ -399,8 +435,8 @@ test("unused StoreKit merchandising view assignments do not satisfy source evide
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-unused-product-view-"));
   const manifest = readyManifest("non-consumables");
   await writeReadyAssets(root, manifest);
-  await writeFile(path.join(root, "Sources/Paywall.swift"), `let unused =
-  ProductView(id: "com.example.unlock")
+  await writeFile(path.join(root, "Sources/Paywall.swift"), `let unused = [ProductView(id: "com.example.unlock")]
+let wrapped = AnyView(ProductView(id: "com.example.unlock"))
 struct EmptyPaywall: View { var body: some View { Text("Empty") } }
 `);
   const report = await preflight(root, manifest);
