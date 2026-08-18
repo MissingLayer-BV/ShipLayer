@@ -627,6 +627,60 @@ struct Paywall: View {
   assert.equal(report.results.filter((item) => item.id.startsWith("purchase.") && item.severity === "block").length, 0);
 });
 
+test("merchandising compiled only for another Apple platform cannot satisfy iOS source gates", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-macos-product-view-"));
+  const manifest = readyManifest("non-consumables");
+  await writeReadyAssets(root, manifest);
+  await writeFile(path.join(root, "Sources/Paywall.swift"), `#if os(macOS)
+ProductView(id: "com.example.unlock")
+#endif
+struct EmptyPaywall: View { var body: some View { Text("Empty") } }
+`);
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "purchase.localized-price-source" && item.severity === "block"));
+  assert.equal(report.results.some((item) => item.id === "purchase.presentation-source" && item.severity === "pass"), false);
+});
+
+test("nested platform elseif compilation selects only the iOS release branch", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-ios-elseif-product-view-"));
+  const manifest = readyManifest("non-consumables");
+  await writeReadyAssets(root, manifest);
+  await writeFile(path.join(root, "Sources/Paywall.swift"), `#if os(macOS)
+ProductView(id: "mac.unlock")
+#elseif os(tvOS)
+ProductView(id: "tv.unlock")
+#elseif os(iOS)
+  #if DEBUG
+  ProductView(id: "debug.unlock")
+  #else
+  struct Paywall: View {
+    var body: some View { ProductView(id: "com.example.unlock") }
+  }
+  #endif
+#elseif os(visionOS)
+ProductView(id: "vision.unlock")
+#else
+ProductView(id: "unknown.unlock")
+#endif
+`);
+  const report = await preflight(root, manifest);
+  assert.equal(report.results.filter((item) => item.id.startsWith("purchase.") && item.severity === "block").length, 0);
+});
+
+test("an unknown conditional branch cannot independently establish iOS release evidence", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-unknown-condition-product-view-"));
+  const manifest = readyManifest("non-consumables");
+  await writeReadyAssets(root, manifest);
+  await writeFile(path.join(root, "Sources/Paywall.swift"), `#if canImport(UnverifiedPaywall)
+ProductView(id: "com.example.unlock")
+#endif
+struct EmptyPaywall: View { var body: some View { Text("Empty") } }
+`);
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "purchase.localized-price-source" && item.severity === "block"));
+  assert.equal(report.results.some((item) => item.id === "purchase.presentation-source" && item.severity === "pass"), false);
+});
+
 test("coexisting optional product and fallback do not prove purchase is withheld", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-unsafe-force-purchase-"));
   const manifest = readyManifest("non-consumables");
@@ -716,6 +770,35 @@ test("SubscriptionStoreView may own subscription merchandising and automatic sou
     assert.equal(report.results.some((item) => item.id === id && item.severity === "block"), false, id);
   }
   assert.equal(report.results.filter((item) => item.id.startsWith("purchase.") && item.severity === "block").length, 0);
+});
+
+test("custom SubscriptionStoreControlStyle cannot inherit automatic disclosure evidence", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-custom-subscription-control-style-"));
+  const manifest = readyManifest("subscriptions");
+  await writeReadyAssets(root, manifest);
+  await writeFile(path.join(root, "Sources/Paywall.swift"), `SubscriptionStoreView(groupID: "example-pro")
+  .subscriptionStoreControlStyle(PriceHidingStyle())
+`);
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "purchase.custom-subscription-control-style" && item.severity === "block"));
+  for (const id of ["purchase.localized-price-source", "purchase.subscription-period-source", "purchase.offer-terms-source", "purchase.legal-links-source"]) {
+    assert.ok(report.results.some((item) => item.id === id && item.severity === "block"), id);
+  }
+  assert.equal(report.results.some((item) => item.id === "purchase.presentation-source" && item.severity === "pass"), false);
+});
+
+test("built-in SubscriptionStoreControlStyle remains automatic disclosure evidence", async () => {
+  const styles = ["automatic", "buttons", "picker", "prominentPicker", "compactPicker"];
+  for (const style of styles) {
+    const root = await mkdtemp(path.join(tmpdir(), `shiplayer-built-in-subscription-control-${style}-`));
+    const manifest = readyManifest("subscriptions");
+    await writeReadyAssets(root, manifest);
+    await writeFile(path.join(root, "Sources/Paywall.swift"), `SubscriptionStoreView(groupID: "example-pro")
+  .subscriptionStoreControlStyle(.${style})
+`);
+    const report = await preflight(root, manifest);
+    assert.equal(report.results.filter((item) => item.id.startsWith("purchase.") && item.severity === "block").length, 0, style);
+  }
 });
 
 test("custom subscription source accepts trailing-closure Terms and Privacy links", async () => {

@@ -294,17 +294,21 @@ async function purchasePresentationChecks(repository: string, manifest: ShipLaye
   else {
     const sourceCode = stripNonReleaseConditionalCompilation(stripCodeComments(source.text));
     const customProductViewStyle = hasUnverifiedCustomProductViewStyle(sourceCode);
+    const customSubscriptionControlStyle = hasUnverifiedCustomSubscriptionStoreControlStyle(sourceCode);
     const renderedProductView = hasRenderedSwiftUICall(sourceCode, "ProductView");
     const renderedStoreView = money.type === "non-consumables" && hasRenderedSwiftUICall(sourceCode, "StoreView");
     const customStyledMerchandising = customProductViewStyle && (renderedProductView || renderedStoreView);
     const productView = !customStyledMerchandising && renderedProductView;
-    const subscriptionStoreView = hasRenderedSwiftUICall(sourceCode, "SubscriptionStoreView");
+    const renderedSubscriptionStoreView = hasRenderedSwiftUICall(sourceCode, "SubscriptionStoreView");
+    const customStyledSubscriptionStore = customSubscriptionControlStyle && renderedSubscriptionStoreView;
+    const subscriptionStoreView = !customStyledSubscriptionStore && renderedSubscriptionStoreView;
     const storeView = !customStyledMerchandising && renderedStoreView;
     const storeKitMerchandisingView = productView || subscriptionStoreView || storeView;
     const localizedPriceRendered = storeKitMerchandisingView || hasVisibleLocalizedPrice(sourceCode);
     const unavailableStateRendered = storeKitMerchandisingView || hasUnavailablePurchaseState(sourceCode);
     if (!localizedPriceRendered) add("purchase.localized-price-source", "block", "Purchase evidence does not visibly render StoreKit Product.displayPrice or a StoreKit merchandising view.", "Render displayPrice in Text/Button/Label (directly or through a displayed local value); an unused displayPrice read is insufficient.");
     if (customStyledMerchandising) add("purchase.custom-product-view-style", "block", "Purchase evidence applies an unverified custom ProductViewStyle, so StoreKit-owned price and loading presentation cannot be assumed.", "Use a built-in .automatic, .compact, .regular, or .large productViewStyle, or replace the custom style with a fully evidenced custom paywall.");
+    if (customStyledSubscriptionStore) add("purchase.custom-subscription-control-style", "block", "Subscription evidence applies an unverified custom SubscriptionStoreControlStyle, so automatic price, period, and offer presentation cannot be assumed.", "Use a built-in .automatic, .buttons, .picker, .prominentPicker, or .compactPicker subscriptionStoreControlStyle, or replace it with a fully evidenced custom paywall.");
     if (!storeKitMerchandisingView && !/\.purchase\s*\(/.test(sourceCode)) add("purchase.call-source", "block", "Purchase evidence does not include a StoreKit purchase call or a supported StoreKit-owned merchandising view.", "Reference the source that starts StoreKit purchase after price availability, or ProductView/SubscriptionStoreView.");
     if (!unavailableStateRendered) add("purchase.unavailable-source", "block", "Purchase evidence does not keep payment unavailable while product/price data is loading or unavailable.", "Disable or withhold the purchase action until Product loads and render an explicit loading/unavailable/retry state.");
 
@@ -318,7 +322,7 @@ async function purchasePresentationChecks(repository: string, manifest: ShipLaye
     }
 
     if (sourceRoleValid) {
-      const sourceHasAll = !customStyledMerchandising && localizedPriceRendered
+      const sourceHasAll = !customStyledMerchandising && !customStyledSubscriptionStore && localizedPriceRendered
         && (storeKitMerchandisingView || /\.purchase\s*\(/.test(sourceCode))
         && unavailableStateRendered
         && (money.type !== "subscriptions" || ((subscriptionStoreView || hasVisibleSubscriptionPeriod(sourceCode))
@@ -662,32 +666,33 @@ function stripCodeComments(source: string): string {
   return output;
 }
 function stripNonReleaseConditionalCompilation(source: string): string {
-  type ConditionalFrame = { parentActive: boolean; mode: "non-release" | "release" | "unknown" };
+  type ConditionalFrame = { parentActive: boolean; selected: boolean; uncertainPrior: boolean };
   const frames: ConditionalFrame[] = [];
   const output: string[] = [];
   let active = true;
   for (const line of source.split(/(?<=\n)/)) {
     const directive = line.match(/^\s*#(if|elseif)\s+(.+?)\s*$/);
     if (directive?.[1] === "if") {
-      const mode = conditionalCompilationMode(directive[2]);
-      frames.push({ parentActive: active, mode });
-      active = active && mode !== "non-release";
+      const eligibility = conditionalCompilationEligibility(directive[2]);
+      frames.push({ parentActive: active, selected: eligibility === "eligible", uncertainPrior: eligibility === "unknown" });
+      active = active && eligibility === "eligible";
       output.push(line.endsWith("\n") ? "\n" : "");
       continue;
     }
     if (directive?.[1] === "elseif") {
       const frame = frames.at(-1);
       if (frame) {
-        if (frame.mode === "unknown") active = frame.parentActive;
-        else if (frame.mode === "release") active = false;
-        else active = frame.parentActive && conditionalCompilationMode(directive[2]) !== "non-release";
+        const eligibility = conditionalCompilationEligibility(directive[2]);
+        active = frame.parentActive && !frame.selected && !frame.uncertainPrior && eligibility === "eligible";
+        if (active) frame.selected = true;
+        if (!frame.selected && eligibility === "unknown") frame.uncertainPrior = true;
       }
       output.push(line.endsWith("\n") ? "\n" : "");
       continue;
     }
     if (/^\s*#else\b/.test(line)) {
       const frame = frames.at(-1);
-      if (frame) active = frame.mode === "non-release" ? frame.parentActive : frame.mode === "release" ? false : frame.parentActive;
+      if (frame) { active = frame.parentActive && !frame.selected && !frame.uncertainPrior; if (active) frame.selected = true; }
       output.push(line.endsWith("\n") ? "\n" : "");
       continue;
     }
@@ -701,13 +706,20 @@ function stripNonReleaseConditionalCompilation(source: string): string {
   }
   return output.join("");
 }
-function conditionalCompilationMode(condition: string): "non-release" | "release" | "unknown" {
-  const value = condition.replace(/\s+/g, " ").trim();
-  if (/^false$/i.test(value)) return "non-release";
-  if (/^true$/i.test(value)) return "release";
-  if (/!\s*DEBUG\b|!\s*targetEnvironment\s*\(\s*simulator\s*\)/i.test(value)) return "release";
-  if (/\btargetEnvironment\s*\(\s*simulator\s*\)/i.test(value)) return "non-release";
-  if (/\bDEBUG\b/.test(value) && !/\|\|/.test(value)) return "non-release";
+function conditionalCompilationEligibility(condition: string): "eligible" | "excluded" | "unknown" {
+  const value = stripOuterParentheses(condition.replace(/\s+/g, " ").trim());
+  const orTerms = value.split(/\s*\|\|\s*/);
+  if (orTerms.length > 1) {
+    const results = orTerms.map(conditionalCompilationEligibility);
+    return results.every((item) => item === "eligible") ? "eligible" : results.every((item) => item === "excluded") ? "excluded" : "unknown";
+  }
+  const andTerms = value.split(/\s*&&\s*/);
+  if (andTerms.length > 1) {
+    const results = andTerms.map(conditionalCompilationEligibility);
+    return results.includes("excluded") ? "excluded" : results.every((item) => item === "eligible") ? "eligible" : "unknown";
+  }
+  if (/^false$/i.test(value) || /^DEBUG$/i.test(value) || /^targetEnvironment\s*\(\s*simulator\s*\)$/i.test(value) || /^os\s*\(\s*(?:macOS|tvOS|watchOS|visionOS)\s*\)$/i.test(value)) return "excluded";
+  if (/^true$/i.test(value) || /^!\s*DEBUG$/i.test(value) || /^!\s*targetEnvironment\s*\(\s*simulator\s*\)$/i.test(value) || /^os\s*\(\s*iOS\s*\)$/i.test(value)) return "eligible";
   return "unknown";
 }
 function stripPolicyEvidenceComments(source: string): string { return source.replace(/<!--[\s\S]*?-->/g, ""); }
@@ -977,6 +989,16 @@ function hasUnverifiedCustomProductViewStyle(source: string): boolean {
     if (closing < 0) return true;
     const style = stripOuterParentheses(source.slice(opening + 1, closing));
     if (!/^\.(?:automatic|compact|regular|large)$/.test(style)) return true;
+  }
+  return false;
+}
+function hasUnverifiedCustomSubscriptionStoreControlStyle(source: string): boolean {
+  for (const match of source.matchAll(/\.subscriptionStoreControlStyle\s*\(/g)) {
+    const opening = source.indexOf("(", match.index);
+    const closing = matchingDelimiter(source, opening, "(", ")", 1_000);
+    if (closing < 0) return true;
+    const style = stripOuterParentheses(source.slice(opening + 1, closing));
+    if (!/^\.(?:automatic|buttons|picker|prominentPicker|compactPicker)$/.test(style)) return true;
   }
   return false;
 }
