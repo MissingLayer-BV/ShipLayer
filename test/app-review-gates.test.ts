@@ -696,6 +696,37 @@ struct Paywall: View { var body: some View { ProductView(id: "com.example.unlock
   }
 });
 
+test("known Apple commerce and UI framework guards remain eligible on iOS", async () => {
+  const conditions = ["canImport(StoreKit)", "os(iOS) && canImport(StoreKit)", "canImport(SwiftUI) && os(iOS)"];
+  for (const [index, condition] of conditions.entries()) {
+    const root = await mkdtemp(path.join(tmpdir(), `shiplayer-known-framework-condition-${index}-`));
+    const manifest = readyManifest("non-consumables");
+    await writeReadyAssets(root, manifest);
+    await writeFile(path.join(root, "Sources/Paywall.swift"), `#if ${condition}
+struct Paywall: View { var body: some View { ProductView(id: "com.example.unlock") } }
+#endif
+`);
+    const report = await preflight(root, manifest);
+    assert.equal(report.results.filter((item) => item.id.startsWith("purchase.") && item.severity === "block").length, 0, condition);
+  }
+});
+
+test("nested known Apple framework guards preserve iOS release evidence", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-nested-framework-condition-"));
+  const manifest = readyManifest("non-consumables");
+  await writeReadyAssets(root, manifest);
+  await writeFile(path.join(root, "Sources/Paywall.swift"), `#if canImport(SwiftUI)
+  #if canImport(StoreKit)
+    #if os(iOS)
+    struct Paywall: View { var body: some View { ProductView(id: "com.example.unlock") } }
+    #endif
+  #endif
+#endif
+`);
+  const report = await preflight(root, manifest);
+  assert.equal(report.results.filter((item) => item.id.startsWith("purchase.") && item.severity === "block").length, 0);
+});
+
 test("coexisting optional product and fallback do not prove purchase is withheld", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-unsafe-force-purchase-"));
   const manifest = readyManifest("non-consumables");

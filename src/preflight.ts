@@ -719,7 +719,7 @@ function conditionalCompilationEligibility(condition: string): "eligible" | "exc
     return results.includes("excluded") ? "excluded" : results.every((item) => item === "eligible") ? "eligible" : "unknown";
   }
   if (/^false$/i.test(value) || /^DEBUG$/i.test(value) || /^targetEnvironment\s*\(\s*simulator\s*\)$/i.test(value) || /^os\s*\(\s*(?:macOS|tvOS|watchOS|visionOS)\s*\)$/i.test(value) || /^!\s*os\s*\(\s*iOS\s*\)$/i.test(value)) return "excluded";
-  if (/^true$/i.test(value) || /^!\s*DEBUG$/i.test(value) || /^!\s*targetEnvironment\s*\(\s*simulator\s*\)$/i.test(value) || /^os\s*\(\s*iOS\s*\)$/i.test(value) || /^!\s*os\s*\(\s*(?:macOS|tvOS|watchOS|visionOS)\s*\)$/i.test(value)) return "eligible";
+  if (/^true$/i.test(value) || /^!\s*DEBUG$/i.test(value) || /^!\s*targetEnvironment\s*\(\s*simulator\s*\)$/i.test(value) || /^os\s*\(\s*iOS\s*\)$/i.test(value) || /^!\s*os\s*\(\s*(?:macOS|tvOS|watchOS|visionOS)\s*\)$/i.test(value) || /^canImport\s*\(\s*(?:StoreKit|SwiftUI)\s*\)$/i.test(value)) return "eligible";
   return "unknown";
 }
 function stripPolicyEvidenceComments(source: string): string { return source.replace(/<!--[\s\S]*?-->/g, ""); }
