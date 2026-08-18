@@ -103,6 +103,24 @@ test("AI consent evidence must render the declared action, decline path, and Pri
   }
 });
 
+test("AI consent accepts standard SwiftUI trailing-closure labels", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-ai-trailing-labels-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  addCompleteAISharing(manifest);
+  await writeAISharingEvidence(root);
+  await writeFile(path.join(root, "Sources/AIConsent.swift"), `Text("Cloudflare OpenRouter Alibaba Cloud International ${DATA_SENT} ${PURPOSE}")
+Button(action: allow) { Text("Allow and send to AI") }
+Button(action: decline) { Text("Keep on device and enter manually") }
+Link(destination: privacyURL) { Text("Privacy Policy") }
+`);
+  const report = await preflight(root, manifest);
+  for (const id of ["ai-sharing.consent-action", "ai-sharing.consent-decline", "ai-sharing.consent-privacy-link"]) {
+    assert.equal(report.results.some((item) => item.id === id && item.severity === "block"), false, id);
+  }
+  assert.ok(report.results.some((item) => item.id === "ai-sharing.consent-evidence" && item.severity === "pass"));
+});
+
 test("AI policy evidence must cover purpose, collection method, and retention or deletion", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-ai-policy-"));
   const manifest = readyManifest();
@@ -170,6 +188,20 @@ test("commented-out AI consent controls cannot satisfy production evidence", asy
   }
 });
 
+test("unused AI disclosure constants do not count as visible consent copy", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-ai-unused-copy-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  addCompleteAISharing(manifest);
+  await writeAISharingEvidence(root);
+  await writeFile(path.join(root, "Sources/AIConsent.swift"), `let unusedDisclosure = "Cloudflare OpenRouter Alibaba Cloud International ${DATA_SENT} ${PURPOSE}"\nButton("Allow and send to AI") {}\nButton("Keep on device and enter manually") {}\nLink("Privacy Policy", destination: privacyURL)\n`);
+  const report = await preflight(root, manifest);
+  for (const id of ["ai-sharing.consent-recipients", "ai-sharing.consent-data", "ai-sharing.consent-purpose"]) {
+    assert.ok(report.results.some((item) => item.id === id && item.severity === "block"), id);
+  }
+  assert.equal(report.results.some((item) => item.id === "ai-sharing.consent-evidence" && item.severity === "pass"), false);
+});
+
 test("AI privacy-policy evidence rejects test, fixture, and generated release roles", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-ai-policy-role-"));
   const manifest = readyManifest();
@@ -180,6 +212,34 @@ test("AI privacy-policy evidence rejects test, fixture, and generated release ro
   await mkdir(path.join(root, "fixtures"), { recursive: true });
   await writeFile(path.join(root, "fixtures/privacy.md"), await readFile(path.join(root, "Legal/privacy.md"), "utf8"));
   manifest.aiDataSharing.privacyPolicy.evidence = ["fixtures/privacy.md"];
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "ai-sharing.policy-source-role" && item.severity === "block"));
+  assert.equal(report.results.some((item) => item.id === "ai-sharing.policy-evidence" && item.severity === "pass"), false);
+});
+
+test("privacy disclosures hidden in HTML comments do not satisfy policy evidence", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-ai-policy-comments-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  addCompleteAISharing(manifest);
+  await writeAISharingEvidence(root);
+  if (!manifest.aiDataSharing.enabled) throw new Error("fixture");
+  await writeFile(path.join(root, "Legal/privacy.html"), `<!-- Users select and upload ${DATA_SENT} to Cloudflare, OpenRouter, and Alibaba Cloud International to ${PURPOSE}. Uploaded data is deleted. Each processor provides the same or equal protection. --><main>Privacy</main>`);
+  manifest.aiDataSharing.privacyPolicy.evidence = ["Legal/privacy.html"];
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "ai-sharing.policy-recipients" && item.severity === "block"));
+  assert.equal(report.results.some((item) => item.id === "ai-sharing.policy-evidence" && item.severity === "pass"), false);
+});
+
+test("unused policy constants in production code cannot satisfy public policy evidence", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-ai-policy-unused-code-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  addCompleteAISharing(manifest);
+  await writeAISharingEvidence(root);
+  if (!manifest.aiDataSharing.enabled) throw new Error("fixture");
+  await writeFile(path.join(root, "Sources/privacy.tsx"), `const unused = "Users upload ${DATA_SENT} to Cloudflare, OpenRouter, and Alibaba Cloud International to ${PURPOSE}; it is deleted and receives equal protection"; export function Privacy() { return <main>Privacy</main>; }`);
+  manifest.aiDataSharing.privacyPolicy.evidence = ["Sources/privacy.tsx"];
   const report = await preflight(root, manifest);
   assert.ok(report.results.some((item) => item.id === "ai-sharing.policy-source-role" && item.severity === "block"));
   assert.equal(report.results.some((item) => item.id === "ai-sharing.policy-evidence" && item.severity === "pass"), false);
@@ -232,6 +292,49 @@ test("comments and unrelated negative assertions cannot satisfy purchase evidenc
     assert.ok(report.results.some((item) => item.id === id && item.severity === "block"), id);
   }
   assert.equal(report.results.some((item) => item.id === "purchase.presentation-source" && item.severity === "pass"), false);
+  assert.equal(report.results.some((item) => item.id === "purchase.presentation-tests" && item.severity === "pass"), false);
+});
+
+test("negated positive assertions do not prove localized price visibility", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-purchase-negated-"));
+  const manifest = readyManifest("non-consumables");
+  await writeReadyAssets(root, manifest);
+  await writeFile(path.join(root, "Tests/PaywallUITests.swift"), `import XCTest
+final class PaywallUITests: XCTestCase {
+  func testPriceIsAbsent() {
+    XCTAssertTrue((!app.staticTexts["paywall.price"].exists))
+    XCTAssertNotNil(app.staticTexts["paywall.price"].exists)
+    XCTAssertFalse(app.buttons["paywall.purchase"].isEnabled)
+  }
+}
+`);
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "purchase.presentation-tests" && item.severity === "block"));
+  assert.equal(report.results.some((item) => item.id === "purchase.presentation-tests" && item.severity === "pass"), false);
+});
+
+test("reversed false comparisons do not prove localized price visibility", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-purchase-reversed-false-"));
+  const manifest = readyManifest("non-consumables");
+  await writeReadyAssets(root, manifest);
+  await writeFile(path.join(root, "Tests/PaywallUITests.swift"), `import Testing
+@Test func priceIsAbsent() {
+  #expect(false == app.staticTexts["paywall.price"].exists)
+  #expect(!app.buttons["paywall.purchase"].isEnabled)
+}
+`);
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "purchase.presentation-tests" && item.severity === "block"));
+  assert.equal(report.results.some((item) => item.id === "purchase.presentation-tests" && item.severity === "pass"), false);
+});
+
+test("top-level assertions are not credible purchase test evidence", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-purchase-top-level-tests-"));
+  const manifest = readyManifest("non-consumables");
+  await writeReadyAssets(root, manifest);
+  await writeFile(path.join(root, "Tests/PaywallUITests.swift"), `XCTAssertTrue(app.staticTexts["paywall.price"].exists)\nXCTAssertFalse(app.buttons["paywall.purchase"].isEnabled)\n`);
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "purchase.presentation-test-container" && item.severity === "block"));
   assert.equal(report.results.some((item) => item.id === "purchase.presentation-tests" && item.severity === "pass"), false);
 });
 
@@ -292,6 +395,30 @@ test("StoreKit merchandising views may own purchase without an explicit purchase
   assert.equal(report.results.filter((item) => item.id.startsWith("purchase.") && item.severity === "block").length, 0);
 });
 
+test("unused StoreKit merchandising view assignments do not satisfy source evidence", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-unused-product-view-"));
+  const manifest = readyManifest("non-consumables");
+  await writeReadyAssets(root, manifest);
+  await writeFile(path.join(root, "Sources/Paywall.swift"), `let unused =
+  ProductView(id: "com.example.unlock")
+struct EmptyPaywall: View { var body: some View { Text("Empty") } }
+`);
+  const report = await preflight(root, manifest);
+  for (const id of ["purchase.localized-price-source", "purchase.call-source", "purchase.unavailable-source"]) {
+    assert.ok(report.results.some((item) => item.id === id && item.severity === "block"), id);
+  }
+  assert.equal(report.results.some((item) => item.id === "purchase.presentation-source" && item.severity === "pass"), false);
+});
+
+test("rendered StoreView may own non-consumable merchandising", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-store-view-"));
+  const manifest = readyManifest("non-consumables");
+  await writeReadyAssets(root, manifest);
+  await writeFile(path.join(root, "Sources/Paywall.swift"), `struct Paywall: View { var body: some View { StoreView(ids: ["com.example.unlock"]) } }\n`);
+  const report = await preflight(root, manifest);
+  assert.equal(report.results.filter((item) => item.id.startsWith("purchase.") && item.severity === "block").length, 0);
+});
+
 test("SubscriptionStoreView may own subscription merchandising and automatic source disclosures", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-subscription-store-view-"));
   const manifest = readyManifest("subscriptions");
@@ -302,4 +429,25 @@ test("SubscriptionStoreView may own subscription merchandising and automatic sou
     assert.equal(report.results.some((item) => item.id === id && item.severity === "block"), false, id);
   }
   assert.equal(report.results.filter((item) => item.id.startsWith("purchase.") && item.severity === "block").length, 0);
+});
+
+test("custom subscription source accepts trailing-closure Terms and Privacy links", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-subscription-trailing-links-"));
+  const manifest = readyManifest("subscriptions");
+  await writeReadyAssets(root, manifest);
+  await writeFile(path.join(root, "Sources/Paywall.swift"), `let product: Product?
+if let product {
+  Text(product.displayPrice)
+  Text("Billed monthly")
+  Text("3-day free trial, then renews monthly")
+  Link(destination: termsURL) { Text("Terms of Use") }
+  Link(destination: privacyURL) { Text("Privacy Policy") }
+  Button("Subscribe") { Task { try await product.purchase() } }
+} else {
+  ProgressView("Loading price")
+}
+`);
+  const report = await preflight(root, manifest);
+  assert.equal(report.results.some((item) => item.id === "purchase.legal-links-source" && item.severity === "block"), false);
+  assert.equal(report.results.some((item) => item.id === "purchase.presentation-source" && item.severity === "pass"), true);
 });

@@ -204,14 +204,14 @@ async function aiDataSharingChecks(repository: string, manifest: ShipLayerManife
   const consentSourceRoleValid = sharing.consent.evidence.every(isProductionSourceEvidencePath);
   const policyEvidenceRoleValid = sharing.privacyPolicy.evidence.every(isPolicyEvidencePath);
   if (!consentSourceRoleValid) add("ai-sharing.consent-source-role", "block", "AI consent evidence must reference production app source, not tests, scripts, fixtures, generated declarations, or documentation.", "Reference contained production Swift/Objective-C source that renders the disclosure before network transmission.");
-  if (!policyEvidenceRoleValid) add("ai-sharing.policy-source-role", "block", "AI privacy-policy evidence must reference public policy content or production policy-serving source, not tests, fixtures, samples, tooling, or generated release artifacts.", "Reference contained Markdown/HTML/text policy content or production source that serves the public privacy policy.");
+  if (!policyEvidenceRoleValid) add("ai-sharing.policy-source-role", "block", "AI privacy-policy evidence must reference a public static policy artifact, not app code, tests, fixtures, samples, tooling, or generated release artifacts.", "Reference contained .md, .markdown, .html, .htm, or .txt policy content that is published as the app's privacy policy.");
   if (!consentText.complete) add("ai-sharing.consent-evidence", "block", "AI consent evidence is missing, symlinked, unreadable, or oversized.", "Reference contained production source that renders the disclosure before network transmission.");
   else {
     const consentSource = stripCodeComments(consentText.text);
-    const normalizedConsent = consentSource.toLocaleLowerCase("en-US");
-    const missing = sharing.processorNames.filter((name) => !normalizedConsent.includes(name.toLocaleLowerCase("en-US")));
-    const missingData = sharing.dataSent.filter((data) => !normalizedConsent.includes(data.toLocaleLowerCase("en-US")));
-    const purposeVisible = normalizedConsent.includes(sharing.purpose.toLocaleLowerCase("en-US"));
+    const visibleDisclosure = visibleTextEvidence(consentSource).toLocaleLowerCase("en-US");
+    const missing = sharing.processorNames.filter((name) => !visibleDisclosure.includes(name.toLocaleLowerCase("en-US")));
+    const missingData = sharing.dataSent.filter((data) => !visibleDisclosure.includes(data.toLocaleLowerCase("en-US")));
+    const purposeVisible = visibleDisclosure.includes(sharing.purpose.toLocaleLowerCase("en-US"));
     const buttonLabels = visibleUICallArguments(consentSource, new Set(["Button"])).map((value) => value.toLocaleLowerCase("en-US"));
     const actionVisible = buttonLabels.some((value) => value.includes(sharing.consent.affirmativeAction.toLocaleLowerCase("en-US")));
     const declineVisible = buttonLabels.some((value) => value.includes(sharing.consent.declinePath.toLocaleLowerCase("en-US")));
@@ -226,18 +226,19 @@ async function aiDataSharingChecks(repository: string, manifest: ShipLayerManife
   }
   if (!policyText.complete) add("ai-sharing.policy-evidence", "block", "AI privacy-policy evidence is missing, symlinked, unreadable, or oversized.", "Reference the public policy source containing the confirmed AI disclosures.");
   else {
-    const normalizedPolicy = policyText.text.toLocaleLowerCase("en-US");
+    const policySource = policyText.entries.map((entry) => stripPolicyEvidenceComments(entry.text)).join("\n");
+    const normalizedPolicy = policySource.toLocaleLowerCase("en-US");
     const missing = sharing.processorNames.filter((name) => !normalizedPolicy.includes(name.toLocaleLowerCase("en-US")));
     const missingData = sharing.dataSent.filter((data) => !normalizedPolicy.includes(data.toLocaleLowerCase("en-US")));
     const purposeVisible = normalizedPolicy.includes(sharing.purpose.toLocaleLowerCase("en-US"));
-    const collectionMethodVisible = /\b(?:select|choose|capture|photograph|upload|send|transmit|submit|provide(?:d)?)\b/i.test(policyText.text);
-    const retentionVisible = /\b(?:retain(?:ed|s|ing)?|retention|delet(?:e|ed|ion)|eras(?:e|ed|ure)|remov(?:e|ed|al)|stor(?:e|ed|age)|keep|discard(?:ed|s)?)\b/i.test(policyText.text);
+    const collectionMethodVisible = /\b(?:select|choose|capture|photograph|upload|send|transmit|submit|provide(?:d)?)\b/i.test(policySource);
+    const retentionVisible = /\b(?:retain(?:ed|s|ing)?|retention|delet(?:e|ed|ion)|eras(?:e|ed|ure)|remov(?:e|ed|al)|stor(?:e|ed|age)|keep|discard(?:ed|s)?)\b/i.test(policySource);
     if (missing.length) add("ai-sharing.policy-recipients", "block", `Privacy-policy evidence does not name: ${missing.join(", ")}.`, "Name every processor that receives AI feature data.");
     if (missingData.length) add("ai-sharing.policy-data", "block", `Privacy-policy evidence does not identify: ${missingData.join(", ")}.`, "Describe what is collected/transmitted and how it is obtained.");
     if (!purposeVisible) add("ai-sharing.policy-purpose", "block", "Privacy-policy evidence does not state the declared AI processing purpose/all uses.", "State every use of the transmitted data, including the exact declared AI feature purpose.");
     if (!collectionMethodVisible) add("ai-sharing.policy-collection-method", "block", "Privacy-policy evidence does not explain how the app obtains or transmits the AI feature data.", "Explain whether users select, capture, upload, send, or otherwise provide the data.");
     if (!retentionVisible) add("ai-sharing.policy-retention", "block", "Privacy-policy evidence does not explain retention or deletion.", "Describe processor/app retention and deletion behavior, including limited logs where applicable.");
-    const equalProtection = /(?:same|equal).{0,60}protect|protect.{0,60}(?:same|equal)/is.test(policyText.text);
+    const equalProtection = /(?:same|equal).{0,60}protect|protect.{0,60}(?:same|equal)/is.test(policySource);
     if (!equalProtection) add("ai-sharing.policy-protection", "block", "Privacy-policy evidence does not confirm that third-party processors provide the same or equal protection.", "Add the processor-protection statement required by App Review after legal review.");
     if (policyEvidenceRoleValid && !missing.length && !missingData.length && purposeVisible && collectionMethodVisible && retentionVisible && equalProtection) add("ai-sharing.policy-evidence", "pass", "Privacy-policy evidence covers recipients, data, collection/transmission, purpose, retention/deletion, and same-or-equal protection.");
   }
@@ -292,8 +293,10 @@ async function purchasePresentationChecks(repository: string, manifest: ShipLaye
   if (!source.complete) add("purchase.presentation-source", "block", "Purchase presentation source evidence is missing, symlinked, unreadable, or oversized.", "Reference production StoreKit/paywall source files.");
   else {
     const sourceCode = stripCodeComments(source.text);
-    const storeKitMerchandisingView = /\b(?:ProductView|SubscriptionStoreView)\s*\(/.test(sourceCode);
-    const subscriptionStoreView = /\bSubscriptionStoreView\s*\(/.test(sourceCode);
+    const productView = hasRenderedSwiftUICall(sourceCode, "ProductView");
+    const subscriptionStoreView = hasRenderedSwiftUICall(sourceCode, "SubscriptionStoreView");
+    const storeView = money.type === "non-consumables" && hasRenderedSwiftUICall(sourceCode, "StoreView");
+    const storeKitMerchandisingView = productView || subscriptionStoreView || storeView;
     const localizedPriceRendered = storeKitMerchandisingView || hasVisibleLocalizedPrice(sourceCode);
     const unavailableStateRendered = storeKitMerchandisingView || hasUnavailablePurchaseState(sourceCode);
     if (!localizedPriceRendered) add("purchase.localized-price-source", "block", "Purchase evidence does not visibly render StoreKit Product.displayPrice or a StoreKit merchandising view.", "Render displayPrice in Text/Button/Label (directly or through a displayed local value); an unused displayPrice read is insufficient.");
@@ -322,7 +325,9 @@ async function purchasePresentationChecks(repository: string, manifest: ShipLaye
   if (!tests.complete) add("purchase.presentation-tests", "block", "Purchase presentation test evidence is missing, symlinked, unreadable, or oversized.", "Add a UI or snapshot test proving the localized price is visible before the purchase action and no purchase can start while unavailable.");
   else {
     const testSource = stripCodeComments(tests.text);
-    const assertions = assertionEvidence(testSource);
+    const testBodies = credibleSwiftTestBodies(testSource);
+    if (!testBodies) add("purchase.presentation-test-container", "block", "Purchase test evidence is not contained in a credible XCTest or Swift Testing test method.", "Reference compiling test source with import XCTest, an XCTestCase test method, or import Testing and an @Test function.");
+    const assertions = assertionEvidence(testBodies);
     const positiveAssertions = assertions.filter(isPositiveVisibilityAssertion);
     const visiblePriceTested = positiveAssertions.some((value) => /(?:displayPrice|paywall\.price|localized.{0,30}price|price.{0,30}(?:visible|exist|label))/is.test(value));
     const unavailableTested = assertions.some((value) => /(?:purchase|buy|subscribe|unlock|canPurchase|isEnabled)/i.test(value) && /(?:XCTAssertFalse|#expect\s*\(\s*!|XCTAssertEqual[\s\S]{0,300},\s*false|(?:not|false).{0,30}exist)/i.test(value));
@@ -338,7 +343,7 @@ async function purchasePresentationChecks(repository: string, manifest: ShipLaye
       if (!legalLinksTested) add("purchase.legal-links-tests", "block", "Test evidence does not assert that both Terms and Privacy links are visible.", "Assert both legal links exist on the paywall.");
       subscriptionTestsReady = periodTested && offerTested && legalLinksTested;
     }
-    if (testRoleValid && visiblePriceTested && unavailableTested && subscriptionTestsReady) add("purchase.presentation-tests", "pass", "Test evidence covers visible localized pricing, unavailable state, and applicable subscription disclosures.");
+    if (testRoleValid && Boolean(testBodies) && visiblePriceTested && unavailableTested && subscriptionTestsReady) add("purchase.presentation-tests", "pass", "Test evidence covers visible localized pricing, unavailable state, and applicable subscription disclosures.");
   }
 }
 
@@ -611,7 +616,7 @@ function isPolicyEvidencePath(file: string): boolean {
   const parts = normalized.split("/");
   return !isNonProductionSourcePath(normalized)
     && !parts.some((component) => /^(?:fixtures?|samples?|testdata|shiplayer-release|release|dist|build|deriveddata|node_modules|scripts?|tools?)$/i.test(component))
-    && /\.(?:md|markdown|html?|txt|swift|[cm]?[jt]sx?|mjs|cjs|mts|cts)$/i.test(normalized);
+    && /\.(?:md|markdown|html?|txt)$/i.test(normalized);
 }
 function stripCodeComments(source: string): string {
   let output = "";
@@ -651,6 +656,7 @@ function stripCodeComments(source: string): string {
   }
   return output;
 }
+function stripPolicyEvidenceComments(source: string): string { return source.replace(/<!--[\s\S]*?-->/g, ""); }
 function assertionEvidence(source: string): string[] {
   const evidence: string[] = [];
   for (const match of source.matchAll(/(?:\bXCTAssert[A-Za-z]*|#expect|\bassertSnapshot)\s*\(/g)) {
@@ -675,15 +681,89 @@ function assertionEvidence(source: string): string[] {
   return evidence;
 }
 function isPositiveVisibilityAssertion(evidence: string): boolean {
-  return /\bXCTAssert(?:True|NotNil)?\s*\(/.test(evidence)
-    || /\bXCTAssertEqual\s*\([\s\S]{0,1000},\s*true\b/.test(evidence)
-    || /#expect\s*\(\s*(?![!])/.test(evidence)
-    || /\bassertSnapshot\s*\(/.test(evidence);
+  if (/\bassertSnapshot\s*\(/.test(evidence)) return true;
+  if (!/(?:\.exists\b|\.waitForExistence\s*\()/.test(evidence)) return false;
+  const operators = evidence.replace(/"(?:\\.|[^"\\])*"/g, '""');
+  if (/!|\bfalse\b/.test(operators)) return false;
+  if (/^\s*(?:XCTAssert|XCTAssertTrue|#expect)\s*\(/.test(evidence)) return true;
+  return /^\s*XCTAssertEqual\s*\(/.test(evidence) && /\btrue\b/.test(operators);
 }
 function visibleUICallArguments(source: string, names: Set<string>): string[] {
   const argumentsList: string[] = [];
-  for (const match of source.matchAll(/\b(Text|Button|Label|Link|NavigationLink)\s*\(([\s\S]{0,600}?)\)/g)) if (names.has(match[1])) argumentsList.push(match[2]);
+  for (const match of source.matchAll(/\b(Text|Button|Label|Link|NavigationLink)\s*\(/g)) {
+    if (!names.has(match[1])) continue;
+    const opening = source.indexOf("(", match.index);
+    const closing = matchingDelimiter(source, opening, "(", ")", 2_000);
+    if (closing < 0) continue;
+    let value = source.slice(opening + 1, closing);
+    const trailingOpening = source.slice(closing + 1).search(/\S/);
+    const closureOpening = trailingOpening < 0 ? -1 : closing + 1 + trailingOpening;
+    if (closureOpening >= 0 && source[closureOpening] === "{") {
+      const closureClosing = matchingDelimiter(source, closureOpening, "{", "}", 3_000);
+      if (closureClosing >= 0) value += `\n${source.slice(closureOpening + 1, closureClosing)}`;
+    }
+    argumentsList.push(value);
+  }
   return argumentsList;
+}
+function matchingDelimiter(source: string, opening: number, open: string, close: string, limit: number): number {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = opening; index < source.length && index - opening <= limit; index++) {
+    const character = source[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') { inString = true; continue; }
+    if (character === open) depth++;
+    else if (character === close && --depth === 0) return index;
+  }
+  return -1;
+}
+function balancedBlock(source: string, opening: number, limit = 50_000): string {
+  const closing = matchingDelimiter(source, opening, "{", "}", limit);
+  return closing < 0 ? "" : source.slice(opening + 1, closing);
+}
+function credibleSwiftTestBodies(source: string): string {
+  const bodies: string[] = [];
+  if (/\bimport\s+XCTest\b/.test(source) && /:\s*XCTestCase\b/.test(source)) {
+    for (const match of source.matchAll(/\bfunc\s+test[A-Za-z0-9_]*\s*\([^)]*\)[^{]*\{/g)) {
+      const opening = source.indexOf("{", match.index);
+      const body = balancedBlock(source, opening);
+      if (body) bodies.push(body);
+    }
+  }
+  if (/\bimport\s+Testing\b/.test(source)) {
+    for (const match of source.matchAll(/@Test(?:\s*\([^)]*\))?[\s\S]{0,500}?\bfunc\s+[A-Za-z_]\w*\s*\([^)]*\)[^{]*\{/g)) {
+      const opening = source.indexOf("{", match.index);
+      const body = balancedBlock(source, opening);
+      if (body) bodies.push(body);
+    }
+  }
+  return bodies.join("\n");
+}
+function hasRenderedSwiftUICall(source: string, name: "ProductView" | "SubscriptionStoreView" | "StoreView"): boolean {
+  for (const match of source.matchAll(new RegExp(`\\b${name}\\s*\\(`, "g"))) {
+    const statementStart = Math.max(source.lastIndexOf("{", match.index), source.lastIndexOf("}", match.index), source.lastIndexOf(";", match.index)) + 1;
+    const prefix = source.slice(statementStart, match.index);
+    if (!/(?:\b(?:let|var)\s+)?[A-Za-z_]\w*(?:\s*:\s*[^=;{}]+)?\s*=\s*$/s.test(prefix)) return true;
+  }
+  return false;
+}
+function visibleTextEvidence(source: string): string {
+  const visibleArguments = visibleUICallArguments(source, new Set(["Text", "Label"]));
+  const resolved = [...visibleArguments];
+  for (const match of source.matchAll(/\b(?:let|var)\s+([A-Za-z_]\w*)\s*=\s*"([^"\n]{1,2000})"/g)) {
+    const nearbySource = source.slice(match.index, match.index + 2_000);
+    const nearbyVisible = visibleUICallArguments(nearbySource, new Set(["Text", "Label"]));
+    const reference = new RegExp(`\\b${match[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`);
+    if (nearbyVisible.some((value) => reference.test(value))) resolved.push(match[2]);
+  }
+  return resolved.join("\n");
 }
 function hasVisibleLocalizedPrice(source: string): boolean {
   const visibleArguments = visibleUICallArguments(source, new Set(["Text", "Button", "Label"]));
@@ -719,19 +799,22 @@ async function validEvidencePaths(repository: string, evidence: string[]): Promi
   }
   return valid;
 }
-async function evidenceText(repository: string, evidence: string[]): Promise<{ complete: boolean; text: string }> {
+async function evidenceText(repository: string, evidence: string[]): Promise<{ complete: boolean; text: string; entries: Array<{ path: string; text: string }> }> {
   const chunks: string[] = [];
+  const entries: Array<{ path: string; text: string }> = [];
   for (const value of evidence) {
     try {
       const target = await resolveContained(repository, value, "evidence path");
       const details = await lstat(target);
-      if (!details.isFile() || details.isSymbolicLink() || details.size > 1_000_000) return { complete: false, text: "" };
-      chunks.push(await readFile(target, "utf8"));
+      if (!details.isFile() || details.isSymbolicLink() || details.size > 1_000_000) return { complete: false, text: "", entries: [] };
+      const text = await readFile(target, "utf8");
+      chunks.push(text);
+      entries.push({ path: value, text });
     } catch {
-      return { complete: false, text: "" };
+      return { complete: false, text: "", entries: [] };
     }
   }
-  return { complete: evidence.length > 0 && chunks.length === evidence.length, text: chunks.join("\n") };
+  return { complete: evidence.length > 0 && chunks.length === evidence.length, text: chunks.join("\n"), entries };
 }
 function isFamilyScreenshotDimensions(family: "iphone" | "ipad", width: number, height: number): boolean { const supported = family === "iphone" ? IPHONE_SCREENSHOT_DIMENSIONS : IPAD_SCREENSHOT_DIMENSIONS; return supported.has(`${width}x${height}`) || supported.has(`${height}x${width}`); }
 async function nonEmptySafeIconBundle(directory: string): Promise<boolean> {

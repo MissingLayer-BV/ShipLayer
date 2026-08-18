@@ -63,13 +63,27 @@ if let product {
   Button("Price unavailable") {}.disabled(true).accessibilityIdentifier("paywall.purchase")
 }\n`);
     const subscriptionTests = manifest.monetization.type === "subscriptions"
-      ? `XCTAssertTrue(app.staticTexts["paywall.period"].exists)
-XCTAssertTrue(app.staticTexts["paywall.offer"].exists) // free trial terms
-XCTAssertTrue(app.links["Terms of Use"].exists)
-XCTAssertTrue(app.links["Privacy Policy"].exists)\n`
+      ? `        XCTAssertTrue(app.staticTexts["paywall.period"].exists)
+        XCTAssertTrue(app.staticTexts["paywall.offer"].exists) // free trial terms
+        XCTAssertTrue(app.links["Terms of Use"].exists)
+        XCTAssertTrue(app.links["Privacy Policy"].exists)\n`
       : "";
-    const uiTest = path.join(root, "Tests/PaywallUITests.swift"); await mkdir(path.dirname(uiTest), { recursive: true }); await writeFile(uiTest, `XCTAssertTrue(app.staticTexts["paywall.price"].waitForExistence(timeout: 5))
-XCTAssertFalse(app.buttons["paywall.purchase"].isEnabled)
-${subscriptionTests}`);
+    const uiTest = path.join(root, "Tests/PaywallUITests.swift"); await mkdir(path.dirname(uiTest), { recursive: true }); await writeFile(uiTest, `import XCTest
+
+final class PaywallUITests: XCTestCase {
+    func testLocalizedPriceAndDisclosuresAreVisible() {
+        let app = XCUIApplication()
+        app.launch()
+        XCTAssertTrue(app.staticTexts["paywall.price"].waitForExistence(timeout: 5))
+${subscriptionTests}    }
+
+    func testPurchaseIsDisabledUntilProductLoads() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing-product-unavailable"]
+        app.launch()
+        XCTAssertFalse(app.buttons["paywall.purchase"].isEnabled)
+    }
+}
+`);
   }
 }
