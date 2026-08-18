@@ -681,6 +681,21 @@ struct EmptyPaywall: View { var body: some View { Text("Empty") } }
   assert.equal(report.results.some((item) => item.id === "purchase.presentation-source" && item.severity === "pass"), false);
 });
 
+test("known iOS OR and negated other-platform conditions remain eligible", async () => {
+  const conditions = ["os(iOS) || os(visionOS)", "!os(macOS)"];
+  for (const [index, condition] of conditions.entries()) {
+    const root = await mkdtemp(path.join(tmpdir(), `shiplayer-known-ios-condition-${index}-`));
+    const manifest = readyManifest("non-consumables");
+    await writeReadyAssets(root, manifest);
+    await writeFile(path.join(root, "Sources/Paywall.swift"), `#if ${condition}
+struct Paywall: View { var body: some View { ProductView(id: "com.example.unlock") } }
+#endif
+`);
+    const report = await preflight(root, manifest);
+    assert.equal(report.results.filter((item) => item.id.startsWith("purchase.") && item.severity === "block").length, 0, condition);
+  }
+});
+
 test("coexisting optional product and fallback do not prove purchase is withheld", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-unsafe-force-purchase-"));
   const manifest = readyManifest("non-consumables");
@@ -788,7 +803,7 @@ test("custom SubscriptionStoreControlStyle cannot inherit automatic disclosure e
 });
 
 test("built-in SubscriptionStoreControlStyle remains automatic disclosure evidence", async () => {
-  const styles = ["automatic", "buttons", "picker", "prominentPicker", "compactPicker"];
+  const styles = ["automatic", "buttons", "picker", "prominentPicker", "compactPicker", "pagedPicker", "pagedProminentPicker"];
   for (const style of styles) {
     const root = await mkdtemp(path.join(tmpdir(), `shiplayer-built-in-subscription-control-${style}-`));
     const manifest = readyManifest("subscriptions");
@@ -799,6 +814,17 @@ test("built-in SubscriptionStoreControlStyle remains automatic disclosure eviden
     const report = await preflight(root, manifest);
     assert.equal(report.results.filter((item) => item.id.startsWith("purchase.") && item.severity === "block").length, 0, style);
   }
+});
+
+test("built-in SubscriptionStoreControlStyle accepts the placement overload", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-built-in-subscription-control-placement-"));
+  const manifest = readyManifest("subscriptions");
+  await writeReadyAssets(root, manifest);
+  await writeFile(path.join(root, "Sources/Paywall.swift"), `SubscriptionStoreView(groupID: "example-pro")
+  .subscriptionStoreControlStyle(.buttons, placement: .automatic)
+`);
+  const report = await preflight(root, manifest);
+  assert.equal(report.results.filter((item) => item.id.startsWith("purchase.") && item.severity === "block").length, 0);
 });
 
 test("custom subscription source accepts trailing-closure Terms and Privacy links", async () => {

@@ -308,7 +308,7 @@ async function purchasePresentationChecks(repository: string, manifest: ShipLaye
     const unavailableStateRendered = storeKitMerchandisingView || hasUnavailablePurchaseState(sourceCode);
     if (!localizedPriceRendered) add("purchase.localized-price-source", "block", "Purchase evidence does not visibly render StoreKit Product.displayPrice or a StoreKit merchandising view.", "Render displayPrice in Text/Button/Label (directly or through a displayed local value); an unused displayPrice read is insufficient.");
     if (customStyledMerchandising) add("purchase.custom-product-view-style", "block", "Purchase evidence applies an unverified custom ProductViewStyle, so StoreKit-owned price and loading presentation cannot be assumed.", "Use a built-in .automatic, .compact, .regular, or .large productViewStyle, or replace the custom style with a fully evidenced custom paywall.");
-    if (customStyledSubscriptionStore) add("purchase.custom-subscription-control-style", "block", "Subscription evidence applies an unverified custom SubscriptionStoreControlStyle, so automatic price, period, and offer presentation cannot be assumed.", "Use a built-in .automatic, .buttons, .picker, .prominentPicker, or .compactPicker subscriptionStoreControlStyle, or replace it with a fully evidenced custom paywall.");
+    if (customStyledSubscriptionStore) add("purchase.custom-subscription-control-style", "block", "Subscription evidence applies an unverified custom SubscriptionStoreControlStyle, so automatic price, period, and offer presentation cannot be assumed.", "Use a built-in .automatic, .buttons, .picker, .prominentPicker, .compactPicker, .pagedPicker, or .pagedProminentPicker subscriptionStoreControlStyle, or replace it with a fully evidenced custom paywall.");
     if (!storeKitMerchandisingView && !/\.purchase\s*\(/.test(sourceCode)) add("purchase.call-source", "block", "Purchase evidence does not include a StoreKit purchase call or a supported StoreKit-owned merchandising view.", "Reference the source that starts StoreKit purchase after price availability, or ProductView/SubscriptionStoreView.");
     if (!unavailableStateRendered) add("purchase.unavailable-source", "block", "Purchase evidence does not keep payment unavailable while product/price data is loading or unavailable.", "Disable or withhold the purchase action until Product loads and render an explicit loading/unavailable/retry state.");
 
@@ -711,15 +711,15 @@ function conditionalCompilationEligibility(condition: string): "eligible" | "exc
   const orTerms = value.split(/\s*\|\|\s*/);
   if (orTerms.length > 1) {
     const results = orTerms.map(conditionalCompilationEligibility);
-    return results.every((item) => item === "eligible") ? "eligible" : results.every((item) => item === "excluded") ? "excluded" : "unknown";
+    return results.includes("eligible") ? "eligible" : results.every((item) => item === "excluded") ? "excluded" : "unknown";
   }
   const andTerms = value.split(/\s*&&\s*/);
   if (andTerms.length > 1) {
     const results = andTerms.map(conditionalCompilationEligibility);
     return results.includes("excluded") ? "excluded" : results.every((item) => item === "eligible") ? "eligible" : "unknown";
   }
-  if (/^false$/i.test(value) || /^DEBUG$/i.test(value) || /^targetEnvironment\s*\(\s*simulator\s*\)$/i.test(value) || /^os\s*\(\s*(?:macOS|tvOS|watchOS|visionOS)\s*\)$/i.test(value)) return "excluded";
-  if (/^true$/i.test(value) || /^!\s*DEBUG$/i.test(value) || /^!\s*targetEnvironment\s*\(\s*simulator\s*\)$/i.test(value) || /^os\s*\(\s*iOS\s*\)$/i.test(value)) return "eligible";
+  if (/^false$/i.test(value) || /^DEBUG$/i.test(value) || /^targetEnvironment\s*\(\s*simulator\s*\)$/i.test(value) || /^os\s*\(\s*(?:macOS|tvOS|watchOS|visionOS)\s*\)$/i.test(value) || /^!\s*os\s*\(\s*iOS\s*\)$/i.test(value)) return "excluded";
+  if (/^true$/i.test(value) || /^!\s*DEBUG$/i.test(value) || /^!\s*targetEnvironment\s*\(\s*simulator\s*\)$/i.test(value) || /^os\s*\(\s*iOS\s*\)$/i.test(value) || /^!\s*os\s*\(\s*(?:macOS|tvOS|watchOS|visionOS)\s*\)$/i.test(value)) return "eligible";
   return "unknown";
 }
 function stripPolicyEvidenceComments(source: string): string { return source.replace(/<!--[\s\S]*?-->/g, ""); }
@@ -997,8 +997,8 @@ function hasUnverifiedCustomSubscriptionStoreControlStyle(source: string): boole
     const opening = source.indexOf("(", match.index);
     const closing = matchingDelimiter(source, opening, "(", ")", 1_000);
     if (closing < 0) return true;
-    const style = stripOuterParentheses(source.slice(opening + 1, closing));
-    if (!/^\.(?:automatic|buttons|picker|prominentPicker|compactPicker)$/.test(style)) return true;
+    const style = stripOuterParentheses(splitTopLevelArguments(source.slice(opening + 1, closing))[0] ?? "");
+    if (!/^\.(?:automatic|buttons|picker|prominentPicker|compactPicker|pagedPicker|pagedProminentPicker)$/.test(style)) return true;
   }
   return false;
 }
