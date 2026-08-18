@@ -10,6 +10,18 @@ import { readyManifest, writeReadyAssets } from "./helpers.js";
 
 const DATA_SENT = "metadata-free receipt images";
 const PURPOSE = "extract editable receipt suggestions";
+const xctestSource = (body: string): string => `import XCTest
+final class PaywallUITests: XCTestCase {
+  func testPaywallEvidence() {
+${body.split("\n").map((line) => `    ${line}`).join("\n")}
+  }
+}
+`;
+const swiftTestingSource = (body: string): string => `import Testing
+@Test func paywallEvidence() {
+${body.split("\n").map((line) => `  ${line}`).join("\n")}
+}
+`;
 
 function addCompleteAISharing(manifest: ShipLayerManifest): void {
   const processor = (name: string, kind: "ai" | "network") => ({
@@ -137,6 +149,44 @@ NavigationLink { PrivacyView() } label: { Text("Privacy Policy") }
     assert.equal(report.results.some((item) => item.id === id && item.severity === "block"), false, id);
   }
   assert.ok(report.results.some((item) => item.id === "ai-sharing.consent-evidence" && item.severity === "pass"));
+});
+
+test("AI consent ignores strings hidden in action and destination closures", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-ai-hidden-control-copy-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  addCompleteAISharing(manifest);
+  await writeAISharingEvidence(root);
+  await writeFile(path.join(root, "Sources/AIConsent.swift"), `Text("AI helper")
+Button { let _ = Text("Cloudflare OpenRouter Alibaba Cloud International ${DATA_SENT} ${PURPOSE}"); log("Allow and send to AI") } label: { Text("Continue") }
+Button { log("Keep on device and enter manually") } label: { Text("Cancel") }
+NavigationLink { Text("Privacy Policy") } label: { Text("Learn more") }
+`);
+  const report = await preflight(root, manifest);
+  for (const id of ["ai-sharing.consent-recipients", "ai-sharing.consent-data", "ai-sharing.consent-purpose", "ai-sharing.consent-action", "ai-sharing.consent-decline", "ai-sharing.consent-privacy-link"]) {
+    assert.ok(report.results.some((item) => item.id === id && item.severity === "block"), id);
+  }
+  assert.equal(report.results.some((item) => item.id === "ai-sharing.consent-evidence" && item.severity === "pass"), false);
+});
+
+test("AI consent ignores release-excluded conditional compilation", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-ai-debug-consent-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  addCompleteAISharing(manifest);
+  await writeAISharingEvidence(root);
+  await writeFile(path.join(root, "Sources/AIConsent.swift"), `#if DEBUG
+Text("Cloudflare OpenRouter Alibaba Cloud International ${DATA_SENT} ${PURPOSE}")
+Button("Allow and send to AI") {}
+Button("Keep on device and enter manually") {}
+Link("Privacy Policy", destination: privacyURL)
+#else
+Text("AI helper")
+#endif
+`);
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "ai-sharing.consent-recipients" && item.severity === "block"));
+  assert.equal(report.results.some((item) => item.id === "ai-sharing.consent-evidence" && item.severity === "pass"), false);
 });
 
 test("AI policy evidence must cover purpose, collection method, and retention or deletion", async () => {
@@ -374,6 +424,75 @@ final class PaywallUITests: XCTestCase {
   assert.equal(report.results.some((item) => item.id === "purchase.presentation-tests" && item.severity === "pass"), false);
 });
 
+test("compound visibility assertions do not prove localized price visibility", async () => {
+  const cases = [
+    `XCTAssertTrue(app.staticTexts["paywall.price"].exists || fallbackVisible)`,
+    `XCTAssertEqual(app.staticTexts["paywall.price"].exists || fallbackVisible, true)`
+  ];
+  for (const [index, assertion] of cases.entries()) {
+    const root = await mkdtemp(path.join(tmpdir(), `shiplayer-price-compound-${index}-`));
+    const manifest = readyManifest("non-consumables");
+    await writeReadyAssets(root, manifest);
+    await writeFile(path.join(root, "Tests/PaywallUITests.swift"), xctestSource(`${assertion}\nXCTAssertFalse(app.buttons["paywall.purchase"].isEnabled)`));
+    const report = await preflight(root, manifest);
+    assert.ok(report.results.some((item) => item.id === "purchase.presentation-tests" && item.severity === "block"), assertion);
+  }
+
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-price-compound-expect-"));
+  const manifest = readyManifest("non-consumables");
+  await writeReadyAssets(root, manifest);
+  await writeFile(path.join(root, "Tests/PaywallUITests.swift"), swiftTestingSource(`#expect(app.staticTexts["paywall.price"].exists || fallbackVisible)\n#expect(!app.buttons["paywall.purchase"].isEnabled)`));
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "purchase.presentation-tests" && item.severity === "block"));
+});
+
+test("compound unavailable assertions do not prove purchase is disabled", async () => {
+  const xctestCases = [
+    `XCTAssertFalse(app.buttons["paywall.purchase"].isEnabled && networkIsDown)`,
+    `XCTAssertTrue(!app.buttons["paywall.purchase"].isEnabled || networkIsDown)`
+  ];
+  for (const [index, assertion] of xctestCases.entries()) {
+    const root = await mkdtemp(path.join(tmpdir(), `shiplayer-unavailable-compound-${index}-`));
+    const manifest = readyManifest("non-consumables");
+    await writeReadyAssets(root, manifest);
+    await writeFile(path.join(root, "Tests/PaywallUITests.swift"), xctestSource(`XCTAssertTrue(app.staticTexts["paywall.price"].exists)\n${assertion}`));
+    const report = await preflight(root, manifest);
+    assert.ok(report.results.some((item) => item.id === "purchase.unavailable-tests" && item.severity === "block"), assertion);
+  }
+
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-unavailable-compound-expect-"));
+  const manifest = readyManifest("non-consumables");
+  await writeReadyAssets(root, manifest);
+  await writeFile(path.join(root, "Tests/PaywallUITests.swift"), swiftTestingSource(`#expect(app.staticTexts["paywall.price"].exists)\n#expect(app.buttons["paywall.purchase"].isEnabled == false || networkIsDown)`));
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "purchase.unavailable-tests" && item.severity === "block"));
+});
+
+test("direct visibility and unavailable assertions remain valid evidence", async () => {
+  const xctestCases = [
+    `XCTAssertTrue(app.staticTexts["paywall.price"].exists)\nXCTAssertFalse(app.buttons["paywall.purchase"].isEnabled)`,
+    `XCTAssertEqual(app.staticTexts["paywall.price"].exists, true)\nXCTAssertTrue(!app.buttons["paywall.purchase"].isEnabled)`,
+    `XCTAssertTrue(app.staticTexts["paywall.price"].waitForExistence(timeout: 5))\nXCTAssertEqual(app.buttons["paywall.purchase"].isEnabled, false)`
+  ];
+  for (const [index, body] of xctestCases.entries()) {
+    const root = await mkdtemp(path.join(tmpdir(), `shiplayer-direct-assertions-${index}-`));
+    const manifest = readyManifest("non-consumables");
+    await writeReadyAssets(root, manifest);
+    await writeFile(path.join(root, "Tests/PaywallUITests.swift"), xctestSource(body));
+    const report = await preflight(root, manifest);
+    assert.equal(report.results.some((item) => item.id === "purchase.presentation-tests" && item.severity === "block"), false, body);
+    assert.equal(report.results.some((item) => item.id === "purchase.unavailable-tests" && item.severity === "block"), false, body);
+  }
+
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-direct-expect-"));
+  const manifest = readyManifest("non-consumables");
+  await writeReadyAssets(root, manifest);
+  await writeFile(path.join(root, "Tests/PaywallUITests.swift"), swiftTestingSource(`#expect(app.staticTexts["paywall.price"].exists)\n#expect(app.buttons["paywall.purchase"].isEnabled == false)`));
+  const report = await preflight(root, manifest);
+  assert.equal(report.results.some((item) => item.id === "purchase.presentation-tests" && item.severity === "block"), false);
+  assert.equal(report.results.some((item) => item.id === "purchase.unavailable-tests" && item.severity === "block"), false);
+});
+
 test("purchase evidence accepts a localized displayPrice value that reaches visible UI", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-price-dataflow-"));
   const manifest = readyManifest("non-consumables");
@@ -435,8 +554,14 @@ test("unused StoreKit merchandising view assignments do not satisfy source evide
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-unused-product-view-"));
   const manifest = readyManifest("non-consumables");
   await writeReadyAssets(root, manifest);
-  await writeFile(path.join(root, "Sources/Paywall.swift"), `let unused = [ProductView(id: "com.example.unlock")]
-let wrapped = AnyView(ProductView(id: "com.example.unlock"))
+  await writeFile(path.join(root, "Sources/Paywall.swift"), `let unused = AnyView(
+  VStack {
+    ProductView(id: "com.example.unlock")
+  }
+)
+let wrapped: AnyView = {
+  ProductView(id: "com.example.unlock")
+}()
 struct EmptyPaywall: View { var body: some View { Text("Empty") } }
 `);
   const report = await preflight(root, manifest);
@@ -444,6 +569,132 @@ struct EmptyPaywall: View { var body: some View { Text("Empty") } }
     assert.ok(report.results.some((item) => item.id === id && item.severity === "block"), id);
   }
   assert.equal(report.results.some((item) => item.id === "purchase.presentation-source" && item.severity === "pass"), false);
+});
+
+test("multiline StoreKit merchandising inside a rendered body remains valid", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-multiline-product-view-"));
+  const manifest = readyManifest("non-consumables");
+  await writeReadyAssets(root, manifest);
+  await writeFile(path.join(root, "Sources/Paywall.swift"), `struct Paywall: View {
+  var body: some View {
+    VStack {
+      ProductView(
+        id: "com.example.unlock"
+      )
+    }
+  }
+}
+`);
+  const report = await preflight(root, manifest);
+  assert.equal(report.results.filter((item) => item.id.startsWith("purchase.") && item.severity === "block").length, 0);
+});
+
+test("release-excluded merchandising evidence cannot satisfy purchase source gates", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-debug-product-view-"));
+  const manifest = readyManifest("non-consumables");
+  await writeReadyAssets(root, manifest);
+  await writeFile(path.join(root, "Sources/Paywall.swift"), `#if DEBUG
+ProductView(id: "com.example.unlock")
+#endif
+struct EmptyPaywall: View { var body: some View { Text("Empty") } }
+`);
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "purchase.localized-price-source" && item.severity === "block"));
+  assert.equal(report.results.some((item) => item.id === "purchase.presentation-source" && item.severity === "pass"), false);
+});
+
+test("nested conditional compilation keeps the production else branch eligible", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-production-else-product-view-"));
+  const manifest = readyManifest("non-consumables");
+  await writeReadyAssets(root, manifest);
+  await writeFile(path.join(root, "Sources/Paywall.swift"), `#if DEBUG
+  #if false
+  ProductView(id: "debug-false")
+  #else
+  ProductView(id: "debug")
+  #endif
+#elseif targetEnvironment(simulator)
+ProductView(id: "simulator")
+#else
+struct Paywall: View {
+  var body: some View {
+    ProductView(id: "com.example.unlock")
+  }
+}
+#endif
+`);
+  const report = await preflight(root, manifest);
+  assert.equal(report.results.filter((item) => item.id.startsWith("purchase.") && item.severity === "block").length, 0);
+});
+
+test("coexisting optional product and fallback do not prove purchase is withheld", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-unsafe-force-purchase-"));
+  const manifest = readyManifest("non-consumables");
+  await writeReadyAssets(root, manifest);
+  await writeFile(path.join(root, "Sources/Paywall.swift"), `let product: Product?
+Button("Buy") { Task { try await product!.purchase() } }
+if let product { Text(product.displayPrice) }
+ProgressView("Loading")
+`);
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "purchase.unavailable-source" && item.severity === "block"));
+  assert.equal(report.results.some((item) => item.id === "purchase.presentation-source" && item.severity === "pass"), false);
+});
+
+test("purchase source accepts guarded or safely disabled actions", async () => {
+  const predicates = ["isLoading", "product == nil", "!isAvailable", "!canPurchase", "!priceLoaded", "!productLoaded"];
+  for (const [index, predicate] of predicates.entries()) {
+    const root = await mkdtemp(path.join(tmpdir(), `shiplayer-safe-disabled-${index}-`));
+    const manifest = readyManifest("non-consumables");
+    await writeReadyAssets(root, manifest);
+    await writeFile(path.join(root, "Sources/Paywall.swift"), `let product: Product?
+Text(product?.displayPrice ?? "")
+Button("Buy") { Task { try await product!.purchase() } }
+  .disabled(${predicate})
+`);
+    const report = await preflight(root, manifest);
+    assert.equal(report.results.some((item) => item.id === "purchase.unavailable-source" && item.severity === "block"), false, predicate);
+  }
+});
+
+test("purchase source rejects inverted or compound disabled predicates", async () => {
+  const predicates = ["!loading", "isAvailable", "canPurchase", "productLoaded", "isLoading && networkIsDown"];
+  for (const [index, predicate] of predicates.entries()) {
+    const root = await mkdtemp(path.join(tmpdir(), `shiplayer-unsafe-disabled-${index}-`));
+    const manifest = readyManifest("non-consumables");
+    await writeReadyAssets(root, manifest);
+    await writeFile(path.join(root, "Sources/Paywall.swift"), `let product: Product?
+Text(product?.displayPrice ?? "")
+Button("Buy") { Task { try await product!.purchase() } }
+  .disabled(${predicate})
+`);
+    const report = await preflight(root, manifest);
+    assert.ok(report.results.some((item) => item.id === "purchase.unavailable-source" && item.severity === "block"), predicate);
+    assert.equal(report.results.some((item) => item.id === "purchase.presentation-source" && item.severity === "pass"), false, predicate);
+  }
+});
+
+test("custom ProductViewStyle cannot inherit StoreKit-owned presentation evidence", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-custom-product-style-"));
+  const manifest = readyManifest("non-consumables");
+  await writeReadyAssets(root, manifest);
+  await writeFile(path.join(root, "Sources/Paywall.swift"), `ProductView(id: "com.example.unlock")
+  .productViewStyle(PriceHidingStyle())
+`);
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "purchase.custom-product-view-style" && item.severity === "block"));
+  assert.equal(report.results.some((item) => item.id === "purchase.presentation-source" && item.severity === "pass"), false);
+});
+
+test("built-in ProductViewStyle remains StoreKit-owned presentation evidence", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-built-in-product-style-"));
+  const manifest = readyManifest("non-consumables");
+  await writeReadyAssets(root, manifest);
+  await writeFile(path.join(root, "Sources/Paywall.swift"), `ProductView(id: "com.example.unlock")
+  .productViewStyle(.compact)
+`);
+  const report = await preflight(root, manifest);
+  assert.equal(report.results.filter((item) => item.id.startsWith("purchase.") && item.severity === "block").length, 0);
 });
 
 test("rendered StoreView may own non-consumable merchandising", async () => {

@@ -207,7 +207,7 @@ async function aiDataSharingChecks(repository: string, manifest: ShipLayerManife
   if (!policyEvidenceRoleValid) add("ai-sharing.policy-source-role", "block", "AI privacy-policy evidence must reference a public static policy artifact, not app code, tests, fixtures, samples, tooling, or generated release artifacts.", "Reference contained .md, .markdown, .html, .htm, or .txt policy content that is published as the app's privacy policy.");
   if (!consentText.complete) add("ai-sharing.consent-evidence", "block", "AI consent evidence is missing, symlinked, unreadable, or oversized.", "Reference contained production source that renders the disclosure before network transmission.");
   else {
-    const consentSource = stripCodeComments(consentText.text);
+    const consentSource = stripNonReleaseConditionalCompilation(stripCodeComments(consentText.text));
     const visibleDisclosure = visibleTextEvidence(consentSource).toLocaleLowerCase("en-US");
     const missing = sharing.processorNames.filter((name) => !visibleDisclosure.includes(name.toLocaleLowerCase("en-US")));
     const missingData = sharing.dataSent.filter((data) => !visibleDisclosure.includes(data.toLocaleLowerCase("en-US")));
@@ -292,14 +292,19 @@ async function purchasePresentationChecks(repository: string, manifest: ShipLaye
   if (!testRoleValid) add("purchase.presentation-test-role", "block", "Purchase test evidence must reference conventional test source paths.", "Reference contained UI/unit/snapshot test source under a Tests or UITests target/path.");
   if (!source.complete) add("purchase.presentation-source", "block", "Purchase presentation source evidence is missing, symlinked, unreadable, or oversized.", "Reference production StoreKit/paywall source files.");
   else {
-    const sourceCode = stripCodeComments(source.text);
-    const productView = hasRenderedSwiftUICall(sourceCode, "ProductView");
+    const sourceCode = stripNonReleaseConditionalCompilation(stripCodeComments(source.text));
+    const customProductViewStyle = hasUnverifiedCustomProductViewStyle(sourceCode);
+    const renderedProductView = hasRenderedSwiftUICall(sourceCode, "ProductView");
+    const renderedStoreView = money.type === "non-consumables" && hasRenderedSwiftUICall(sourceCode, "StoreView");
+    const customStyledMerchandising = customProductViewStyle && (renderedProductView || renderedStoreView);
+    const productView = !customStyledMerchandising && renderedProductView;
     const subscriptionStoreView = hasRenderedSwiftUICall(sourceCode, "SubscriptionStoreView");
-    const storeView = money.type === "non-consumables" && hasRenderedSwiftUICall(sourceCode, "StoreView");
+    const storeView = !customStyledMerchandising && renderedStoreView;
     const storeKitMerchandisingView = productView || subscriptionStoreView || storeView;
     const localizedPriceRendered = storeKitMerchandisingView || hasVisibleLocalizedPrice(sourceCode);
     const unavailableStateRendered = storeKitMerchandisingView || hasUnavailablePurchaseState(sourceCode);
     if (!localizedPriceRendered) add("purchase.localized-price-source", "block", "Purchase evidence does not visibly render StoreKit Product.displayPrice or a StoreKit merchandising view.", "Render displayPrice in Text/Button/Label (directly or through a displayed local value); an unused displayPrice read is insufficient.");
+    if (customStyledMerchandising) add("purchase.custom-product-view-style", "block", "Purchase evidence applies an unverified custom ProductViewStyle, so StoreKit-owned price and loading presentation cannot be assumed.", "Use a built-in .automatic, .compact, .regular, or .large productViewStyle, or replace the custom style with a fully evidenced custom paywall.");
     if (!storeKitMerchandisingView && !/\.purchase\s*\(/.test(sourceCode)) add("purchase.call-source", "block", "Purchase evidence does not include a StoreKit purchase call or a supported StoreKit-owned merchandising view.", "Reference the source that starts StoreKit purchase after price availability, or ProductView/SubscriptionStoreView.");
     if (!unavailableStateRendered) add("purchase.unavailable-source", "block", "Purchase evidence does not keep payment unavailable while product/price data is loading or unavailable.", "Disable or withhold the purchase action until Product loads and render an explicit loading/unavailable/retry state.");
 
@@ -313,7 +318,7 @@ async function purchasePresentationChecks(repository: string, manifest: ShipLaye
     }
 
     if (sourceRoleValid) {
-      const sourceHasAll = localizedPriceRendered
+      const sourceHasAll = !customStyledMerchandising && localizedPriceRendered
         && (storeKitMerchandisingView || /\.purchase\s*\(/.test(sourceCode))
         && unavailableStateRendered
         && (money.type !== "subscriptions" || ((subscriptionStoreView || hasVisibleSubscriptionPeriod(sourceCode))
@@ -656,6 +661,55 @@ function stripCodeComments(source: string): string {
   }
   return output;
 }
+function stripNonReleaseConditionalCompilation(source: string): string {
+  type ConditionalFrame = { parentActive: boolean; mode: "non-release" | "release" | "unknown" };
+  const frames: ConditionalFrame[] = [];
+  const output: string[] = [];
+  let active = true;
+  for (const line of source.split(/(?<=\n)/)) {
+    const directive = line.match(/^\s*#(if|elseif)\s+(.+?)\s*$/);
+    if (directive?.[1] === "if") {
+      const mode = conditionalCompilationMode(directive[2]);
+      frames.push({ parentActive: active, mode });
+      active = active && mode !== "non-release";
+      output.push(line.endsWith("\n") ? "\n" : "");
+      continue;
+    }
+    if (directive?.[1] === "elseif") {
+      const frame = frames.at(-1);
+      if (frame) {
+        if (frame.mode === "unknown") active = frame.parentActive;
+        else if (frame.mode === "release") active = false;
+        else active = frame.parentActive && conditionalCompilationMode(directive[2]) !== "non-release";
+      }
+      output.push(line.endsWith("\n") ? "\n" : "");
+      continue;
+    }
+    if (/^\s*#else\b/.test(line)) {
+      const frame = frames.at(-1);
+      if (frame) active = frame.mode === "non-release" ? frame.parentActive : frame.mode === "release" ? false : frame.parentActive;
+      output.push(line.endsWith("\n") ? "\n" : "");
+      continue;
+    }
+    if (/^\s*#endif\b/.test(line)) {
+      const frame = frames.pop();
+      if (frame) active = frame.parentActive;
+      output.push(line.endsWith("\n") ? "\n" : "");
+      continue;
+    }
+    output.push(active ? line : (line.endsWith("\n") ? "\n" : ""));
+  }
+  return output.join("");
+}
+function conditionalCompilationMode(condition: string): "non-release" | "release" | "unknown" {
+  const value = condition.replace(/\s+/g, " ").trim();
+  if (/^false$/i.test(value)) return "non-release";
+  if (/^true$/i.test(value)) return "release";
+  if (/!\s*DEBUG\b|!\s*targetEnvironment\s*\(\s*simulator\s*\)/i.test(value)) return "release";
+  if (/\btargetEnvironment\s*\(\s*simulator\s*\)/i.test(value)) return "non-release";
+  if (/\bDEBUG\b/.test(value) && !/\|\|/.test(value)) return "non-release";
+  return "unknown";
+}
 function stripPolicyEvidenceComments(source: string): string { return source.replace(/<!--[\s\S]*?-->/g, ""); }
 function assertionEvidence(source: string): string[] {
   const evidence: string[] = [];
@@ -682,27 +736,107 @@ function assertionEvidence(source: string): string[] {
 }
 function isPositiveVisibilityAssertion(evidence: string): boolean {
   if (/\bassertSnapshot\s*\(/.test(evidence)) return true;
-  if (!/(?:\.exists\b|\.waitForExistence\s*\()/.test(evidence)) return false;
-  const operators = evidence.replace(/"(?:\\.|[^"\\])*"/g, '""');
-  if (/!|\bfalse\b/.test(operators)) return false;
-  if (/^\s*(?:XCTAssert|XCTAssertTrue|#expect)\s*\(/.test(evidence)) return true;
-  return /^\s*XCTAssertEqual\s*\(/.test(evidence) && /\btrue\b/.test(operators);
+  const argumentsList = callArguments(evidence);
+  if (!argumentsList.length) return false;
+  if (/^\s*(?:XCTAssert|XCTAssertTrue|#expect)\s*\(/.test(evidence)) return isDirectVisibilityExpression(argumentsList[0]);
+  if (!/^\s*XCTAssertEqual\s*\(/.test(evidence) || argumentsList.length < 2) return false;
+  const left = stripOuterParentheses(argumentsList[0]);
+  const right = stripOuterParentheses(argumentsList[1]);
+  return (isDirectVisibilityExpression(left) && right === "true") || (left === "true" && isDirectVisibilityExpression(right));
 }
 function isPurchaseUnavailableAssertion(evidence: string): boolean {
   if (!/(?:purchase|buy|subscribe|unlock|canPurchase|isEnabled)/i.test(evidence)) return false;
-  const operators = evidence.replace(/"(?:\\.|[^"\\])*"/g, '""');
-  const state = /(?:\.isEnabled\b|\.exists\b|\bcanPurchase\b)/;
-  if (!state.test(operators)) return false;
-  if (/^\s*XCTAssertFalse\s*\(/.test(evidence)) return !/!(?!=)|\b(?:false|true)\b|==|!=/.test(operators);
-  if (/^\s*XCTAssertEqual\s*\(/.test(evidence)) {
-    const directState = String.raw`[^,=!<>]{0,300}(?:\.isEnabled\b|\.exists\b|\bcanPurchase\b)[^,=!<>]{0,100}`;
-    return new RegExp(`^\\s*XCTAssertEqual\\s*\\(\\s*(?:${directState},\\s*false\\b|false\\s*,${directState})`).test(operators);
+  const argumentsList = callArguments(evidence);
+  if (!argumentsList.length) return false;
+  if (/^\s*XCTAssertFalse\s*\(/.test(evidence)) return isDirectAvailabilityState(argumentsList[0]);
+  if (/^\s*XCTAssertEqual\s*\(/.test(evidence) && argumentsList.length >= 2) {
+    const left = stripOuterParentheses(argumentsList[0]);
+    const right = stripOuterParentheses(argumentsList[1]);
+    return (isDirectAvailabilityState(left) && right === "false") || (left === "false" && isDirectAvailabilityState(right));
   }
   if (!/^\s*(?:XCTAssertTrue|XCTAssert|#expect)\s*\(/.test(evidence)) return false;
-  const bangCount = operators.match(/!(?!=)/g)?.length || 0;
-  const falseComparison = /(?:\.isEnabled\b|\.exists\b|\bcanPurchase\b)\s*(?:==\s*false|!=\s*true)|(?:false\s*==|true\s*!=)\s*(?:[^,)]{0,200})(?:\.isEnabled\b|\.exists\b|\bcanPurchase\b)/.test(operators);
-  if (bangCount === 1 && !/\bfalse\b/.test(operators)) return /!\s*\(*\s*[^,)]{0,300}(?:\.isEnabled\b|\.exists\b|\bcanPurchase\b)/.test(operators);
-  return bangCount === 0 && falseComparison;
+  const expression = stripOuterParentheses(argumentsList[0]);
+  if (expression.startsWith("!")) return isDirectAvailabilityState(stripOuterParentheses(expression.slice(1)));
+  const comparison = splitDirectBooleanComparison(expression);
+  if (!comparison) return false;
+  const [left, operator, right] = comparison;
+  return (isDirectAvailabilityState(left) && ((operator === "==" && right === "false") || (operator === "!=" && right === "true")))
+    || (isDirectAvailabilityState(right) && ((operator === "==" && left === "false") || (operator === "!=" && left === "true")));
+}
+function isDirectVisibilityExpression(expression: string): boolean {
+  const value = maskStringLiterals(stripOuterParentheses(expression));
+  if (/!(?!=)/.test(value) || hasTopLevelBooleanOrTernaryOperator(value)) return false;
+  return /(?:\.exists\b|\.waitForExistence\s*\([^()]*\))\s*$/.test(value);
+}
+function isDirectAvailabilityState(expression: string): boolean {
+  const value = maskStringLiterals(stripOuterParentheses(expression));
+  if (/!(?!=)/.test(value) || hasTopLevelBooleanOrTernaryOperator(value)) return false;
+  return /(?:\.isEnabled\b|\.exists\b|\bcanPurchase\b)\s*$/.test(value);
+}
+function hasTopLevelBooleanOrTernaryOperator(source: string): boolean {
+  let parentheses = 0;
+  let brackets = 0;
+  let braces = 0;
+  for (let index = 0; index < source.length; index++) {
+    const character = source[index];
+    if (character === "(") parentheses++;
+    else if (character === ")") parentheses--;
+    else if (character === "[") brackets++;
+    else if (character === "]") brackets--;
+    else if (character === "{") braces++;
+    else if (character === "}") braces--;
+    else if (parentheses === 0 && brackets === 0 && braces === 0) {
+      if (source.startsWith("&&", index) || source.startsWith("||", index) || source.startsWith("==", index) || source.startsWith("!=", index)) return true;
+      if (character === ":" || (character === "?" && source[index + 1] !== ".")) return true;
+    }
+  }
+  return false;
+}
+function splitDirectBooleanComparison(expression: string): [string, "==" | "!=", string] | undefined {
+  const value = stripOuterParentheses(expression);
+  const match = value.match(/^([\s\S]+?)\s*(==|!=)\s*([\s\S]+)$/);
+  if (!match || /(?:&&|\|\|)/.test(value)) return undefined;
+  return [stripOuterParentheses(match[1]), match[2] as "==" | "!=", stripOuterParentheses(match[3])];
+}
+function maskStringLiterals(source: string): string { return source.replace(/"(?:\\.|[^"\\])*"/g, '""'); }
+function stripOuterParentheses(source: string): string {
+  let value = source.trim();
+  while (value.startsWith("(") && matchingDelimiter(value, 0, "(", ")", value.length) === value.length - 1) value = value.slice(1, -1).trim();
+  return value;
+}
+function callArguments(source: string): string[] {
+  const opening = source.indexOf("(");
+  if (opening < 0) return [];
+  const closing = matchingDelimiter(source, opening, "(", ")", source.length);
+  return closing < 0 ? [] : splitTopLevelArguments(source.slice(opening + 1, closing));
+}
+function splitTopLevelArguments(source: string): string[] {
+  const values: string[] = [];
+  let start = 0;
+  let parentheses = 0;
+  let brackets = 0;
+  let braces = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < source.length; index++) {
+    const character = source[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') { inString = true; continue; }
+    if (character === "(") parentheses++;
+    else if (character === ")") parentheses--;
+    else if (character === "[") brackets++;
+    else if (character === "]") brackets--;
+    else if (character === "{") braces++;
+    else if (character === "}") braces--;
+    else if (character === "," && parentheses === 0 && brackets === 0 && braces === 0) { values.push(source.slice(start, index).trim()); start = index + 1; }
+  }
+  values.push(source.slice(start).trim());
+  return values.filter(Boolean);
 }
 function visibleUICallArguments(source: string, names: Set<string>): string[] {
   const argumentsList: string[] = [];
@@ -711,31 +845,42 @@ function visibleUICallArguments(source: string, names: Set<string>): string[] {
     const opening = source.indexOf("(", match.index);
     const closing = matchingDelimiter(source, opening, "(", ")", 2_000);
     if (closing < 0) continue;
-    let value = source.slice(opening + 1, closing);
-    const trailingOpening = source.slice(closing + 1).search(/\S/);
-    const closureOpening = trailingOpening < 0 ? -1 : closing + 1 + trailingOpening;
-    if (closureOpening >= 0 && source[closureOpening] === "{") {
-      const closureClosing = matchingDelimiter(source, closureOpening, "{", "}", 3_000);
-      if (closureClosing >= 0) value += `\n${source.slice(closureOpening + 1, closureClosing)}`;
+    const rawArguments = source.slice(opening + 1, closing);
+    if (match[1] === "Text" || match[1] === "Label") { argumentsList.push(rawArguments); continue; }
+    const visibleParts: string[] = [];
+    const firstArgument = splitTopLevelArguments(rawArguments)[0];
+    if (firstArgument && !/^[A-Za-z_]\w*\s*:/.test(firstArgument)) visibleParts.push(firstArgument);
+    const firstClosure = closureImmediatelyAfter(source, closing + 1);
+    if (firstClosure) {
+      const explicitLabel = labeledClosureImmediatelyAfter(source, firstClosure.end + 1, "label");
+      if (explicitLabel) visibleParts.push(explicitLabel.body);
+      else if (/\b(?:action|destination)\s*:/.test(rawArguments)) visibleParts.push(firstClosure.body);
     }
-    argumentsList.push(value);
+    if (visibleParts.length) argumentsList.push(visibleParts.join("\n"));
   }
   for (const match of source.matchAll(/\b(Button|Label|Link|NavigationLink)\s*\{/g)) {
     if (!names.has(match[1])) continue;
     const opening = source.indexOf("{", match.index);
     const closing = matchingDelimiter(source, opening, "{", "}", 3_000);
     if (closing < 0) continue;
-    let value = source.slice(opening + 1, closing);
-    const remainder = source.slice(closing + 1, closing + 1 + 1_000);
-    const label = remainder.match(/^\s*label\s*:\s*\{/);
-    if (label) {
-      const labelOpening = closing + 1 + (label.index || 0) + label[0].lastIndexOf("{");
-      const labelClosing = matchingDelimiter(source, labelOpening, "{", "}", 3_000);
-      if (labelClosing >= 0) value += `\n${source.slice(labelOpening + 1, labelClosing)}`;
-    }
-    argumentsList.push(value);
+    const label = labeledClosureImmediatelyAfter(source, closing + 1, "label");
+    if (label) argumentsList.push(label.body);
   }
   return argumentsList;
+}
+function closureImmediatelyAfter(source: string, start: number): { body: string; end: number } | undefined {
+  const offset = source.slice(start).search(/\S/);
+  const opening = offset < 0 ? -1 : start + offset;
+  if (opening < 0 || source[opening] !== "{") return undefined;
+  const closing = matchingDelimiter(source, opening, "{", "}", 3_000);
+  return closing < 0 ? undefined : { body: source.slice(opening + 1, closing), end: closing };
+}
+function labeledClosureImmediatelyAfter(source: string, start: number, label: string): { body: string; end: number } | undefined {
+  const match = source.slice(start, start + 1_000).match(new RegExp(`^\\s*${label}\\s*:\\s*\\{`));
+  if (!match) return undefined;
+  const opening = start + match[0].lastIndexOf("{");
+  const closing = matchingDelimiter(source, opening, "{", "}", 3_000);
+  return closing < 0 ? undefined : { body: source.slice(opening + 1, closing), end: closing };
 }
 function matchingDelimiter(source: string, opening: number, open: string, close: string, limit: number): number {
   let depth = 0;
@@ -784,30 +929,96 @@ function hasRenderedSwiftUICall(source: string, name: "ProductView" | "Subscript
   return false;
 }
 function isInsideAssignmentExpression(source: string, index: number): boolean {
-  const lineStart = source.lastIndexOf("\n", index) + 1;
-  const linePrefix = source.slice(lineStart, index);
-  if (/(?:^|[^=!<>])=(?!=)/.test(linePrefix)) return true;
-  let cursor = lineStart - 1;
-  while (cursor >= 0) {
-    const previousStart = source.lastIndexOf("\n", cursor - 1) + 1;
-    const previousLine = source.slice(previousStart, cursor + 1).trim();
-    if (!previousLine) { cursor = previousStart - 1; continue; }
-    if (!/[=\[(,]$/.test(previousLine)) return false;
-    if (/(?:^|[^=!<>])=(?!=)/.test(previousLine)) return true;
-    cursor = previousStart - 1;
+  for (const declaration of source.matchAll(/\b(?:let|var)\s+[A-Za-z_]\w*(?:\s*:\s*[^=\n]+)?\s*=(?!=)/g)) {
+    if (declaration.index >= index || isConditionalBinding(source, declaration.index)) continue;
+    const equals = declaration.index + declaration[0].lastIndexOf("=");
+    if (index > equals && index < swiftInitializerEnd(source, equals + 1)) return true;
+  }
+  return false;
+}
+function isConditionalBinding(source: string, declaration: number): boolean {
+  const boundary = Math.max(source.lastIndexOf("{", declaration), source.lastIndexOf("}", declaration), source.lastIndexOf(";", declaration));
+  return /\b(?:if|guard|while|for)\b[\s\S]*$/.test(source.slice(boundary + 1, declaration));
+}
+function swiftInitializerEnd(source: string, start: number): number {
+  let parentheses = 0;
+  let brackets = 0;
+  let braces = 0;
+  let inString = false;
+  let escaped = false;
+  let lastSignificant = "=";
+  for (let index = start; index < source.length; index++) {
+    const character = source[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') { inString = true; lastSignificant = character; continue; }
+    if (character === "(") parentheses++;
+    else if (character === ")") parentheses--;
+    else if (character === "[") brackets++;
+    else if (character === "]") brackets--;
+    else if (character === "{") braces++;
+    else if (character === "}") braces--;
+    if (parentheses === 0 && brackets === 0 && braces === 0) {
+      if (character === ";") return index;
+      if (character === "\n" && !/[=([{,:+\-*/?&|.]$/.test(lastSignificant)) return index;
+    }
+    if (!/\s/.test(character)) lastSignificant = character;
+  }
+  return source.length;
+}
+function hasUnverifiedCustomProductViewStyle(source: string): boolean {
+  for (const match of source.matchAll(/\.productViewStyle\s*\(/g)) {
+    const opening = source.indexOf("(", match.index);
+    const closing = matchingDelimiter(source, opening, "(", ")", 1_000);
+    if (closing < 0) return true;
+    const style = stripOuterParentheses(source.slice(opening + 1, closing));
+    if (!/^\.(?:automatic|compact|regular|large)$/.test(style)) return true;
   }
   return false;
 }
 function visibleTextEvidence(source: string): string {
-  const visibleArguments = visibleUICallArguments(source, new Set(["Text", "Label"]));
+  const visibleSource = maskHiddenControlClosures(source);
+  const visibleArguments = visibleUICallArguments(visibleSource, new Set(["Text", "Label"]));
   const resolved = [...visibleArguments];
-  for (const match of source.matchAll(/\b(?:let|var)\s+([A-Za-z_]\w*)\s*=\s*"([^"\n]{1,2000})"/g)) {
-    const nearbySource = source.slice(match.index, match.index + 2_000);
+  for (const match of visibleSource.matchAll(/\b(?:let|var)\s+([A-Za-z_]\w*)\s*=\s*"([^"\n]{1,2000})"/g)) {
+    const nearbySource = visibleSource.slice(match.index, match.index + 2_000);
     const nearbyVisible = visibleUICallArguments(nearbySource, new Set(["Text", "Label"]));
     const reference = new RegExp(`\\b${match[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`);
     if (nearbyVisible.some((value) => reference.test(value))) resolved.push(match[2]);
   }
   return resolved.join("\n");
+}
+function maskHiddenControlClosures(source: string): string {
+  const ranges: Array<[number, number]> = [];
+  for (const match of source.matchAll(/\b(Button|Link|NavigationLink)\s*\(/g)) {
+    const opening = source.indexOf("(", match.index);
+    const closing = matchingDelimiter(source, opening, "(", ")", 2_000);
+    if (closing < 0) continue;
+    const rawArguments = source.slice(opening + 1, closing);
+    for (const hidden of rawArguments.matchAll(/\b(?:action|destination)\s*:\s*\{/g)) {
+      const hiddenOpening = opening + 1 + hidden.index + hidden[0].lastIndexOf("{");
+      const hiddenClosing = matchingDelimiter(source, hiddenOpening, "{", "}", 3_000);
+      if (hiddenClosing >= 0) ranges.push([hiddenOpening, hiddenClosing]);
+    }
+    const firstClosure = closureImmediatelyAfter(source, closing + 1);
+    if (!firstClosure) continue;
+    const firstArgument = splitTopLevelArguments(rawArguments)[0];
+    const explicitLabel = labeledClosureImmediatelyAfter(source, firstClosure.end + 1, "label");
+    if (explicitLabel || (firstArgument && !/^[A-Za-z_]\w*\s*:/.test(firstArgument))) ranges.push([source.indexOf("{", closing + 1), firstClosure.end]);
+  }
+  for (const match of source.matchAll(/\b(Button|Link|NavigationLink)\s*\{/g)) {
+    const opening = source.indexOf("{", match.index);
+    const closing = matchingDelimiter(source, opening, "{", "}", 3_000);
+    if (closing >= 0) ranges.push([opening, closing]);
+  }
+  if (!ranges.length) return source;
+  const characters = [...source];
+  for (const [start, end] of ranges) for (let index = start; index <= end; index++) if (characters[index] !== "\n") characters[index] = " ";
+  return characters.join("");
 }
 function hasVisibleLocalizedPrice(source: string): boolean {
   const visibleArguments = visibleUICallArguments(source, new Set(["Text", "Button", "Label"]));
@@ -819,10 +1030,51 @@ function hasVisibleLocalizedPrice(source: string): boolean {
   return false;
 }
 function hasUnavailablePurchaseState(source: string): boolean {
-  const explicitDisable = /\.disabled\s*\([^)]*(?:==\s*nil|!=\s*true|loading|available|canPurchase|priceLoaded|productLoaded)/is.test(source);
-  const optionalProduct = /(?:\bProduct\s*\?|\bif\s+let\s+\w*product\b|\bguard\s+let\s+\w*product\b)/i.test(source);
-  const fallback = /(?:ProgressView\s*\(|ContentUnavailableView\s*\(|price\s+unavailable|product\s+unavailable|try\s+again|loading)/i.test(source);
-  return explicitDisable || (optionalProduct && fallback && /\bButton\s*\(/.test(source));
+  for (const branch of source.matchAll(/\bif\s+let\s+[^{}\n]*(?:product|price)[^{}]*\{/gi)) {
+    const opening = source.indexOf("{", branch.index);
+    const body = balancedBlock(source, opening);
+    if (/\bButton\s*(?:\(|\{)/.test(body) && /\.purchase\s*\(/.test(body)) return true;
+  }
+  for (const button of purchaseButtonEvidence(source)) {
+    if (!/\.purchase\s*\(/.test(button.core)) continue;
+    if (button.disabledPredicates.some(isSafePurchaseDisabledPredicate)) return true;
+  }
+  return false;
+}
+function purchaseButtonEvidence(source: string): Array<{ core: string; disabledPredicates: string[] }> {
+  const evidence: Array<{ core: string; disabledPredicates: string[] }> = [];
+  for (const match of source.matchAll(/\bButton\s*(\(|\{)/g)) {
+    const opening = source.indexOf(match[1], match.index);
+    const closing = matchingDelimiter(source, opening, match[1], match[1] === "(" ? ")" : "}", 5_000);
+    if (closing < 0) continue;
+    let end = closing;
+    const firstClosure = match[1] === "(" ? closureImmediatelyAfter(source, closing + 1) : undefined;
+    if (firstClosure) end = firstClosure.end;
+    const labelClosure = labeledClosureImmediatelyAfter(source, end + 1, "label");
+    if (labelClosure) end = labelClosure.end;
+    const disabledPredicates: string[] = [];
+    let cursor = end + 1;
+    while (cursor < source.length) {
+      const whitespace = source.slice(cursor).match(/^\s*/)?.[0].length || 0;
+      cursor += whitespace;
+      const modifier = source.slice(cursor).match(/^\.([A-Za-z_]\w*)\s*\(/);
+      if (!modifier) break;
+      const modifierOpening = cursor + modifier[0].lastIndexOf("(");
+      const modifierClosing = matchingDelimiter(source, modifierOpening, "(", ")", 2_000);
+      if (modifierClosing < 0) break;
+      if (modifier[1] === "disabled") disabledPredicates.push(source.slice(modifierOpening + 1, modifierClosing));
+      cursor = modifierClosing + 1;
+    }
+    evidence.push({ core: source.slice(match.index, end + 1), disabledPredicates });
+  }
+  return evidence;
+}
+function isSafePurchaseDisabledPredicate(predicate: string): boolean {
+  const value = stripOuterParentheses(predicate).replace(/\s+/g, " ").trim();
+  if (/(?:&&|\|\|)/.test(value)) return false;
+  if (/^(?:[A-Za-z_]\w*\.)*(?:isLoading|loading|priceLoading|productLoading)$/i.test(value)) return true;
+  if (/^(?:[A-Za-z_]\w*\.)*(?:product|price)\s*==\s*nil$/i.test(value)) return true;
+  return /^!\s*(?:[A-Za-z_]\w*\.)*(?:isAvailable|available|canPurchase|priceLoaded|productLoaded)$/i.test(value);
 }
 function hasVisibleSubscriptionPeriod(source: string): boolean {
   return visibleUICallArguments(source, new Set(["Text", "Button", "Label"])).some((value) => /(?:subscriptionPeriod|billing\s+period|billed\s+(?:weekly|monthly|yearly)|renews?\s+(?:weekly|monthly|yearly)|per\s+(?:week|month|year))/i.test(value));
