@@ -152,3 +152,65 @@ test("Medium 4: a quoted https URL in an xcconfig setting is detected", async ()
   const analysis = await analyzeRepository(root);
   assert.ok(analysis.findings.some((finding) => finding.key === "endpoint:https://openrouter.ai/api/v1/chat/completions"));
 });
+
+// --- Round 4: Finding A — "api-docs"/doc-ish api- subdomains must not classify as API-only ------
+
+test("Round 4 Finding A: api-docs.<provider> (documentation convention) classifies as policy, not provider", () => {
+  assert.equal(classifyAiEndpoint("https://api-docs.deepseek.com/guides/reasoning_model"), "policy");
+});
+
+test("Round 4 Finding A: a real api. subdomain still classifies provider (no regression)", () => {
+  assert.equal(classifyAiEndpoint("https://api.openai.com/v1/responses"), "provider");
+  assert.equal(classifyAiEndpoint("https://api.deepseek.com/v1/chat/completions"), "provider");
+});
+
+test("Round 4 Finding A: an app whose only network string is an api-docs.<provider> link passes cleanly end to end", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-r4a-apidocs-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  await writeFile(path.join(root, "worker.ts"), "fetch('https://api-docs.deepseek.com/guides/reasoning_model')");
+  const report = await preflight(root, manifest);
+  assert.equal(report.results.filter((item) => item.severity === "block" && item.id.startsWith("ai-sharing")).length, 0);
+});
+
+// --- Round 4: Finding B — Examples/ must be rejected as production AI-consent evidence -----------
+
+test("Round 4 Finding B: Examples/ConsentView.swift is rejected as production AI-consent evidence", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-r4b-examples-consent-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  manifest.externalProcessors = [{ name: "OpenRouter", kind: "ai", aiPipelineRecipient: true, purpose: "App Functionality", dataCategories: ["Photos or Videos"], privacyPolicyUrl: "https://example.com/openrouter", protectionConfirmation: "confirmed", confirmation: "confirmed" }];
+  manifest.dataProcessing = [{ category: "Photos or Videos", purpose: ["App Functionality"], linkedToIdentity: false, usedForTracking: false, confirmation: "confirmed" }];
+  manifest.aiDataSharing = {
+    enabled: true,
+    dataSent: ["photos"],
+    purpose: "extract data",
+    processorNames: ["OpenRouter"],
+    consent: { shownBeforeTransmission: true, affirmativeAction: "Allow and send to AI", declinePath: "Keep on device", privacyPolicyLinkVisible: true, evidence: ["Examples/ConsentView.swift"], confirmation: "confirmed" },
+    privacyPolicy: { identifiesDataAndCollectionMethod: true, identifiesAllUses: true, namesAllProcessors: true, explainsRetentionAndDeletion: true, confirmsEqualProtection: true, evidence: ["Legal/privacy.md"], confirmation: "confirmed" },
+  };
+  await mkdir(path.join(root, "Examples"), { recursive: true });
+  await writeFile(path.join(root, "Examples/ConsentView.swift"), "Text(\"photos OpenRouter extract data\")\nButton(\"Allow and send to AI\") {}\nButton(\"Keep on device\") {}\nLink(\"Privacy Policy\", destination: privacyURL)\n");
+  await mkdir(path.join(root, "Legal"), { recursive: true });
+  await writeFile(path.join(root, "Legal/privacy.md"), "Users select and upload photos to OpenRouter to extract data. This is the only use. Uploaded data is deleted after processing. Each processor must protect the data to the same or an equal standard.");
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "ai-sharing.consent-source-role" && item.severity === "block"));
+  assert.equal(report.results.some((item) => item.id === "ai-sharing.consent-evidence" && item.severity === "pass"), false);
+});
+
+test("Round 4 Finding B: evidence.ts and preflight.ts agree on Examples/ exclusion for endpoint findings too", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-r4b-examples-endpoint-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  await mkdir(path.join(root, "Examples"), { recursive: true });
+  await writeFile(path.join(root, "Examples/Demo.swift"), "import StoreKit\nfinal class Demo { func buy(_ p: Product) async throws { try await p.purchase() } }\n");
+  const report = await preflight(root, manifest);
+  assert.equal(report.results.filter((item) => item.id === "monetization.source-contradiction").length, 0);
+});
+
+// --- Round 4: Finding C — a trailing-dot host must not evade classification ----------------------
+
+test("Round 4 Finding C: a trailing-dot host classifies identically to the same host without the dot", () => {
+  assert.equal(classifyAiEndpoint("https://api.openai.com./v1/responses"), "provider");
+  assert.equal(classifyAiEndpoint("https://api.openai.com./v1/responses"), classifyAiEndpoint("https://api.openai.com/v1/responses"));
+});
