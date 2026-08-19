@@ -13,6 +13,7 @@
     "externalProcessors",
     "aiDataSharing",
     "externalServiceDecisions",
+    "sourceContradictionOverrides",
     "secondaryTargetConfirmations",
     "review",
     "screenshots",
@@ -78,6 +79,12 @@
       "type": "array",
       "items": {
         "$ref": "#/$defs/externalServiceDecision"
+      }
+    },
+    "sourceContradictionOverrides": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/sourceContradictionOverride"
       }
     },
     "secondaryTargetConfirmations": {
@@ -552,6 +559,36 @@
         }
       }
     },
+    "sourceContradictionOverride": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "finding",
+        "reason",
+        "evidence",
+        "confirmation"
+      ],
+      "properties": {
+        "finding": {
+          "$ref": "#/$defs/nonEmpty",
+          "description": "Identifies the exact contradiction blocker this overrides, e.g. 'monetization.source-contradiction' or 'ai-sharing.source-contradiction:endpoint:https://example.com/v1/chat/completions'."
+        },
+        "reason": {
+          "$ref": "#/$defs/nonEmpty",
+          "description": "Human-authored explanation of why the source evidence does not actually contradict the manifest declaration."
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/repoPath"
+          }
+        },
+        "confirmation": {
+          "$ref": "#/$defs/confirmation"
+        }
+      }
+    },
     "secondaryTargetConfirmation": {
       "type": "object",
       "additionalProperties": false,
@@ -930,11 +967,15 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "type"
+        "type",
+        "confirmation"
       ],
       "properties": {
         "type": {
           "const": "free"
+        },
+        "confirmation": {
+          "$ref": "#/$defs/confirmation"
         }
       }
     },
