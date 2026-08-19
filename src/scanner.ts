@@ -571,8 +571,15 @@ function nearestLaunchArguments(content: string, beforeIndex: number): { launchA
   if (!best) return { launchArguments: [], determined: false };
   const inner = content.slice(best.open + 1, best.close);
   const rawElements = splitSwiftArrayElements(inner);
+  // A syntactically valid quoted string is not necessarily a fixed literal value: Swift string
+  // interpolation ("\\(expression)") is itself backslash-escape-shaped and passes literalPattern,
+  // which would let a computed value such as "\\(storeName)" through as if it were the fixed text
+  // "(storeName)" — a fabricated, confidently-wrong value, not merely a missing one. Any element
+  // containing an interpolation marker is treated exactly like a bare non-literal element: the
+  // whole array is dropped and this scenario's arguments are undetermined.
   const literalPattern = /^"(?:[^"\\]|\\.)*"$/;
-  if (!rawElements.every((element) => literalPattern.test(element))) return { launchArguments: [], determined: false };
+  const hasInterpolation = (element: string): boolean => /\\\(/.test(element);
+  if (!rawElements.every((element) => literalPattern.test(element) && !hasInterpolation(element))) return { launchArguments: [], determined: false };
   const launchArguments = rawElements.map((element) => unescapeSwiftString(element.slice(1, -1))).filter((value) => value.length > 0).slice(0, 20);
   return { launchArguments, determined: true };
 }
