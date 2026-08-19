@@ -1,15 +1,17 @@
 import path from "node:path";
 import { lstat, mkdir, readFile, rename, rm } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { stringify } from "yaml";
-import { ensureDirectory, resolveContained, safeRelativePath, stableJson, writeText } from "./fs.js";
+import { ensureDirectory, resolveContained, safeRelativePath, stableJson, writeBinary, writeText } from "./fs.js";
 import type { AnalysisReport, PreflightReport, ShipLayerManifest } from "./types.js";
 import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, externalServiceFindings, MONETIZATION_CONTRADICTION_FINDING, resolveContradictionOverride, storekitPurchaseEvidence } from "./evidence.js";
 import { detectScreenshotHarness } from "./scanner.js";
+import { buildMarketingSlideEntries, EXPORT_MJS, frameForFamily, renderPackageJson, renderReadme, renderSlideHtml, renderSlidesManifestJson, STRIP_ALPHA_MJS } from "./marketing.js";
 
 export interface PreparedPackage { directory: string; files: string[] }
 const RESERVED_OUTPUT_ROOTS = new Set([".git", ".github", ".shiplayer-staging", "node_modules", "pods", "carthage", "deriveddata", "build", ".build", "dist", ".swiftpm", "vendor", "release", "shiplayer.yml"]);
 export async function generateReleasePackage(repository: string, manifest: ShipLayerManifest, analysis: AnalysisReport, preflight: PreflightReport, outputDirectory: string): Promise<PreparedPackage> {
-  assertManifestPaths(manifest); const outputRelative = safeRelativePath(outputDirectory, "--out"); assertOutputPath(outputRelative); assertOutputDoesNotCollide(manifest, outputRelative); const out = await resolveContained(repository, outputRelative, "--out"); await ensureOutputParent(repository, outputRelative); await assertManagedDestination(out); const stage = await createStage(repository); const files: string[] = []; const emit = async (relativePath: string, contents: string): Promise<void> => { assertNoSecretOutput(contents, relativePath); await writeText(path.join(stage, relativePath), contents); files.push(relativePath); };
+  assertManifestPaths(manifest); const outputRelative = safeRelativePath(outputDirectory, "--out"); assertOutputPath(outputRelative); assertOutputDoesNotCollide(manifest, outputRelative); const out = await resolveContained(repository, outputRelative, "--out"); await ensureOutputParent(repository, outputRelative); await assertManagedDestination(out); const stage = await createStage(repository); const files: string[] = []; const emit = async (relativePath: string, contents: string): Promise<void> => { assertNoSecretOutput(contents, relativePath); await writeText(path.join(stage, relativePath), contents); files.push(relativePath); }; const emitBinary = async (relativePath: string, contents: Buffer): Promise<void> => { await writeBinary(path.join(stage, relativePath), contents); files.push(relativePath); };
   try {
   await emit("manifest.normalized.yml", stringify(manifest, { sortMapEntries: true }));
   // Entry counts include ignored/generated directory entries, which can legitimately
@@ -25,7 +27,7 @@ export async function generateReleasePackage(repository: string, manifest: ShipL
   await emit("legal/privacy-policy-draft.html", await privacyPage(repository, manifest, analysis)); await emit("legal/support-page-draft.html", await supportPage(repository, manifest, analysis)); await emit("legal/terms-of-use-draft.md", await termsOfUseDraft(repository, manifest, analysis));
   await emit("review/app-review-notes.md", await appReviewNotes(repository, manifest, analysis)); await emit("review/physical-device-recording-script.md", recordingScript(manifest, analysis));
   const screenshotHarness = await detectScreenshotHarness(repository);
-  await emit("screenshots/capture-plan.json", stableJson(capturePlan(manifest))); await emit("screenshots/marketing-composition-plan.json", stableJson(marketingProject(manifest))); await emit("storekit/checklist.md", await storeKitChecklist(repository, manifest, analysis));
+  await emit("screenshots/capture-plan.json", stableJson(capturePlan(manifest))); await emitMarketingProject(manifest, outputRelative, emit, emitBinary); await emit("storekit/checklist.md", await storeKitChecklist(repository, manifest, analysis));
   await emit("screenshots/ui-test-harness-template.swift", screenshotHarnessTemplate(manifest, screenshotHarness.sourceFiles.length > 0)); await emit("screenshots/ui-test-harness-contract.md", screenshotHarnessContract(manifest, screenshotHarness)); await emit("screenshots/capture-workflow.yml", screenshotCaptureWorkflow(manifest, screenshotHarness));
   await emit("app-store-connect/dry-run-plan.md", dryRunPlan(manifest)); await emit("remaining-human-actions.md", humanActions(packagePreflight));
     await writeText(path.join(stage, ".shiplayer-managed"), "ShipLayer managed release package v1\n"); files.push(".shiplayer-managed"); await installStage(stage, out); return { directory: out, files: files.sort() };
@@ -175,7 +177,38 @@ function recordingScript(manifest: ShipLayerManifest, analysis: AnalysisReport):
 // a scenario the gate itself refuses to pass — defaulting absence to "confirmed" here would let a
 // generated artifact claim something stronger than `check` allows.
 function capturePlan(manifest: ShipLayerManifest): object { return { command: "shiplayer capture <repo>", prerequisites: ["macOS with Xcode for direct simulator capture", "Configured scheme and launch arguments", "No paid CI is used automatically"], configurations: manifest.screenshots.configurations.map((configuration) => ({ ...configuration, outputDirectory: `${manifest.screenshots.rawOutputDir}/${configuration.family}/${configuration.locale}`, scenarios: manifest.screenshots.scenarios.map((scenario) => ({ id: scenario.id, outputFile: `${scenario.id}.png`, title: scenario.title, launchArguments: scenario.launchArguments || [], steps: scenario.steps, confirmation: scenario.confirmation ?? "needs-human-confirmation" })) })), note: "This is a neutral hand-off. Create or use a separate app-store-screenshots scaffold/template; this JSON is not directly importable by that editor. Raw device screenshots must show the actual app and use each scenario ID as the filename. A scenario whose confirmation is not \"confirmed\" is an unverified proposal, not a fact." }; }
-function marketingProject(manifest: ShipLayerManifest): object { return { version: 1, purpose: "Neutral hand-off plan for a separately installed app-store-screenshots editor; not an editor project file.", rawScreenshotRoot: manifest.screenshots.rawOutputDir, decks: manifest.screenshots.configurations.map((configuration) => ({ family: configuration.family, device: configuration.device, locale: configuration.locale, outputPath: `${manifest.screenshots.rawOutputDir}/${configuration.family}/${configuration.locale}/{scenario-id}.png`, slides: manifest.screenshots.scenarios.map((scenario, index) => ({ id: scenario.id, order: index, headline: scenario.title, body: scenario.steps[0] || "Describe this feature", confirmation: scenario.confirmation ?? "needs-human-confirmation" })) })) }; }
+// Repository-root-relative "assets/device-frames/" sits next to both src/ (dev, run via tsx) and
+// dist/ (built) — one level up from this compiled/source module's own directory either way — so
+// this resolves the same way whether ShipLayer is run from a checkout or installed as a package
+// ("assets" is listed in package.json's "files"). Never reads from the reference design skill
+// under ~/.codex/ at runtime; the frame images it needs are copied into this repo's own
+// assets/device-frames/ (see src/marketing.ts's FrameGeometry constants).
+const MODULE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+/**
+ * Emits the self-contained, headless-renderable marketing screenshot composition project at
+ * screenshots/marketing/ inside the release package: one sized HTML slide per (configuration x
+ * scenario) pair, the device frame image(s) it references, and the small Playwright export
+ * project (package.json/export.mjs/README.md) a human runs afterward. ShipLayer itself never
+ * installs a dependency, downloads a browser, or executes this project — see export.mjs and the
+ * generated README for the two commands a human/agent runs to turn it into final PNGs.
+ */
+async function emitMarketingProject(manifest: ShipLayerManifest, outputRelative: string, emit: (relativePath: string, contents: string) => Promise<void>, emitBinary: (relativePath: string, contents: Buffer) => Promise<void>): Promise<void> {
+  const entries = buildMarketingSlideEntries({ outputDirectory: outputRelative, rawOutputDir: manifest.screenshots.rawOutputDir, configurations: manifest.screenshots.configurations, scenarios: manifest.screenshots.scenarios });
+  const root = "screenshots/marketing";
+  for (const entry of entries) await emit(`${root}/${entry.htmlRelativePath}`, renderSlideHtml(entry));
+  await emit(`${root}/slides.json`, renderSlidesManifestJson(entries));
+  await emit(`${root}/package.json`, renderPackageJson());
+  await emit(`${root}/strip-alpha.mjs`, STRIP_ALPHA_MJS);
+  await emit(`${root}/export.mjs`, EXPORT_MJS);
+  await emit(`${root}/README.md`, renderReadme(entries));
+  const families = [...new Set(manifest.screenshots.configurations.map((configuration) => configuration.family))].sort();
+  for (const family of families) {
+    const geometry = frameForFamily(family);
+    const asset = await readFile(path.join(MODULE_DIR, "assets", "device-frames", geometry.assetFile));
+    await emitBinary(`${root}/assets/${family}-frame.png`, asset);
+  }
+}
 // --- screenshot UI-test harness template / contract / manual-dispatch capture workflow --------
 // Three artifacts, all written only into shiplayer-release/screenshots/ (never into the target
 // app repository's own source tree or .github/): a fillable Swift template, its written contract,
