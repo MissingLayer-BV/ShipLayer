@@ -50,7 +50,7 @@ export async function analyzeRepository(repository: string): Promise<AnalysisRep
       // A build setting can be a literal endpoint (e.g. a user-defined API base URL), not only
       // Apple's own known keys. Detect any such literal so it becomes a disposable finding rather
       // than an invisible proxy target only reachable via a $(VARIABLE) indirection elsewhere.
-      for (const match of productionSettings.matchAll(/^[ \t]*[A-Za-z_][A-Za-z0-9_]*\s*=\s*(https?:\/\/[^\s;\"']+)/gm)) push("endpoint", match[1], { source, excerpt: match[0].slice(0, 220), confidence: "medium", kind });
+      for (const match of productionSettings.matchAll(/^[ \t]*[A-Za-z_][A-Za-z0-9_]*\s*=\s*["']?(https?:\/\/[^\s;"']+)["']?/gm)) push("endpoint", match[1], { source, excerpt: match[0].slice(0, 220), confidence: "medium", kind });
     }
     if (file.endsWith("project.yml")) scanXcodeGenProject(content, source, push, questions);
     if (file.endsWith("Info.plist")) {
