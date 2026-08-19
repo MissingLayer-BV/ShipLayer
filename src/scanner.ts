@@ -443,7 +443,7 @@ export function findValue(report: AnalysisReport, key: string): string | undefin
 // (via isXCUITestSourcePath, not isNonProductionSourcePath — see evidence.ts). It only ever
 // proposes screenshots.scenarios entries; it must never feed privacy/purchase/AI findings.
 
-export interface DetectedScreenshotScenario { id: string; title: string; launchArguments: string[]; sourceFile: string; testFunction?: string }
+export interface DetectedScreenshotScenario { id: string; title: string; launchArguments: string[]; launchArgumentsDetermined: boolean; sourceFile: string; testFunction?: string }
 export interface DetectedScreenshotHarness { scenarios: DetectedScreenshotScenario[]; sourceFiles: string[] }
 
 /**
@@ -473,10 +473,10 @@ export async function detectScreenshotHarness(repository: string): Promise<Detec
       const rawName = unescapeSwiftString(match[1]);
       if (!rawName.trim()) continue;
       const index = match.index ?? 0;
-      const launchArguments = nearestLaunchArguments(content, index);
+      const { launchArguments, determined } = nearestLaunchArguments(content, index);
       const testFunction = nearestFunctionName(content, index);
       const id = uniqueScenarioId(rawName, usedIds);
-      scenarios.push({ id, title: rawName.trim().slice(0, 200), launchArguments, sourceFile: source, testFunction });
+      scenarios.push({ id, title: rawName.trim().slice(0, 200), launchArguments, launchArgumentsDetermined: determined, sourceFile: source, testFunction });
       sawCall = true;
     }
     if (sawCall) sourceFiles.push(source);
@@ -504,23 +504,77 @@ function swiftBracketEnd(content: string, open: number): number | undefined {
   return undefined;
 }
 
-/** The launch arguments visibly in effect at `beforeIndex`: the nearest preceding `.launchArguments = [...]`
- * assignment in the same file. Only literal double-quoted elements are kept; a non-literal element (an enum
- * member, an interpolated variable) is silently dropped rather than guessed at. */
-function nearestLaunchArguments(content: string, beforeIndex: number): string[] {
+/** Splits a Swift array literal's inner text on top-level commas only — commas nested inside a
+ * quoted string, a call's parentheses, or a nested collection literal do not split. Trailing
+ * commas (Swift's multi-line array convention) produce no trailing empty element. */
+function splitSwiftArrayElements(inner: string): string[] {
+  const elements: string[] = []; let depth = 0; let quote = false; let current = "";
+  for (let index = 0; index < inner.length; index++) {
+    const character = inner[index];
+    if (quote) { current += character; if (character === "\\" && index + 1 < inner.length) { current += inner[++index]; continue; } if (character === "\"") quote = false; continue; }
+    if (character === "\"") { quote = true; current += character; continue; }
+    if (character === "(" || character === "[" || character === "{") { depth++; current += character; continue; }
+    if (character === ")" || character === "]" || character === "}") { depth--; current += character; continue; }
+    if (character === "," && depth === 0) { elements.push(current); current = ""; continue; }
+    current += character;
+  }
+  if (current.trim().length) elements.push(current);
+  return elements.map((element) => element.trim()).filter((element) => element.length > 0);
+}
+
+/**
+ * The nearest enclosing `func name(...) { ... }` body-start position strictly before
+ * `beforeIndex` — used to bound launch-argument search to the SAME method a keepScreenshot call
+ * lives in, rather than the whole file. Returns undefined when no enclosing function can be
+ * located (search then finds nothing, which is treated as "could not determine" rather than
+ * silently falling back to an unbounded, cross-method search).
+ */
+function nearestFunctionBodyStart(content: string, beforeIndex: number): number | undefined {
+  const pattern = /\bfunc\s+[A-Za-z_][A-Za-z0-9_]*\s*\(/g;
+  let declarationEnd: number | undefined;
+  for (const match of content.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    if (index >= beforeIndex) break;
+    declarationEnd = index + match[0].length;
+  }
+  if (declarationEnd === undefined) return undefined;
+  const brace = content.indexOf("{", declarationEnd);
+  return brace === -1 || brace > beforeIndex ? undefined : brace;
+}
+
+/**
+ * The launch arguments visibly in effect at `beforeIndex`: the nearest preceding
+ * `.launchArguments = [...]` assignment, bounded to the SAME enclosing function's body — an
+ * assignment belonging to an earlier, already-closed method must never be attributed to a later
+ * one that sets no array of its own (e.g. because it launches through a shared helper).
+ * `determined: false` means ShipLayer could not establish real launch arguments for this
+ * scenario — either no bounded assignment was found, or the array is not entirely literal string
+ * elements. A single non-literal element (an enum member, an interpolated variable) is never
+ * dropped and the rest kept: doing that silently shifts every later element one flag to the left,
+ * corrupting `-key value` pairing rather than just losing one argument. The whole array is
+ * dropped instead.
+ */
+function nearestLaunchArguments(content: string, beforeIndex: number): { launchArguments: string[]; determined: boolean } {
+  const bodyStart = nearestFunctionBodyStart(content, beforeIndex);
+  if (bodyStart === undefined) return { launchArguments: [], determined: false };
   const pattern = /\.launchArguments\s*=\s*\[/g;
   let best: { open: number; close: number } | undefined;
   for (const match of content.matchAll(pattern)) {
     const index = match.index ?? 0;
+    if (index < bodyStart) continue;
     if (index >= beforeIndex) break;
     const open = index + match[0].length - 1;
     const close = swiftBracketEnd(content, open);
     if (close === undefined) continue;
     best = { open, close };
   }
-  if (!best) return [];
+  if (!best) return { launchArguments: [], determined: false };
   const inner = content.slice(best.open + 1, best.close);
-  return [...inner.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((match) => unescapeSwiftString(match[1])).filter((value) => value.length > 0).slice(0, 20);
+  const rawElements = splitSwiftArrayElements(inner);
+  const literalPattern = /^"(?:[^"\\]|\\.)*"$/;
+  if (!rawElements.every((element) => literalPattern.test(element))) return { launchArguments: [], determined: false };
+  const launchArguments = rawElements.map((element) => unescapeSwiftString(element.slice(1, -1))).filter((value) => value.length > 0).slice(0, 20);
+  return { launchArguments, determined: true };
 }
 
 /** The nearest enclosing `func name(...)` declaration before `beforeIndex`, for traceable-but-not-fabricated scenario steps. */
@@ -534,9 +588,6 @@ function nearestFunctionName(content: string, beforeIndex: number): string | und
   }
   return name;
 }
-
-/** Slugifies an attachment name into the schema's scenario-id pattern (^[a-z0-9][a-z0-9-]*$), deduping
- * against ids already used in this scan rather than silently colliding two distinct scenarios. */
 function uniqueScenarioId(name: string, used: Set<string>): string {
   const base = (name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "scenario");
   const normalizedBase = /^[a-z0-9]/.test(base) ? base : `scenario-${base}`;
