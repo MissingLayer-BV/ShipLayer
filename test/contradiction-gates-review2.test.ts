@@ -319,3 +319,87 @@ test("C4 limitation: an env-var-injected base URL with no literal value anywhere
   // never present as a literal anywhere in the repository, cannot be found by static scanning.
   assert.equal(analysis.findings.some((finding) => finding.key.startsWith("endpoint:")), false);
 });
+
+// --- C5/H1/H2: every generated artifact that could assert a false absence is evidence-aware -----
+
+test("C5: privacy/questionnaire-draft.md names unresolved permission/processor/AI evidence instead of a false absence", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-c5-questionnaire-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  await writeFile(path.join(root, "Info.plist"), "<key>NSCameraUsageDescription</key><string>Capture proof</string>");
+  await writeFile(path.join(root, "worker.ts"), "fetch('https://openrouter.ai/api/v1/chat/completions')");
+  const analysis = await analyzeRepository(root);
+  const report = await preflight(root, manifest, false, analysis);
+  const generated = await generateReleasePackage(root, manifest, analysis, report, "release-c5");
+  const draft = await readFile(path.join(generated.directory, "privacy/questionnaire-draft.md"), "utf8");
+  assert.equal(draft.includes("No permissions declared. Confirm this is accurate."), false);
+  assert.equal(draft.includes("No external processors declared. Confirm SDKs and network endpoints."), false);
+  assert.equal(draft.includes("No third-party AI data sharing declared. Confirm this matches all source endpoints and SDKs."), false);
+  assert.ok(draft.includes("NSCameraUsageDescription"));
+  assert.ok(draft.includes("UNVERIFIED"));
+  assert.ok(draft.includes("openrouter.ai"));
+});
+
+test("C5: a clean manifest with matching declarations still gets the ordinary confident questionnaire text", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-c5-clean-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  const analysis = await analyzeRepository(root);
+  const report = await preflight(root, manifest, false, analysis);
+  const generated = await generateReleasePackage(root, manifest, analysis, report, "release-c5-clean");
+  const draft = await readFile(path.join(generated.directory, "privacy/questionnaire-draft.md"), "utf8");
+  assert.ok(draft.includes("No permissions declared. Confirm this is accurate."));
+  assert.ok(draft.includes("No external processors declared. Confirm SDKs and network endpoints."));
+  assert.ok(draft.includes("No third-party AI data sharing declared. Confirm this matches all source endpoints and SDKs."));
+  assert.equal(draft.includes("UNVERIFIED"), false);
+});
+
+test("H2: legal/privacy-policy-draft.html does not claim no permissions are listed when the scan found one", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-h2-privacy-page-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  await writeFile(path.join(root, "Info.plist"), "<key>NSCameraUsageDescription</key><string>Capture proof</string>");
+  const analysis = await analyzeRepository(root);
+  const report = await preflight(root, manifest, false, analysis);
+  const generated = await generateReleasePackage(root, manifest, analysis, report, "release-h2");
+  const page = await readFile(path.join(generated.directory, "legal/privacy-policy-draft.html"), "utf8");
+  assert.equal(page.includes("No confirmed permissions are listed."), false);
+  assert.ok(page.includes("UNVERIFIED"));
+  assert.ok(page.includes("NSCameraUsageDescription"));
+});
+
+test("H2: legal/privacy-policy-draft.html keeps the plain confident text when nothing is unresolved", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-h2-clean-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  const analysis = await analyzeRepository(root);
+  const report = await preflight(root, manifest, false, analysis);
+  const generated = await generateReleasePackage(root, manifest, analysis, report, "release-h2-clean");
+  const page = await readFile(path.join(generated.directory, "legal/privacy-policy-draft.html"), "utf8");
+  assert.ok(page.includes("No confirmed permissions are listed."));
+});
+
+test("H1: legal/support-page-draft.html does not claim no restorable IAP exists while StoreKit evidence is unreconciled", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-h1-support-page-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  await mkdir(path.join(root, "Sources"), { recursive: true });
+  await writeFile(path.join(root, "Sources/Paywall.swift"), STOREKIT_PAYWALL_SOURCE);
+  const analysis = await analyzeRepository(root);
+  const report = await preflight(root, manifest, false, analysis);
+  const generated = await generateReleasePackage(root, manifest, analysis, report, "release-h1");
+  const page = await readFile(path.join(generated.directory, "legal/support-page-draft.html"), "utf8");
+  assert.equal(page.includes("This app does not offer restorable in-app purchases."), false);
+  assert.ok(page.includes("UNVERIFIED"));
+});
+
+test("H1: legal/support-page-draft.html keeps the plain confident text for a genuinely free app", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-h1-clean-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  const analysis = await analyzeRepository(root);
+  const report = await preflight(root, manifest, false, analysis);
+  const generated = await generateReleasePackage(root, manifest, analysis, report, "release-h1-clean");
+  const page = await readFile(path.join(generated.directory, "legal/support-page-draft.html"), "utf8");
+  assert.ok(page.includes("This app does not offer restorable in-app purchases."));
+});
