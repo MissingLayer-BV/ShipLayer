@@ -967,11 +967,15 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "type"
+        "type",
+        "confirmation"
       ],
       "properties": {
         "type": {
           "const": "free"
+        },
+        "confirmation": {
+          "$ref": "#/$defs/confirmation"
         }
       }
     },

@@ -138,7 +138,7 @@ export interface PurchasePresentation {
 }
 
 export type Monetization =
-  | { type: "free" }
+  | { type: "free"; confirmation: Confirmation }
   | { type: "paid-app"; pricePointReference: string }
   | { type: "non-consumables"; products: Array<{ productId: string; referenceName: string; localizations: Record<string, { displayName: string; description: string }>; pricePointReference: string; familySharing: boolean; reviewNotes: string; reviewScreenshot: string }>; paywallNavigation: string; restorePath: string; purchasePresentation: PurchasePresentation; confirmation: Confirmation }
   | { type: "subscriptions"; group: { referenceName: string; subscriptionGroupId?: string; localizations: Record<string, { displayName: string }> }; baseTerritory: string; baseTerritoryConfirmation: Confirmation; products: SubscriptionProduct[]; paywallNavigation: string; restorePath: string; purchasePresentation: PurchasePresentation; termsUrl: string; termsOfUse: { type: "apple-standard-eula" | "custom"; confirmation: Confirmation }; privacyUrl: string; disclosureConfirmation: Confirmation; confirmation: Confirmation };
