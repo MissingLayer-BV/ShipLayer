@@ -7,7 +7,7 @@ import { resolveContained, walkRepository } from "./fs.js";
 import { inspectImage } from "./image.js";
 import { validateAscPrivateKey } from "./asc.js";
 import { appReviewNotes } from "./generator.js";
-import { aiContradictionFindingId, classifiedAiEndpointFindings, contradictionOverrideValid, endpointFindingUrl, evidenceSources, findContradictionOverride, MONETIZATION_CONTRADICTION_FINDING, storekitPurchaseEvidence } from "./evidence.js";
+import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, MONETIZATION_CONTRADICTION_FINDING, resolveContradictionOverride, storekitPurchaseEvidence } from "./evidence.js";
 
 const IPHONE_SCREENSHOT_DIMENSIONS = new Set([
   "1320x2868", // iPhone 6.9-inch
@@ -59,8 +59,9 @@ export async function preflight(repository: string, manifest: ShipLayerManifest,
   addRequired(add, "review.contact", Boolean(contact?.firstName && contact.lastName && contact.email && contact.phone), "App Review contact is incomplete.", "Set first name, last name, email, and phone.");
   const demo = manifest.review.demoAccount;
   if (demo?.required && (!demo.usernameEnv || !demo.passwordEnv || !demo.setupInstructions || demo.credentialsEnteredConfirmation !== "confirmed")) add("review.demo-account", "block", "Demo account is required but secure references, setup instructions, or confirmation that non-expiring reviewer credentials were entered in App Store Connect are incomplete.", "Set only environment-variable names, record setup instructions, and explicitly confirm the credentials were entered in App Store Connect's secure review fields; never put credentials in the manifest.");
-  else add("review.demo-account", "pass", demo?.required ? "Demo account uses secure environment-variable references and has a human confirmation." : "No login is required.");
-  const generatedReviewNotes = appReviewNotes(manifest, scan);
+  else if (demo?.required) add("review.demo-account", "pass", "Demo account uses secure environment-variable references and has a human confirmation.");
+  else add("review.demo-account", "warn", "No login is required (self-declared; the scanner cannot verify the absence of an auth/login flow).", "Confirm during manual review that first launch truly requires no account or login.");
+  const generatedReviewNotes = await appReviewNotes(repository, manifest, scan);
   const reviewBytes = Buffer.byteLength(generatedReviewNotes, "utf8");
   if (reviewBytes > 4_000) add("review.notes.length", "block", `Generated App Review notes have ${reviewBytes} UTF-8 bytes; Apple allows at most 4,000.`, "Shorten review notes, setup instructions, sample data, or scenarios.");
   else add("review.notes.length", "pass", `Generated App Review notes have ${reviewBytes} UTF-8 bytes.`);
@@ -69,7 +70,7 @@ export async function preflight(repository: string, manifest: ShipLayerManifest,
   permissionChecks(manifest, add);
   exportComplianceCheck(manifest, add);
   confirmationChecks(manifest, add);
-  monetizationChecks(manifest, scan, add);
+  await monetizationChecks(repository, manifest, scan, add);
   await aiDataSharingChecks(repository, manifest, scan, add);
   await purchasePresentationChecks(repository, manifest, add);
   screenshotConfigurationChecks(manifest, add);
@@ -170,23 +171,28 @@ function confirmationChecks(manifest: ShipLayerManifest, add: Add): void {
 }
 
 async function aiDataSharingChecks(repository: string, manifest: ShipLayerManifest, analysis: AnalysisReport, add: Add): Promise<void> {
-  const aiPipelineProcessors = manifest.externalProcessors.filter((processor) => processor.aiPipelineRecipient);
+  // kind: "ai" is itself a signal that this processor belongs in the AI-pipeline disclosure, even
+  // if a human has not (yet) flipped aiPipelineRecipient on the same proposal.
+  const aiPipelineProcessors = manifest.externalProcessors.filter((processor) => processor.aiPipelineRecipient || processor.kind === "ai");
   const sharing = manifest.aiDataSharing;
   if (!sharing.enabled) {
     let blocked = false;
     if (aiPipelineProcessors.length) { add("ai-sharing.declaration", "block", `AI-pipeline recipients are declared (${aiPipelineProcessors.map((item) => item.name).join(", ")}) but aiDataSharing.enabled is false.`, "Model the exact AI data, recipients, in-context consent, and matching privacy-policy evidence. No-retention/no-training controls do not mean data was not shared."); blocked = true; }
 
     const { strong, weak } = classifiedAiEndpointFindings(analysis);
-    if (strong.length) {
-      const unresolved = strong.filter((finding) => !contradictionOverrideValid(findContradictionOverride(manifest, aiContradictionFindingId(finding))));
-      if (unresolved.length) {
-        const endpoints = unresolved.map((finding) => endpointFindingUrl(finding));
-        add("ai-sharing.source-contradiction", "block", `Source calls a third-party AI/inference endpoint (${endpoints.join(", ")}) in ${evidenceSources(unresolved).join(", ")}, but aiDataSharing.enabled is false.`, "Model the AI data sharing disclosure (data sent, recipients, consent, privacy policy), or add a confirmed sourceContradictionOverride naming this exact finding with a reason and matching evidence if this is not a real AI/inference call.");
+    for (const { finding, kind } of strong) {
+      const id = kind === "provider" ? "ai-sharing.source-contradiction" : "ai-sharing.source-contradiction-ambiguous-endpoint";
+      const url = endpointFindingUrl(finding);
+      const sourcePaths = evidenceSources([finding]);
+      const override = await resolveContradictionOverride(repository, manifest, aiContradictionFindingId(finding), sourcePaths);
+      if (override) {
+        add(id, "warn", `AI/inference endpoint evidence for ${url} is human-overridden: ${override.reason}`, "Re-verify this override whenever the source or manifest changes.");
+      } else if (kind === "provider") {
+        add(id, "block", `Source calls a third-party AI/inference endpoint (${url}) in ${sourcePaths.join(", ")}, but aiDataSharing.enabled is false.`, "Model the AI data sharing disclosure (data sent, recipients, consent, privacy policy), or add a confirmed sourceContradictionOverride naming this exact finding with a reason and evidence that intersects this finding's source paths if this is not a real AI/inference call.");
         blocked = true;
-      }
-      for (const finding of strong.filter((item) => !unresolved.includes(item))) {
-        const override = findContradictionOverride(manifest, aiContradictionFindingId(finding));
-        add("ai-sharing.source-contradiction", "warn", `AI/inference endpoint evidence for ${endpointFindingUrl(finding)} is human-overridden: ${override?.reason}`, "Re-verify this override whenever the source or manifest changes.");
+      } else {
+        add(id, "block", `Source calls an endpoint shaped like an AI/inference API (${url}) in ${sourcePaths.join(", ")}, on a host ShipLayer does not recognize as a known AI provider — this may be a proxy that forwards to one — but aiDataSharing.enabled is false.`, "Confirm whether this endpoint proxies to a third-party AI/inference provider. If it does, model the AI data sharing disclosure; if it genuinely does not, add a confirmed sourceContradictionOverride naming this exact finding with a reason and evidence that intersects this finding's source paths.");
+        blocked = true;
       }
     }
     if (weak.length) add("ai-sharing.possible-processor-link", "warn", `Source references known AI-provider host(s) (${weak.map((finding) => endpointFindingUrl(finding)).join(", ")}) that may indicate an undeclared processor.`, "Confirm whether this is only a documentation/policy link or an actual API call that sends user data; if it sends data, declare aiDataSharing and externalProcessors.");
@@ -265,25 +271,42 @@ async function aiDataSharingChecks(repository: string, manifest: ShipLayerManife
   }
 }
 
-function monetizationChecks(manifest: ShipLayerManifest, analysis: AnalysisReport, add: Add): void {
+/**
+ * Shared by "free" and "paid-app": neither models an in-app purchase, so StoreKit purchase
+ * evidence contradicts either declaration exactly the same way. Returns true when a real,
+ * unresolved contradiction blocked readiness (and also blocks purchase.presentation, since it
+ * cannot be verified for an undeclared model); false when there is nothing to resolve or a valid
+ * override already resolved it.
+ */
+async function monetizationSourceContradiction(repository: string, manifest: ShipLayerManifest, analysis: AnalysisReport, add: Add): Promise<boolean> {
+  const storekitEvidence = storekitPurchaseEvidence(analysis);
+  if (!storekitEvidence.length) return false;
+  const evidenceFiles = evidenceSources(storekitEvidence);
+  const override = await resolveContradictionOverride(repository, manifest, MONETIZATION_CONTRADICTION_FINDING, evidenceFiles);
+  if (override) {
+    add("monetization.source-contradiction", "warn", `Monetization declaration ('${manifest.monetization.type}') is human-overridden despite StoreKit purchase evidence in ${evidenceFiles.join(", ")}: ${override.reason}`, "Re-verify this override whenever the source or manifest changes.");
+    return false;
+  }
+  add("monetization.source-contradiction", "block", `Source shows StoreKit purchase evidence (${evidenceFiles.join(", ")}) but monetization.type is declared '${manifest.monetization.type}', which has no in-app purchase.`, "Declare the actual IAP/subscription model in shiplayer.yml, or add a confirmed sourceContradictionOverride naming 'monetization.source-contradiction' with a reason and evidence that intersects this finding's source paths if this is not a real purchase.");
+  add("purchase.presentation", "block", "Purchase presentation cannot be verified because monetization is undeclared despite StoreKit purchase evidence in source.", "Resolve the monetization.source-contradiction blocker first.");
+  return true;
+}
+
+async function monetizationChecks(repository: string, manifest: ShipLayerManifest, analysis: AnalysisReport, add: Add): Promise<void> {
   const money = manifest.monetization;
   if (money.type === "free") {
-    const storekitEvidence = storekitPurchaseEvidence(analysis);
-    if (storekitEvidence.length) {
-      const override = findContradictionOverride(manifest, MONETIZATION_CONTRADICTION_FINDING);
-      const evidenceFiles = evidenceSources(storekitEvidence);
-      if (contradictionOverrideValid(override)) {
-        add("monetization.source-contradiction", "warn", `Free declaration is human-overridden despite StoreKit purchase evidence in ${evidenceFiles.join(", ")}: ${override.reason}`, "Re-verify this override whenever the source or manifest changes.");
-      } else {
-        add("monetization.source-contradiction", "block", `Source shows StoreKit purchase evidence (${evidenceFiles.join(", ")}) but monetization.type is declared 'free'.`, "Declare the actual IAP/subscription model in shiplayer.yml, or add a confirmed sourceContradictionOverride naming 'monetization.source-contradiction' with a reason and matching evidence if this is not a real purchase.");
-        add("purchase.presentation", "block", "Purchase presentation cannot be verified because monetization is undeclared despite StoreKit purchase evidence in source.", "Resolve the monetization.source-contradiction blocker first.");
-        return;
-      }
-    }
-    add("monetization", "pass", "Free app with no declared IAP."); return;
+    const contradicted = await monetizationSourceContradiction(repository, manifest, analysis, add);
+    if (contradicted) return;
+    if (money.confirmation !== "confirmed") add("monetization", "block", "Free monetization is declared but not human-confirmed.", "Confirm there is truly no IAP/subscription model after reviewing the source.");
+    else add("monetization", "pass", "Free app with no declared IAP, confirmed by a human.");
+    return;
   }
   if (manifest.confirmations.paidAgreements !== "confirmed") add("confirmation.paidAgreements", "block", "Paid Apps agreement must be explicitly confirmed for paid monetization.", "Activate and confirm the Paid Apps agreement, tax, banking, and applicable business information.");
-  if (money.type === "paid-app") { add("monetization", "pass", `Paid app price point ${money.pricePointReference} is declared.`); return; }
+  if (money.type === "paid-app") {
+    const contradicted = await monetizationSourceContradiction(repository, manifest, analysis, add);
+    if (!contradicted) add("monetization", "pass", `Paid app price point ${money.pricePointReference} is declared.`);
+    return;
+  }
   if (money.type === "non-consumables") {
     addRequired(add, "iap.confirmation", money.confirmation === "confirmed", "Non-consumable configuration needs human confirmation.", "Confirm price, availability, paywall, restore, and review assets.");
     addRequired(add, "iap.paywall", money.paywallNavigation, "Non-consumable paywall navigation is missing.", "Describe how App Review reaches the purchase.");
@@ -544,6 +567,14 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
   else add("source.device-family", "block", "No production TARGETED_DEVICE_FAMILY evidence was found.", "Add/read the production Xcode target setting; screenshot coverage cannot be inferred from the manifest.");
   compare("deploymentTarget", manifest.app.deploymentTarget);
   if (manifest.app.deploymentTarget && !findValue(report, "deploymentTarget")) add("source.deployment-target", "block", "Manifest deployment target has no production Xcode evidence.", "Add/read IPHONEOS_DEPLOYMENT_TARGET from the production target.");
+  const detectedSigning = findValue(report, "codeSignStyle");
+  if (detectedSigning) {
+    const normalizedSigning = /^automatic$/i.test(detectedSigning) ? "automatic" : /^manual$/i.test(detectedSigning) ? "manual" : undefined;
+    if (normalizedSigning) {
+      if (manifest.build.signing === normalizedSigning) add("consistency.signing", "pass", "Manifest build.signing matches source evidence.");
+      else add("consistency.signing", "block", `Manifest build.signing (${manifest.build.signing}) disagrees with source evidence (${normalizedSigning}).`, "Update the manifest or the production CODE_SIGN_STYLE setting.");
+    }
+  }
   const detectedEncryption = findValue(report, "encryption");
   // Multiple production declarations are not a harmless generic contradiction:
   // export compliance is a submission gate, so surface it under the actionable
@@ -588,7 +619,7 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
   }
   for (const permission of manifest.permissions) if (!report.findings.some((finding) => finding.key === `permission:${permission.key}`) && !(permission.evidence || []).length) add(`manifest.permission.${permission.key}`, "warn", `${permission.key} has no scanner evidence or manifest evidence path.`, "Verify the purpose string and add source evidence if this permission is used.");
   for (const finding of report.findings.filter((item) => item.key.startsWith("thirdPartySdkCandidate:") || item.key.startsWith("endpoint:"))) {
-    const findingId = finding.key.startsWith("endpoint:") ? finding.key : `${finding.key}:${Array.isArray(finding.value) ? finding.value.join(",") : String(finding.value)}`;
+    const findingId = externalFindingId(finding);
     if (finding.key.startsWith("endpoint:http://")) add(`source.insecure-endpoint.${findingId}`, "block", `Source declares insecure HTTP endpoint ${String(finding.value)}.`, "Use HTTPS or document an App Transport Security exception and resolve it with human review.");
     const decision = manifest.externalServiceDecisions.find((item) => item.finding === findingId);
     if (!decision || decision.confirmation !== "confirmed" || !decision.reason || !decision.evidence.length) { add(`source.external.${findingId}`, "block", `Source heuristic '${findingId}' has no confirmed processor/disposition decision.`, "Declare the processor or explicitly record why it is not an external processor, with source evidence."); continue; }
