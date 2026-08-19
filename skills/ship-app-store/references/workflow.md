@@ -5,7 +5,7 @@
 | Discover repository facts | `shiplayer analyze <repo> --json` | None |
 | Create editable manifest | `shiplayer init <repo>` | Local file only |
 | Build release artifacts | `shiplayer prepare <repo>` | Local files only |
-| Gate release readiness | `shiplayer check <repo>` (including AI consent/privacy evidence and StoreKit-localized price evidence) | None |
+| Gate release readiness | `shiplayer check <repo>` (including AI consent/privacy evidence, StoreKit-localized price evidence, and source-vs-manifest contradiction blockers for monetization and AI data sharing) | None |
 | Compare with Apple | `shiplayer plan <repo> --remote` | Read-only API |
 | Produce screenshot harness hand-off | `shiplayer capture <repo>` | None |
 | Direct local capture | Repository-owned UI-test harness only | Local simulator only |
