@@ -47,10 +47,17 @@ export async function analyzeRepository(repository: string): Promise<AnalysisRep
         const declared = /^(?:YES|true)$/i.test(match[1]) ? "true" : "false";
         push("encryption", declared, { source, excerpt: "INFOPLIST_KEY_ITSAppUsesNonExemptEncryption", confidence: "high", kind });
       }
+      // A build setting can be a literal endpoint (e.g. a user-defined API base URL), not only
+      // Apple's own known keys. Detect any such literal so it becomes a disposable finding rather
+      // than an invisible proxy target only reachable via a $(VARIABLE) indirection elsewhere.
+      for (const match of productionSettings.matchAll(/^[ \t]*[A-Za-z_][A-Za-z0-9_]*\s*=\s*(https?:\/\/[^\s;\"']+)/gm)) push("endpoint", match[1], { source, excerpt: match[0].slice(0, 220), confidence: "medium", kind });
     }
     if (file.endsWith("project.yml")) scanXcodeGenProject(content, source, push, questions);
     if (file.endsWith("Info.plist")) {
       for (const key of PERMISSION_KEYS) { const regex = new RegExp(`<key>${key}</key>\\s*<string>([^<]*)</string>`, "g"); for (const match of content.matchAll(regex)) push(`permission:${key}`, match[1], { source, excerpt: match[0], confidence: "confirmed", kind }); }
+      // Any Info.plist string value that is itself a literal URL — not only the named permission
+      // keys above — is production endpoint evidence (e.g. a custom base-URL key).
+      for (const match of content.matchAll(/<key>[^<]+<\/key>\s*<string>(https?:\/\/[^<]+)<\/string>/g)) push("endpoint", match[1], { source, excerpt: match[0].slice(0, 220), confidence: "medium", kind });
       for (const match of content.matchAll(/<key>ITSAppUsesNonExemptEncryption<\/key>\s*<(true|false)\s*\/>/g)) push("encryption", match[1], { source, excerpt: match[0], confidence: "confirmed", kind });
       for (const [name, tag] of [["bundleId", "CFBundleIdentifier"], ["version", "CFBundleShortVersionString"], ["build", "CFBundleVersion"]] as const) { const re = new RegExp(`<key>${tag}</key>\\s*<string>([^<]*)</string>`, "g"); for (const m of content.matchAll(re)) if (!m[1].includes("$(")) push(name, m[1], { source, excerpt: m[0], confidence: "confirmed", kind }); }
     }
@@ -61,6 +68,7 @@ export async function analyzeRepository(repository: string): Promise<AnalysisRep
         for (const framework of APPLE_FRAMEWORKS) if (new RegExp(`\\bimport\\s+${framework}\\b|\\b${framework}\\s*\\.`).test(content)) push(`framework:${framework}`, framework, { source, excerpt: framework, confidence: "medium", kind: "source-heuristic" });
         if (/\.displayPrice\b|\bProductView\s*\(/.test(content)) push("storekitLocalizedPrice", "StoreKit localized price display", { source, excerpt: content.match(/.{0,80}(?:\.displayPrice\b|\bProductView\s*\().{0,80}/s)?.[0].slice(0, 220), confidence: "high", kind: "source-heuristic" });
         if (/\.purchase\s*\(/.test(content)) push("storekitPurchaseCall", "StoreKit purchase call", { source, excerpt: content.match(/.{0,80}\.purchase\s*\(.{0,80}/s)?.[0].slice(0, 220), confidence: "high", kind: "source-heuristic" });
+        if (/\bSKPaymentQueue\b|\bSKPaymentTransactionObserver\b/.test(content)) push("storekitLegacyPaymentQueue", "StoreKit 1 payment queue", { source, excerpt: content.match(/.{0,80}(?:SKPaymentQueue|SKPaymentTransactionObserver).{0,80}/s)?.[0].slice(0, 220), confidence: "high", kind: "source-heuristic" });
       }
       for (const sdk of THIRD_PARTY_SDK_CANDIDATES) {
         const pattern = nativeSource ? new RegExp(`\\bimport\\s+${sdk}\\b|\\b${sdk}\\s*\\.`) : new RegExp(`(?:\\bimport\\s+(?:[^;\\n]*?\\s+from\\s+)?|\\brequire\\s*\\()?["']${sdk}["']|\\bfrom\\s+["']${sdk}["']`);
@@ -251,6 +259,7 @@ function emitXcodeGenSetting(setting: string, details: XcodeGenSettingValue, sou
     return;
   }
   for (const permission of PERMISSION_KEYS) if (setting === `INFOPLIST_KEY_${permission}` && details.value.trim()) push(`permission:${permission}`, details.value.trim(), evidence);
+  if (/^https?:\/\//i.test(details.value.trim())) push("endpoint", details.value.trim(), evidence);
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined; }
