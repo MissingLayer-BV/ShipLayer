@@ -41,6 +41,7 @@ dataProcessing:
 externalProcessors: []
 aiDataSharing: {enabled: false}
 externalServiceDecisions: []
+sourceContradictionOverrides: []
 secondaryTargetConfirmations: []
 review:
   contact:

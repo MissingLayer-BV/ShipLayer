@@ -82,6 +82,20 @@ export interface ExternalServiceDecision {
   evidence: string[];
   confirmation: Confirmation;
 }
+/**
+ * The only way to resolve a `*.source-contradiction` blocker (source evidence disagrees with a
+ * manifest declaration, e.g. StoreKit purchase code present while monetization.type is "free", or
+ * a third-party AI/inference endpoint called while aiDataSharing.enabled is false). `finding`
+ * identifies the exact blocker id being overridden. An override can never be expressed as an
+ * empty/default value: reason and evidence are both required and non-empty, and confirmation must
+ * be explicitly "confirmed" by a human.
+ */
+export interface SourceContradictionOverride {
+  finding: string;
+  reason: string;
+  evidence: string[];
+  confirmation: Confirmation;
+}
 export interface SecondaryTargetConfirmation {
   bundleId: string;
   classification: "extension" | "widget" | "other-app";
@@ -166,6 +180,7 @@ export interface ShipLayerManifest {
   externalProcessors: ExternalProcessor[];
   aiDataSharing: AIDataSharing;
   externalServiceDecisions: ExternalServiceDecision[];
+  sourceContradictionOverrides: SourceContradictionOverride[];
   secondaryTargetConfirmations: SecondaryTargetConfirmation[];
   review: { contact?: { firstName?: string; lastName?: string; email?: string; phone?: string }; demoAccount?: { required: boolean; usernameEnv?: string; passwordEnv?: string; setupInstructions?: string; credentialsEnteredConfirmation?: Confirmation }; notes?: string; recordingScenarios: ScreenshotScenario[]; sampleData?: string[] };
   screenshots: { scenarios: ScreenshotScenario[]; configurations: Array<{ device: string; family: "iphone" | "ipad"; locale: string; requiredDimensions: { width: number; height: number } }>; rawOutputDir: string; marketingProjectPath?: string };
