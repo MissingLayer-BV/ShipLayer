@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { parse } from "yaml";
@@ -40,6 +40,47 @@ final class SampleUITests: XCTestCase {
 }
 `;
 
+// Exercises the two launch-argument bugs a round-1 review found: (a) a method with no local
+// `.launchArguments = [...]` of its own (launches via a helper) must never inherit an earlier,
+// already-closed method's array; (b) a non-literal element in the array must never be silently
+// dropped while keeping the rest, because that shifts every later flag/value pair out of place.
+const HELPER_HARNESS_SOURCE = `import XCTest
+
+final class HelperUITests: XCTestCase {
+    func testViaLiteral() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing-empty"]
+        app.launch()
+        keepScreenshot(named: "Literal Scenario")
+    }
+
+    func testViaHelper() {
+        let app = launch(storeName: "abc")
+        keepScreenshot(named: "Helper Scenario")
+    }
+
+    func testMixedLiteralAndComputed() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing-store", storeName, "--ui-testing-reset"]
+        app.launch()
+        keepScreenshot(named: "Mixed Scenario")
+    }
+
+    private func launch(storeName: String) -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launch()
+        return app
+    }
+
+    private func keepScreenshot(named name: String) {
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+}
+`;
+
 test("detectScreenshotHarness extracts scenarios with nearest launch arguments and never fabricates when no harness exists", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-harness-"));
   await mkdir(path.join(root, "SampleUITests"), { recursive: true });
@@ -49,14 +90,28 @@ test("detectScreenshotHarness extracts scenarios with nearest launch arguments a
   assert.equal(harness.sourceFiles.length, 1);
   assert.equal(harness.scenarios.length, 2);
   const empty = harness.scenarios.find((scenario) => scenario.id === "empty-home");
-  assert.ok(empty); assert.deepEqual(empty?.launchArguments, ["--ui-testing-empty", "--ui-testing-reset"]); assert.equal(empty?.testFunction, "testEmptyState");
+  assert.ok(empty); assert.equal(empty?.launchArgumentsDetermined, true); assert.deepEqual(empty?.launchArguments, ["--ui-testing-empty", "--ui-testing-reset"]); assert.equal(empty?.testFunction, "testEmptyState");
   const populated = harness.scenarios.find((scenario) => scenario.id === "populated-home");
-  assert.ok(populated); assert.deepEqual(populated?.launchArguments, ["--ui-testing-populated"]);
+  assert.ok(populated); assert.equal(populated?.launchArgumentsDetermined, true); assert.deepEqual(populated?.launchArguments, ["--ui-testing-populated"]);
 
   const bare = await mkdtemp(path.join(tmpdir(), "shiplayer-no-harness-"));
   await writeFile(path.join(bare, "App.swift"), "import SwiftUI\nstruct App {}\n");
   const empty2 = await detectScreenshotHarness(bare);
   assert.equal(empty2.scenarios.length, 0); assert.equal(empty2.sourceFiles.length, 0);
+});
+
+test("detectScreenshotHarness never attributes another method's launch arguments and never partially drops a non-literal element", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-harness-launch-args-"));
+  await mkdir(path.join(root, "HelperUITests"), { recursive: true });
+  await writeFile(path.join(root, "HelperUITests/HelperUITests.swift"), HELPER_HARNESS_SOURCE);
+  const harness = await detectScreenshotHarness(root);
+  assert.equal(harness.scenarios.length, 3);
+  const literal = harness.scenarios.find((scenario) => scenario.id === "literal-scenario");
+  assert.ok(literal); assert.equal(literal?.launchArgumentsDetermined, true); assert.deepEqual(literal?.launchArguments, ["--ui-testing-empty"]);
+  const helper = harness.scenarios.find((scenario) => scenario.id === "helper-scenario");
+  assert.ok(helper); assert.equal(helper?.launchArgumentsDetermined, false); assert.deepEqual(helper?.launchArguments, []);
+  const mixed = harness.scenarios.find((scenario) => scenario.id === "mixed-scenario");
+  assert.ok(mixed); assert.equal(mixed?.launchArgumentsDetermined, false); assert.deepEqual(mixed?.launchArguments, []);
 });
 
 test("isXCUITestSourcePath is scoped to *UITests sources and stays independent from production-evidence predicates", () => {
@@ -100,12 +155,18 @@ test("init proposes needs-human-confirmation scenarios from a detected harness a
   assert.ok(parsedBare.unresolvedQuestions.some((item: string) => item.includes("No screenshot UI-test harness")));
 });
 
-test("preflight blocks an unconfirmed detected screenshot scenario but not a legacy scenario with no confirmation field", async () => {
+test("preflight blocks a screenshot scenario whose confirmation is absent or anything other than confirmed", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-scenario-confirmation-"));
   const manifest = readyManifest(); await writeReadyAssets(root, manifest);
   let report = await preflight(root, manifest);
   assert.equal(report.results.filter((item) => item.id.startsWith("screenshots.scenarios.") && item.severity === "block").length, 0);
-  manifest.screenshots.scenarios = [{ id: "home", title: "Home", steps: ["Launch"], confirmation: "needs-human-confirmation" }];
+  // No confirmation field at all — an absent field is NOT treated as implicitly confirmed:
+  // `init` always writes it explicitly, so an absent field only happens by hand-authoring or by
+  // deleting the line to dodge review, and either way it must still block.
+  manifest.screenshots.scenarios = [{ id: "home", title: "Home", steps: ["Launch"] }];
+  report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "screenshots.scenarios.home.confirmation" && item.severity === "block"));
+  manifest.screenshots.scenarios[0].confirmation = "needs-human-confirmation";
   report = await preflight(root, manifest);
   assert.ok(report.results.some((item) => item.id === "screenshots.scenarios.home.confirmation" && item.severity === "block"));
   manifest.screenshots.scenarios[0].confirmation = "confirmed";
@@ -113,20 +174,29 @@ test("preflight blocks an unconfirmed detected screenshot scenario but not a leg
   assert.equal(report.results.filter((item) => item.id === "screenshots.scenarios.home.confirmation").length, 0);
 });
 
-test("preflight accepts any Apple-accepted dimension for the family instead of only the exact configured value", async () => {
+test("preflight accepts any Apple-accepted dimension within the configured display class instead of only the exact configured value", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-dimension-fix-"));
   const manifest = readyManifest(); await writeReadyAssets(root, manifest);
-  // requiredDimensions defaults to 1320x2868 (iPhone 16 Pro Max); a capture from a different but
-  // equally-valid 6.9" simulator (iPhone 17 Pro Max/Air, 1260x2736) must not be false-blocked.
+  // requiredDimensions defaults to 1320x2868 (iPhone 16 Pro Max, 6.9-inch); a capture from a
+  // different but equally-valid 6.9-inch simulator (iPhone 17 Pro Max/Air, 1260x2736) must not
+  // be false-blocked.
   await writeFile(path.join(root, "release/raw-screenshots/iphone/en-US/home.png"), png(1260, 2736));
   const report = await preflight(root, manifest);
   assert.equal(report.results.filter((item) => item.id.includes("accepted-dimensions") && item.severity === "block").length, 0);
   assert.ok(report.results.some((item) => item.id === "screenshots.iphone.en-US.home.png.dimensions" && item.severity === "pass"));
 });
 
+test("preflight rejects a 6.5-inch dimension in a 6.9-inch-configured iPhone slot, even though it is a valid App Store size for a different class", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-display-class-"));
+  const manifest = readyManifest(); await writeReadyAssets(root, manifest); // default config requiredDimensions 1320x2868 (6.9-inch)
+  await writeFile(path.join(root, "release/raw-screenshots/iphone/en-US/home.png"), png(1284, 2778)); // 6.5-inch legacy size
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "screenshots.iphone.en-US.home.png.accepted-dimensions" && item.severity === "block"));
+});
+
 test("preflight rejects a screenshot set mixing two individually-valid dimensions", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-mixed-dimensions-"));
-  const manifest = readyManifest(); manifest.screenshots.scenarios = [{ id: "home", title: "Home", steps: ["Launch"] }, { id: "detail", title: "Detail", steps: ["Open detail"] }]; await writeReadyAssets(root, manifest);
+  const manifest = readyManifest(); manifest.screenshots.scenarios = [{ id: "home", title: "Home", steps: ["Launch"], confirmation: "confirmed" }, { id: "detail", title: "Detail", steps: ["Open detail"], confirmation: "confirmed" }]; await writeReadyAssets(root, manifest);
   // writeReadyAssets already writes home.png at 1320x2868; add an individually-valid but
   // different-sized detail.png. Files are checked in sorted filename order, so detail.png (d <
   // h) becomes the set's reference dimension and home.png is the one that now disagrees.
@@ -137,12 +207,51 @@ test("preflight rejects a screenshot set mixing two individually-valid dimension
   assert.ok(report.results.some((item) => item.id === "screenshots.iphone.en-US.detail.png.dimensions" && item.severity === "pass"));
 });
 
+test("preflight rejects a screenshot set mixing a portrait image with its exact landscape transpose", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-orientation-mix-"));
+  const manifest = readyManifest(); manifest.screenshots.scenarios = [{ id: "aaa-portrait", title: "Portrait", steps: ["Launch"], confirmation: "confirmed" }, { id: "bbb-landscape", title: "Landscape", steps: ["Rotate"], confirmation: "confirmed" }]; await writeReadyAssets(root, manifest);
+  await writeFile(path.join(root, "release/raw-screenshots/iphone/en-US/aaa-portrait.png"), png(1320, 2868));
+  // A landscape transpose of an accepted size is still individually an accepted dimension (the
+  // per-image accepted-dimensions check tolerates orientation), but it is NOT "the same size" as
+  // the set's portrait reference — App Store Connect does not reorient screenshots for you.
+  await writeFile(path.join(root, "release/raw-screenshots/iphone/en-US/bbb-landscape.png"), png(2868, 1320));
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "screenshots.iphone.en-US.aaa-portrait.png.dimensions" && item.severity === "pass"));
+  assert.ok(report.results.some((item) => item.id === "screenshots.iphone.en-US.bbb-landscape.png.dimensions" && item.severity === "block" && item.message.includes("differs from")));
+});
+
+test("preflight coverage check never lets one file satisfy two scenarios through a dedup-suffix collision", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-dedupe-collision-"));
+  const manifest = readyManifest(); manifest.screenshots.scenarios = [{ id: "home", title: "Home", steps: ["Launch"], confirmation: "confirmed" }, { id: "home-2", title: "Home Again", steps: ["Launch again"], confirmation: "confirmed" }]; await writeReadyAssets(root, manifest);
+  await rm(path.join(root, "release/raw-screenshots/iphone/en-US/home.png"));
+  // Only home-2.png exists. The `<id>-*` wildcard convention must credit it to the most specific
+  // (longest) matching declared id — "home-2" exactly — never to "home" as well.
+  await writeFile(path.join(root, "release/raw-screenshots/iphone/en-US/home-2.png"), png(1320, 2868));
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "screenshots.iphone.en-US.home" && item.severity === "block" && item.message.includes("'home'")));
+  assert.equal(report.results.filter((item) => item.id === "screenshots.iphone.en-US.home-2" && item.severity === "block").length, 0);
+});
+
 test("preflight rejects an alpha-channel screenshot", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-alpha-"));
   const manifest = readyManifest(); await writeReadyAssets(root, manifest);
   await writeFile(path.join(root, "release/raw-screenshots/iphone/en-US/home.png"), png(1320, 2868, true));
   const report = await preflight(root, manifest);
   assert.ok(report.results.some((item) => item.id === "screenshots.iphone.en-US.home.png.alpha" && item.severity === "block"));
+});
+
+test("capturePlan and marketingProject carry each scenario's confirmation status instead of laundering a proposal into a fact", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-confirmation-carry-"));
+  const manifest = readyManifest(); manifest.screenshots.scenarios = [{ id: "home", title: "Home", steps: ["Launch"], confirmation: "needs-human-confirmation" }]; await writeReadyAssets(root, manifest);
+  const analysis = await analyzeRepository(root);
+  const report = await preflight(root, manifest, false, analysis);
+  const pkg = await generateReleasePackage(root, manifest, analysis, report, "shiplayer-release");
+  const capturePlanJson = JSON.parse(await readFile(path.join(pkg.directory, "screenshots/capture-plan.json"), "utf8"));
+  const planScenario = (capturePlanJson.configurations[0].scenarios as Array<{ id: string; confirmation: string }>).find((item) => item.id === "home");
+  assert.equal(planScenario?.confirmation, "needs-human-confirmation");
+  const marketingJson = JSON.parse(await readFile(path.join(pkg.directory, "screenshots/marketing-composition-plan.json"), "utf8"));
+  const slide = (marketingJson.decks[0].slides as Array<{ id: string; confirmation: string }>).find((item) => item.id === "home");
+  assert.equal(slide?.confirmation, "needs-human-confirmation");
 });
 
 test("capture --from ingests, validates, and refuses to fabricate matches for exported PNGs", async () => {
@@ -161,6 +270,29 @@ test("capture --from ingests, validates, and refuses to fabricate matches for ex
   assert.ok(destination.length > 0);
 });
 
+test("capture --from reports an unreadable/zero-byte file honestly instead of blaming a missing scenario match", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-ingest-zero-byte-"));
+  const manifest = readyManifest(); await writeReadyAssets(root, manifest); await writeManifest(root, manifest);
+  const from = await mkdtemp(path.join(tmpdir(), "shiplayer-exported-zero-byte-"));
+  await writeFile(path.join(from, "home.png"), Buffer.alloc(0)); // filename matches scenario "home", but is not a valid image
+  const result = await ingestCaptures(root, manifest, { from, family: "iphone", locale: "en-US" });
+  assert.equal(result.ingested.length, 0);
+  assert.ok(result.skipped.some((item) => item.sourceFile === "home.png" && item.reason.includes("unreadable")));
+  assert.equal(result.skipped.some((item) => item.reason.includes("no declared screenshot scenario")), false);
+});
+
+test("capture --from recursively finds screenshots nested under subdirectories, e.g. a per-test xcresulttool export layout", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-ingest-nested-"));
+  const manifest = readyManifest(); await writeReadyAssets(root, manifest); await writeManifest(root, manifest);
+  const from = await mkdtemp(path.join(tmpdir(), "shiplayer-exported-nested-"));
+  await mkdir(path.join(from, "testEmptyHomeShowsFirstUseActions"), { recursive: true });
+  await writeFile(path.join(from, "testEmptyHomeShowsFirstUseActions", "home.png"), png(1320, 2868));
+  const result = await ingestCaptures(root, manifest, { from, family: "iphone", locale: "en-US" });
+  assert.equal(result.ingested.length, 1);
+  assert.equal(result.ingested[0].scenarioId, "home");
+  assert.equal(result.ingested[0].sourceFile, path.join("testEmptyHomeShowsFirstUseActions", "home.png"));
+});
+
 test("capture --from rejects a batch mixing two individually-valid dimensions", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-ingest-mixed-"));
   const manifest = readyManifest(); manifest.screenshots.scenarios = [{ id: "aaa-home", title: "Home", steps: ["Launch"] }, { id: "bbb-detail", title: "Detail", steps: ["Open"] }]; await writeReadyAssets(root, manifest); await writeManifest(root, manifest);
@@ -175,10 +307,40 @@ test("capture --from rejects a batch mixing two individually-valid dimensions", 
   assert.ok(result.skipped.some((item) => item.sourceFile === "bbb-detail.png" && item.reason.includes("differs from")));
 });
 
+test("capture --from rejects a batch mixing a portrait image with its exact landscape transpose", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-ingest-orientation-"));
+  const manifest = readyManifest(); manifest.screenshots.scenarios = [{ id: "aaa-portrait", title: "Portrait", steps: ["Launch"] }, { id: "bbb-landscape", title: "Landscape", steps: ["Rotate"] }]; await writeReadyAssets(root, manifest); await writeManifest(root, manifest);
+  const from = await mkdtemp(path.join(tmpdir(), "shiplayer-exported-orientation-"));
+  await writeFile(path.join(from, "aaa-portrait.png"), png(1320, 2868));
+  await writeFile(path.join(from, "bbb-landscape.png"), png(2868, 1320));
+  const result = await ingestCaptures(root, manifest, { from, family: "iphone", locale: "en-US" });
+  assert.equal(result.ingested.length, 1);
+  assert.equal(result.ingested[0].scenarioId, "aaa-portrait");
+  assert.ok(result.skipped.some((item) => item.sourceFile === "bbb-landscape.png" && item.reason.includes("differs from")));
+});
+
+test("capture --from rejects a dimension outside the configured display class even when it is a valid App Store size for a different class", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-ingest-display-class-"));
+  const manifest = readyManifest(); await writeReadyAssets(root, manifest); await writeManifest(root, manifest); // default config: iphone 1320x2868 (6.9-inch)
+  const from = await mkdtemp(path.join(tmpdir(), "shiplayer-exported-display-class-"));
+  await writeFile(path.join(from, "home.png"), png(1284, 2778)); // 6.5-inch legacy size
+  const result = await ingestCaptures(root, manifest, { from, family: "iphone", locale: "en-US" });
+  assert.equal(result.ingested.length, 0);
+  assert.ok(result.skipped.some((item) => item.sourceFile === "home.png" && item.reason.includes("not an accepted dimension")));
+});
+
 test("isFamilyScreenshotDimensions accepts every Apple-published 6.9-inch iPhone and 13-inch iPad size", () => {
   for (const [width, height] of [[1320, 2868], [1290, 2796], [1260, 2736]]) assert.equal(isFamilyScreenshotDimensions("iphone", width, height), true);
   for (const [width, height] of [[2064, 2752], [2048, 2732]]) assert.equal(isFamilyScreenshotDimensions("ipad", width, height), true);
   assert.equal(isFamilyScreenshotDimensions("iphone", 100, 200), false);
+});
+
+test("prepare refuses to write the release package under a .github path", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-github-reserved-"));
+  const manifest = readyManifest(); await writeReadyAssets(root, manifest);
+  const analysis = await analyzeRepository(root);
+  const report = await preflight(root, manifest, false, analysis);
+  await assert.rejects(() => generateReleasePackage(root, manifest, analysis, report, ".github/workflows"), /reserved/);
 });
 
 test("prepare emits a manually-installed workflow_dispatch-only capture workflow with a cost-guard header, plus the harness template/contract", async () => {
@@ -196,11 +358,20 @@ test("prepare emits a manually-installed workflow_dispatch-only capture workflow
   const workflow = parse(workflowText) as Record<string, unknown>;
   assert.ok("workflow_dispatch" in (workflow.on as Record<string, unknown>));
   assert.equal(Object.keys(workflow.on as Record<string, unknown>).length, 1);
-  const jobs = workflow.jobs as Record<string, { "runs-on": string; "timeout-minutes": number }>;
+  const jobs = workflow.jobs as Record<string, { "runs-on": string; "timeout-minutes": number; steps: Array<{ name: string; run?: string; with?: Record<string, unknown> }> }>;
   const job = Object.values(jobs)[0];
   assert.equal(job["runs-on"], "macos-latest");
   assert.ok(typeof job["timeout-minutes"] === "number" && job["timeout-minutes"] > 0);
   assert.ok((workflow.concurrency as Record<string, unknown>)?.["cancel-in-progress"] === true);
+  // A zero-screenshot extraction must fail the job loudly rather than finish green with only an
+  // annotation, and the current (non-"--legacy") xcresulttool invocation must be tried first.
+  const uploadScreens = job.steps.find((step) => step.name === "Upload extracted screenshots");
+  assert.equal(uploadScreens?.with?.["if-no-files-found"], "error");
+  const extractStep = job.steps.find((step) => step.name.includes("Extract screenshot attachments"));
+  const runText = extractStep?.run || "";
+  const currentIndex = runText.indexOf("xcresulttool export attachments --path");
+  const legacyIndex = runText.indexOf("--legacy");
+  assert.ok(currentIndex >= 0 && legacyIndex > currentIndex, "the current xcresulttool syntax must be tried before --legacy");
   const template = await readFile(path.join(pkg.directory, "screenshots/ui-test-harness-template.swift"), "utf8");
   assert.ok(template.includes("keepScreenshot(named:"));
   assert.ok(template.includes("XCTAttachment(screenshot: XCUIScreen.main.screenshot())"));
