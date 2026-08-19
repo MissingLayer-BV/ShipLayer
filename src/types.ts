@@ -152,6 +152,14 @@ export interface ScreenshotScenario {
    * detected or templated UI-test harness is always written with "needs-human-confirmation" and
    * must never be silently promoted to "confirmed" by ShipLayer itself. */
   confirmation?: Confirmation;
+  /** Marketing screenshot headline: one idea per slide (sell an outcome, not a feature list). Max
+   * 100 characters, no line breaks (schema-enforced). ShipLayer never invents this — `init` always
+   * leaves it absent and records an unresolved question instead. Absent renders the slide legibly
+   * with the scenario title as a visibly-marked placeholder. Like every other proposed field on
+   * this type, a caption's trustworthiness rides on the scenario's own `confirmation`: a scenario
+   * that is not "confirmed" always renders its marketing slide with a visible draft marker,
+   * whether or not it has a caption yet — see src/marketing.ts's renderSlideHtml. */
+  caption?: string;
 }
 
 export interface ShipLayerManifest {

@@ -59,8 +59,13 @@ function manifestFromAnalysis(report: AnalysisReport, harness: DetectedScreensho
   // other detected fact here: always needs-human-confirmation, never silently promoted, and kept
   // strictly separate from privacy/purchase/AI production evidence (see isXCUITestSourcePath).
   if (harness.scenarios.length) {
+    // `caption` is deliberately left unset here: ShipLayer never invents marketing copy. The
+    // unresolved question below is the only place a human/agent is told captions are missing —
+    // `shiplayer prepare`'s generated marketing slides also render a visible placeholder (the
+    // scenario title, styled distinctly) instead of silently shipping a blank or fabricated one.
     manifest.screenshots.scenarios = harness.scenarios.map((scenario) => ({ id: scenario.id, title: scenario.title, launchArguments: scenario.launchArgumentsDetermined && scenario.launchArguments.length ? scenario.launchArguments : undefined, steps: [`Detected via existing UI test${scenario.testFunction ? ` '${scenario.testFunction}'` : ""} in ${scenario.sourceFile}. Confirm on a real device/simulator that this exact navigation reaches "${scenario.title}" before use.`, ...(scenario.launchArgumentsDetermined ? [] : ["Launch arguments could not be determined from source (set via a helper/computed value, or a mix of literal and non-literal elements) — verify and fill them in manually before use."])], confirmation: "needs-human-confirmation" as const }));
     report.unresolvedQuestions.push(`Detected ${harness.scenarios.length} screenshot scenario(s) in ${harness.sourceFiles.join(", ")}. Each is needs-human-confirmation; verify the real on-screen navigation and set confirmation: confirmed before check will pass.`);
+    report.unresolvedQuestions.push(`No marketing screenshot captions have been drafted for these ${harness.scenarios.length} scenario(s). ShipLayer does not invent captions. Add a concise, human-reviewed screenshots.scenarios[].caption (max 100 characters, no line breaks) that sells one outcome per slide — not a feature list — then run shiplayer prepare and render the marketing project at screenshots/marketing before submission.`);
   } else {
     report.unresolvedQuestions.push("No screenshot UI-test harness (a keepScreenshot(named:)-shaped XCTAttachment(screenshot:)/XCUIScreen.main.screenshot() call in a *UITests source) was detected. `shiplayer prepare` emits a fillable template and contract at screenshots/ui-test-harness-template.swift and screenshots/ui-test-harness-contract.md; add real navigation, then re-run `shiplayer init --force` or hand-edit shiplayer.yml. `check` blocks on screenshots.scenarios until at least one confirmed scenario exists.");
   }
