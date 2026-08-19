@@ -34,7 +34,7 @@ export async function analyzeRepository(repository: string): Promise<AnalysisRep
     const matched = (regex: RegExp, key: string, input = content): void => { for (const match of input.matchAll(regex)) push(key, match[1].trim(), { source, excerpt: match[0].slice(0, 220), confidence: kind === "source-heuristic" ? "medium" : "high", kind }); };
     if (projectSettingSource && !file.endsWith("project.yml")) {
       matched(/PRODUCT_BUNDLE_IDENTIFIER\s*=\s*([^;\n]+)/g, "bundleId", productionSettings);
-      matched(/MARKETING_VERSION\s*=\s*([^;\n]+)/g, "version", productionSettings); matched(/CURRENT_PROJECT_VERSION\s*=\s*([^;\n]+)/g, "build", productionSettings); matched(/IPHONEOS_DEPLOYMENT_TARGET\s*=\s*([^;\n]+)/g, "deploymentTarget", productionSettings); matched(/TARGETED_DEVICE_FAMILY\s*=\s*([^;\n]+)/g, "deviceFamily", productionSettings);
+      matched(/MARKETING_VERSION\s*=\s*([^;\n]+)/g, "version", productionSettings); matched(/CURRENT_PROJECT_VERSION\s*=\s*([^;\n]+)/g, "build", productionSettings); matched(/IPHONEOS_DEPLOYMENT_TARGET\s*=\s*([^;\n]+)/g, "deploymentTarget", productionSettings); matched(/TARGETED_DEVICE_FAMILY\s*=\s*([^;\n]+)/g, "deviceFamily", productionSettings); matched(/CODE_SIGN_STYLE\s*=\s*([^;\n]+)/g, "codeSignStyle", productionSettings);
       for (const permission of PERMISSION_KEYS) {
         const escaped = permission.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         const purposePattern = new RegExp(`INFOPLIST_KEY_${escaped}\\s*(?:=|:)\\s*(?:\\\"([^\\\"]*)\\\"|'([^']*)'|([^;\\n]+))`, "g");
@@ -134,6 +134,7 @@ const XCODEGEN_SETTINGS: Record<string, string> = {
   CURRENT_PROJECT_VERSION: "build",
   IPHONEOS_DEPLOYMENT_TARGET: "deploymentTarget",
   TARGETED_DEVICE_FAMILY: "deviceFamily",
+  CODE_SIGN_STYLE: "codeSignStyle",
 };
 
 /**
