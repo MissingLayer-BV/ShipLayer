@@ -7,7 +7,7 @@ import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFinding
 import { detectScreenshotHarness } from "./scanner.js";
 
 export interface PreparedPackage { directory: string; files: string[] }
-const RESERVED_OUTPUT_ROOTS = new Set([".git", ".shiplayer-staging", "node_modules", "pods", "carthage", "deriveddata", "build", ".build", "dist", ".swiftpm", "vendor", "release", "shiplayer.yml"]);
+const RESERVED_OUTPUT_ROOTS = new Set([".git", ".github", ".shiplayer-staging", "node_modules", "pods", "carthage", "deriveddata", "build", ".build", "dist", ".swiftpm", "vendor", "release", "shiplayer.yml"]);
 export async function generateReleasePackage(repository: string, manifest: ShipLayerManifest, analysis: AnalysisReport, preflight: PreflightReport, outputDirectory: string): Promise<PreparedPackage> {
   assertManifestPaths(manifest); const outputRelative = safeRelativePath(outputDirectory, "--out"); assertOutputPath(outputRelative); assertOutputDoesNotCollide(manifest, outputRelative); const out = await resolveContained(repository, outputRelative, "--out"); await ensureOutputParent(repository, outputRelative); await assertManagedDestination(out); const stage = await createStage(repository); const files: string[] = []; const emit = async (relativePath: string, contents: string): Promise<void> => { assertNoSecretOutput(contents, relativePath); await writeText(path.join(stage, relativePath), contents); files.push(relativePath); };
   try {
@@ -164,10 +164,15 @@ function recordingScript(manifest: ShipLayerManifest, analysis: AnalysisReport):
   const aiEvidence = manifest.aiDataSharing.enabled || classifiedAiEndpointFindings(analysis).strong.length > 0;
   const storeKitEvidence = manifest.monetization.type === "subscriptions" || manifest.monetization.type === "non-consumables" || storekitPurchaseEvidence(analysis).length > 0;
   const gates = [aiEvidence ? "Show the complete AI data/recipient disclosure, privacy link, explicit permission action, and decline/manual path before any network transmission." : "", storeKitEvidence ? "Show StoreKit's localized price visibly loaded before the enabled purchase action, then show purchase and Restore Purchases." : ""].filter(Boolean);
-  return `# Physical-device App Review recording\n\nRecord one continuous video on a physical device. Begin by launching the current submitted build. Show any permission prompt, login, paywall/purchase/restore flow, and the core workflow. Do not use a simulator recording.\n${gates.map((gate) => `- ${gate}`).join("\n")}\n\n${scenarios.map((scenario, index) => `## ${index + 1}. ${scenario.title}\n${scenario.launchArguments?.length ? `Launch arguments: ${scenario.launchArguments.join(" ")}\n` : ""}${scenario.steps.map((step) => `- ${step}`).join("\n")}`).join("\n\n")}\n`;
+  return `# Physical-device App Review recording\n\nRecord one continuous video on a physical device. Begin by launching the current submitted build. Show any permission prompt, login, paywall/purchase/restore flow, and the core workflow. Do not use a simulator recording.\n${gates.map((gate) => `- ${gate}`).join("\n")}\n\n${scenarios.map((scenario, index) => `## ${index + 1}. ${scenario.title}${scenario.confirmation && scenario.confirmation !== "confirmed" ? ` — UNVERIFIED (confirmation: ${scenario.confirmation})` : ""}\n${scenario.launchArguments?.length ? `Launch arguments: ${scenario.launchArguments.join(" ")}\n` : ""}${scenario.steps.map((step) => `- ${step}`).join("\n")}`).join("\n\n")}\n`;
 }
-function capturePlan(manifest: ShipLayerManifest): object { return { command: "shiplayer capture <repo>", prerequisites: ["macOS with Xcode for direct simulator capture", "Configured scheme and launch arguments", "No paid CI is used automatically"], configurations: manifest.screenshots.configurations.map((configuration) => ({ ...configuration, outputDirectory: `${manifest.screenshots.rawOutputDir}/${configuration.family}/${configuration.locale}`, scenarios: manifest.screenshots.scenarios.map((scenario) => ({ id: scenario.id, outputFile: `${scenario.id}.png`, title: scenario.title, launchArguments: scenario.launchArguments || [], steps: scenario.steps })) })), note: "This is a neutral hand-off. Create or use a separate app-store-screenshots scaffold/template; this JSON is not directly importable by that editor. Raw device screenshots must show the actual app and use each scenario ID as the filename." }; }
-function marketingProject(manifest: ShipLayerManifest): object { return { version: 1, purpose: "Neutral hand-off plan for a separately installed app-store-screenshots editor; not an editor project file.", rawScreenshotRoot: manifest.screenshots.rawOutputDir, decks: manifest.screenshots.configurations.map((configuration) => ({ family: configuration.family, device: configuration.device, locale: configuration.locale, outputPath: `${manifest.screenshots.rawOutputDir}/${configuration.family}/${configuration.locale}/{scenario-id}.png`, slides: manifest.screenshots.scenarios.map((scenario, index) => ({ id: scenario.id, order: index, headline: scenario.title, body: scenario.steps[0] || "Describe this feature" })) })) }; }
+// A scenario's confirmation status must survive into every generated artifact that repeats its
+// proposed values as an instruction — otherwise a still-needs-human-confirmation scenario (e.g.
+// one detected from an existing harness, never yet verified) reads as a plain fact in the release
+// package with no marker that it has not been confirmed. Absent confirmation is written through
+// as "confirmed" (matching the same backward-compatible default a hand-authored scenario gets).
+function capturePlan(manifest: ShipLayerManifest): object { return { command: "shiplayer capture <repo>", prerequisites: ["macOS with Xcode for direct simulator capture", "Configured scheme and launch arguments", "No paid CI is used automatically"], configurations: manifest.screenshots.configurations.map((configuration) => ({ ...configuration, outputDirectory: `${manifest.screenshots.rawOutputDir}/${configuration.family}/${configuration.locale}`, scenarios: manifest.screenshots.scenarios.map((scenario) => ({ id: scenario.id, outputFile: `${scenario.id}.png`, title: scenario.title, launchArguments: scenario.launchArguments || [], steps: scenario.steps, confirmation: scenario.confirmation || "confirmed" })) })), note: "This is a neutral hand-off. Create or use a separate app-store-screenshots scaffold/template; this JSON is not directly importable by that editor. Raw device screenshots must show the actual app and use each scenario ID as the filename. A scenario whose confirmation is not \"confirmed\" is an unverified proposal, not a fact." }; }
+function marketingProject(manifest: ShipLayerManifest): object { return { version: 1, purpose: "Neutral hand-off plan for a separately installed app-store-screenshots editor; not an editor project file.", rawScreenshotRoot: manifest.screenshots.rawOutputDir, decks: manifest.screenshots.configurations.map((configuration) => ({ family: configuration.family, device: configuration.device, locale: configuration.locale, outputPath: `${manifest.screenshots.rawOutputDir}/${configuration.family}/${configuration.locale}/{scenario-id}.png`, slides: manifest.screenshots.scenarios.map((scenario, index) => ({ id: scenario.id, order: index, headline: scenario.title, body: scenario.steps[0] || "Describe this feature", confirmation: scenario.confirmation || "confirmed" })) })) }; }
 // --- screenshot UI-test harness template / contract / manual-dispatch capture workflow --------
 // Three artifacts, all written only into shiplayer-release/screenshots/ (never into the target
 // app repository's own source tree or .github/): a fillable Swift template, its written contract,
@@ -178,6 +183,16 @@ function swiftIdentifier(name: string): string {
   const words = name.replace(/[^A-Za-z0-9]+/g, " ").trim().split(/\s+/).filter(Boolean).map((word) => word.charAt(0).toUpperCase() + word.slice(1));
   const candidate = words.join("") || "App";
   return /^[0-9]/.test(candidate) ? `App${candidate}` : candidate;
+}
+/** Two distinct scenario ids can collapse to the same PascalCase identifier (e.g. "home-2" and
+ * "home2" both -> "Home2"), which would emit two Swift methods with the same name and fail to
+ * compile. Dedupe within one generated file by appending a numeric suffix on collision. */
+function uniqueSwiftTestName(scenarioId: string, used: Set<string>): string {
+  const base = `testScreenshot${swiftIdentifier(scenarioId)}`;
+  let candidate = base; let suffix = 2;
+  while (used.has(candidate)) candidate = `${base}${suffix++}`;
+  used.add(candidate);
+  return candidate;
 }
 
 function screenshotHarnessTemplate(manifest: ShipLayerManifest, harnessAlreadyExists: boolean): string {
@@ -208,11 +223,12 @@ function screenshotHarnessTemplate(manifest: ShipLayerManifest, harnessAlreadyEx
     `final class ${className}: XCTestCase {`,
     ""
   );
+  const usedTestNames = new Set<string>();
   for (const scenario of scenarios) {
     const args = scenario.launchArguments?.length ? scenario.launchArguments.map((value) => JSON.stringify(value)).join(", ") : "";
     lines.push(
       "    @MainActor",
-      `    func testScreenshot${swiftIdentifier(scenario.id)}() {`,
+      `    func ${uniqueSwiftTestName(scenario.id, usedTestNames)}() {`,
       "        let app = XCUIApplication()",
       `        app.launchArguments = [${args}] // TODO: confirm/extend the launch arguments this app state actually needs`,
       "        app.launch()",
@@ -274,7 +290,12 @@ function screenshotCaptureWorkflow(manifest: ShipLayerManifest, harness: { sourc
   const primaryConfig = manifest.screenshots.configurations.find((configuration) => configuration.family === "iphone") || manifest.screenshots.configurations[0];
   const simulatorDefault = primaryConfig?.device || "iPhone 16 Pro Max";
   const schemeDefault = manifest.app.name || "";
-  const onlyTestingDefault = harness.sourceFiles.length === 1 ? path.basename(harness.sourceFiles[0]).replace(/\.(?:swift|m|mm)$/i, "") : "";
+  // A bare class name (e.g. "ScreenshotTests") is not, by itself, valid -only-testing: syntax —
+  // xcodebuild resolves an unqualified name as a TARGET, so a class-only guess for a target whose
+  // folder name differs from its class name burns a full build before failing to find it. Xcode's
+  // own convention is that the containing folder name is normally the target name, so guess the
+  // safer "Target/Class" form from the source file's own directory rather than its bare basename.
+  const onlyTestingDefault = harness.sourceFiles.length === 1 ? onlyTestingGuess(harness.sourceFiles[0]) : "";
   const artifactName = `shiplayer-screenshots-${(manifest.app.bundleId || manifest.app.name || "app").replace(/[^A-Za-z0-9._-]+/g, "-")}`;
   const lines: string[] = [
     "# ShipLayer-generated screenshot capture workflow.",
@@ -290,9 +311,11 @@ function screenshotCaptureWorkflow(manifest: ShipLayerManifest, harness: { sourc
     "#",
     "# xcresulttool's attachment-export syntax has changed across Xcode versions; ShipLayer could not",
     "# verify it against a real Xcode toolchain when generating this file (only Command Line Tools",
-    "# were available in that environment). Verify the extraction step succeeds on its first real",
-    "# run and adjust the xcresulttool invocation for your Xcode version if it does not — the raw",
-    "# .xcresult bundle is always uploaded too, so nothing is lost if automatic extraction fails.",
+    "# were available in that environment). It tries the current \"export attachments\" form first,",
+    "# then the older --legacy form; verify the extraction step actually finds files on its first",
+    "# real run and adjust the xcresulttool invocation for your Xcode version if it does not. If",
+    "# extraction finds nothing, this job fails loudly (no silent green run with zero screenshots)",
+    "# and the raw .xcresult bundle is uploaded instead so you can extract manually.",
     "",
     "name: ShipLayer screenshot capture",
     "",
@@ -308,7 +331,7 @@ function screenshotCaptureWorkflow(manifest: ShipLayerManifest, harness: { sourc
     "        required: true",
     `        default: ${yamlDoubleQuoted(simulatorDefault)}`,
     "      only_testing:",
-    "        description: \"xcodebuild -only-testing target/class, e.g. MyAppUITests/MyAppScreenshotUITests; leave blank to run every test in the scheme\"",
+    "        description: \"xcodebuild -only-testing Target/Class, e.g. MyAppUITests/MyAppScreenshotUITests. The default is a best-effort guess from the detected source file and directory name — verify it names your real UI Testing target before running, or every UI test in the scheme runs on this 10x-billed runner. Leave blank only if you accept that cost.\"",
     "        required: false",
     `        default: ${yamlDoubleQuoted(onlyTestingDefault)}`,
     "",
@@ -342,12 +365,14 @@ function screenshotCaptureWorkflow(manifest: ShipLayerManifest, harness: { sourc
     "            \"${EXTRA[@]}\"",
     "",
     "      - name: Extract screenshot attachments from the .xcresult",
+    "        id: extract",
     "        if: always()",
     "        run: |",
     "          mkdir -p RawScreenshots",
-    "          xcrun xcresulttool export attachments --path TestResults/ShipLayerScreenshots.xcresult --output-path RawScreenshots --legacy \\",
-    "            || xcrun xcresulttool export attachments --path TestResults/ShipLayerScreenshots.xcresult --output-path RawScreenshots \\",
-    "            || echo \"::warning::Automatic attachment extraction failed; download the uploaded .xcresult artifact and extract manually.\"",
+    "          xcrun xcresulttool export attachments --path TestResults/ShipLayerScreenshots.xcresult --output-path RawScreenshots \\",
+    "            || xcrun xcresulttool export attachments --path TestResults/ShipLayerScreenshots.xcresult --output-path RawScreenshots --legacy \\",
+    "            || echo \"::warning::Automatic attachment extraction failed; download the uploaded .xcresult artifact below and extract manually.\"",
+    "          if find RawScreenshots -type f 2>/dev/null | grep -q .; then echo \"found=true\" >> \"$GITHUB_OUTPUT\"; else echo \"found=false\" >> \"$GITHUB_OUTPUT\"; fi",
     "",
     "      - name: Upload extracted screenshots",
     "        if: always()",
@@ -355,21 +380,22 @@ function screenshotCaptureWorkflow(manifest: ShipLayerManifest, harness: { sourc
     "        with:",
     `          name: ${artifactName}`,
     "          path: RawScreenshots",
-    "          if-no-files-found: warn",
+    "          if-no-files-found: error",
     "          retention-days: 14",
     "",
-    "      - name: Upload raw .xcresult (fallback for manual extraction)",
-    "        if: always()",
+    "      - name: Upload raw .xcresult (only kept when automatic extraction found nothing, as the fallback for manual extraction)",
+    "        if: always() && steps.extract.outputs.found != 'true'",
     "        uses: actions/upload-artifact@v7",
     "        with:",
     `          name: ${artifactName}-xcresult`,
     "          path: TestResults/ShipLayerScreenshots.xcresult",
     "          if-no-files-found: warn",
-    "          retention-days: 14"
+    "          retention-days: 5"
   ];
   return `${lines.join("\n")}\n`;
 }
-function yamlDoubleQuoted(value: string): string { return `"${value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`; }
+function yamlDoubleQuoted(value: string): string { const escaped = value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\r\n|\r|\n/g, "\\n").replace(/\t/g, "\\t"); return `"${escaped}"`; }
+function onlyTestingGuess(sourceFile: string): string { const base = path.basename(sourceFile).replace(/\.(?:swift|m|mm)$/i, ""); const directory = path.dirname(sourceFile); const target = directory === "." ? base : path.basename(directory); return `${target}/${base}`; }
 
 async function storeKitChecklist(repository: string, manifest: ShipLayerManifest, analysis: AnalysisReport): Promise<string> {
   const lines = ["# StoreKit / App Store Connect checklist", "", `Monetization model: **${manifest.monetization.type}**`, ""];
