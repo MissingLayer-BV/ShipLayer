@@ -9,16 +9,24 @@ import { validateAscPrivateKey } from "./asc.js";
 import { appReviewNotes } from "./generator.js";
 import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, isNonProductionSourcePath, MONETIZATION_CONTRADICTION_FINDING, resolveContradictionOverride, storekitPurchaseEvidence } from "./evidence.js";
 
-const IPHONE_SCREENSHOT_DIMENSIONS = new Set([
-  "1320x2868", // iPhone 6.9-inch
-  "1290x2796", // iPhone 6.9-inch
-  "1260x2736", // iPhone 6.7-inch
+// Apple requires ONE uniform size per required display class, and the classes are not
+// interchangeable: a 6.5-inch capture does not satisfy the 6.9-inch slot. Each display class is
+// its own Set so a per-image gate can check "is this an accepted size for THIS configuration's
+// class", not "is this an accepted size somewhere in the whole family" (the latter let a 6.5-inch
+// pair pass a 6.9-inch-configured slot — see acceptedDimensionsForConfig below).
+const IPHONE_69_INCH_DIMENSIONS = new Set([
+  "1320x2868", // iPhone 6.9-inch (e.g. iPhone 16 Pro Max)
+  "1290x2796", // iPhone 6.9-inch (e.g. iPhone 17 Pro Max/Air)
+  "1260x2736" // iPhone 6.9-inch (e.g. iPhone 17 Pro Max/Air, alternate build)
+]);
+const IPHONE_65_INCH_DIMENSIONS = new Set([
   "1242x2688", // iPhone 6.5-inch
   "1284x2778" // iPhone 6.5-inch legacy
 ]);
+const IPHONE_SCREENSHOT_DIMENSIONS = new Set([...IPHONE_69_INCH_DIMENSIONS, ...IPHONE_65_INCH_DIMENSIONS]);
 const IPAD_SCREENSHOT_DIMENSIONS = new Set([
   "2064x2752", // iPad 13-inch
-  "2048x2732" // iPad 12.9-inch
+  "2048x2732" // iPad 13-inch (12.9-inch legacy hardware, same required slot)
 ]);
 // Storefront decks use the focused current marketing classes above. App Review
 // screenshots may use any supported capture size for a declared device family.
@@ -443,10 +451,12 @@ function screenshotConfigurationChecks(manifest: ShipLayerManifest, add: Add): v
   else add("screenshots.scenarios", "pass", `${manifest.screenshots.scenarios.length} screenshot scenarios are defined.`);
   // A scenario detected from an existing UI-test harness, or copied from the generated template,
   // is never silently promoted to confirmed — a human must verify the real on-screen navigation.
-  // A scenario with no confirmation field at all (hand-authored directly in shiplayer.yml before
-  // this field existed) is treated as implicitly confirmed for backward compatibility.
+  // An absent confirmation field also blocks (rather than being treated as implicitly confirmed):
+  // `init` always writes it explicitly now, so the only way to see it absent is a hand-authored
+  // scenario or someone deleting the line to dodge review, and treating that as "confirmed" would
+  // make deletion a silent, undetectable bypass of this exact gate.
   for (const scenario of manifest.screenshots.scenarios) {
-    if (scenario.confirmation && scenario.confirmation !== "confirmed") add(`screenshots.scenarios.${scenario.id}.confirmation`, "block", `Screenshot scenario '${scenario.id}' is not human-confirmed.`, "Verify the detected/templated scenario's real on-screen navigation, then set confirmation: confirmed.");
+    if (scenario.confirmation !== "confirmed") add(`screenshots.scenarios.${scenario.id}.confirmation`, "block", `Screenshot scenario '${scenario.id}' is not human-confirmed.`, "Verify the real on-screen navigation, then set confirmation: confirmed.");
   }
 }
 
@@ -464,26 +474,44 @@ async function screenshotChecks(repository: string, manifest: ShipLayerManifest,
     if (!imageFiles.length) { add(id, "block", `No PNG/JPEG screenshots found for ${config.family}/${config.locale}.`, "Capture at least one actual app screenshot."); continue; }
     if (imageFiles.length > 10) add(`${id}.count`, "block", `${imageFiles.length} screenshots found; App Store allows at most 10.`);
     else add(`${id}.count`, "pass", `${imageFiles.length} screenshot(s) found.`);
-    // Apple accepts multiple dimensions per required display class (a 6.9" iPhone capture may
+    // Apple accepts multiple dimensions per required DISPLAY CLASS (a 6.9" iPhone capture may
     // legitimately be 1320x2868, 1290x2796, or 1260x2736 depending on which simulator produced
-    // it), so any of them passes here — matching config.requiredDimensions exactly is not
-    // required. What IS required is that every screenshot actually captured for this one
-    // family/locale slot agrees with the others, because App Store Connect accepts only one
-    // uniform size per screenshot set; the first accepted image in the directory sets that
-    // reference, and every other image in the same directory must match it.
+    // it), so any size within THIS configuration's own class passes — but a 6.5-inch capture
+    // must never satisfy a 6.9-inch-configured slot, so the accepted set is scoped to the class
+    // config.requiredDimensions itself belongs to, never the whole iphone/ipad family. What IS
+    // required is that every screenshot actually captured for this one family/locale slot is
+    // EXACTLY identical to the others in both width and height (no orientation-swap tolerance
+    // here — a portrait image and its landscape transpose are not "the same size" for a single
+    // screenshot set); the first accepted image in the directory sets that reference.
+    const acceptedForConfig = acceptedDimensionsForConfig(config);
     let reference: { width: number; height: number; image: string } | undefined;
     for (const image of imageFiles) {
       const details = await inspectImage(path.join(directory, image));
       const imageId = `${id}.${image}`;
       if (!details) { add(imageId, "block", `Could not inspect ${image}; use a readable PNG/JPEG without alpha.`); continue; }
       if (details.alpha) add(`${imageId}.alpha`, "block", `${image} has an alpha channel.`, "Export a flattened PNG/JPEG without transparency.");
-      if (!isFamilyScreenshotDimensions(config.family, details.width, details.height)) { add(`${imageId}.accepted-dimensions`, "block", `${image} is ${details.width}×${details.height}, which is not an accepted ${config.family} App Store screenshot dimension.`, "Export an accepted screenshot size for the configured family."); continue; }
+      if (!acceptedForConfig.has(`${details.width}x${details.height}`) && !acceptedForConfig.has(`${details.height}x${details.width}`)) { add(`${imageId}.accepted-dimensions`, "block", `${image} is ${details.width}×${details.height}, which is not an accepted dimension for this ${config.family} ${dimensionClassLabel(config)} configuration (expected one of ${[...acceptedForConfig].join(", ") || "none — the configured requiredDimensions itself is not a recognized App Store size"}).`, "Export an accepted screenshot size for the configured display class."); continue; }
       if (!reference) { reference = { width: details.width, height: details.height, image }; add(`${imageId}.dimensions`, "pass", `${image} is an accepted ${config.family} dimension (${details.width}×${details.height}).`); }
-      else if (!sameOrientationOrReverse(details.width, details.height, reference.width, reference.height)) add(`${imageId}.dimensions`, "block", `${image} is ${details.width}×${details.height}, which differs from ${reference.image} (${reference.width}×${reference.height}) already in this set; App Store Connect requires one uniform size per screenshot set.`, "Re-export every screenshot in this locale/family at the same accepted dimension.");
+      else if (details.width !== reference.width || details.height !== reference.height) add(`${imageId}.dimensions`, "block", `${image} is ${details.width}×${details.height}, which differs from ${reference.image} (${reference.width}×${reference.height}) already in this set; App Store Connect requires one uniform size per screenshot set.`, "Re-export every screenshot in this locale/family at the same exact dimension.");
       else add(`${imageId}.dimensions`, "pass", `${image} matches ${reference.image}'s dimensions.`);
     }
-    const scenarioIds = new Set(manifest.screenshots.scenarios.map((scenario) => scenario.id));
-    for (const scenario of scenarioIds) if (!imageFiles.some((image) => path.basename(image, path.extname(image)) === scenario || path.basename(image).startsWith(`${scenario}-`))) add(`${id}.${scenario}`, "block", `No screenshot file corresponds to scenario '${scenario}'.`, `Capture ${scenario}.png (or ${scenario}-*.png) for this declared scenario.`);
+    // Coverage: a file satisfies a scenario via an exact stem match, or via the `<id>-*` wildcard
+    // convention — but only when this scenario's id is the MOST SPECIFIC (longest) declared id
+    // the file could plausibly belong to. Without this, a scenario id that is itself a hyphenated
+    // extension of another id (e.g. a dedup suffix "home" / "home-2") lets one file such as
+    // home-2.png satisfy both scenarios at once, silently passing a set that is missing a real
+    // screenshot for "home".
+    const scenarioIds = manifest.screenshots.scenarios.map((scenario) => scenario.id);
+    for (const scenario of new Set(scenarioIds)) {
+      const covered = imageFiles.some((image) => {
+        const stem = path.basename(image, path.extname(image));
+        if (stem === scenario) return true;
+        if (!stem.startsWith(`${scenario}-`)) return false;
+        const mostSpecific = scenarioIds.filter((candidate) => stem === candidate || stem.startsWith(`${candidate}-`)).sort((a, b) => b.length - a.length)[0];
+        return mostSpecific === scenario;
+      });
+      if (!covered) add(`${id}.${scenario}`, "block", `No screenshot file corresponds to scenario '${scenario}'.`, `Capture ${scenario}.png (or ${scenario}-*.png) for this declared scenario.`);
+    }
   }
 }
 
@@ -1228,6 +1256,26 @@ async function evidenceText(repository: string, evidence: string[]): Promise<{ c
 // ingestion pre-check read Apple's accepted dimensions from this single table — never two
 // independently-maintained copies that could drift.
 export function isFamilyScreenshotDimensions(family: "iphone" | "ipad", width: number, height: number): boolean { const supported = family === "iphone" ? IPHONE_SCREENSHOT_DIMENSIONS : IPAD_SCREENSHOT_DIMENSIONS; return supported.has(`${width}x${height}`) || supported.has(`${height}x${width}`); }
+// Scopes the accepted set to the DISPLAY CLASS a configuration's own requiredDimensions belongs
+// to (e.g. 6.9-inch vs 6.5-inch iPhone), not the whole iphone/ipad family — two classes both
+// containing dimensions accepted "somewhere" is exactly how a 6.5-inch pair previously passed a
+// 6.9-inch-configured slot. Returns an empty Set when requiredDimensions itself is not a
+// recognized size at all (screenshotConfigurationChecks already blocks that configuration on its
+// own; every per-image check then correctly fails closed instead of silently accepting anything).
+export function acceptedDimensionsForConfig(config: { family: "iphone" | "ipad"; requiredDimensions: { width: number; height: number } }): Set<string> {
+  if (config.family === "ipad") return IPAD_SCREENSHOT_DIMENSIONS;
+  const key = `${config.requiredDimensions.width}x${config.requiredDimensions.height}`; const keyReverse = `${config.requiredDimensions.height}x${config.requiredDimensions.width}`;
+  if (IPHONE_69_INCH_DIMENSIONS.has(key) || IPHONE_69_INCH_DIMENSIONS.has(keyReverse)) return IPHONE_69_INCH_DIMENSIONS;
+  if (IPHONE_65_INCH_DIMENSIONS.has(key) || IPHONE_65_INCH_DIMENSIONS.has(keyReverse)) return IPHONE_65_INCH_DIMENSIONS;
+  return new Set();
+}
+function dimensionClassLabel(config: { family: "iphone" | "ipad"; requiredDimensions: { width: number; height: number } }): string {
+  if (config.family === "ipad") return "13-inch";
+  const accepted = acceptedDimensionsForConfig(config);
+  if (accepted === IPHONE_69_INCH_DIMENSIONS) return "6.9-inch";
+  if (accepted === IPHONE_65_INCH_DIMENSIONS) return "6.5-inch";
+  return "unrecognized-display-class";
+}
 async function nonEmptySafeIconBundle(directory: string): Promise<boolean> {
   const pending = [directory]; let entries = 0; let contentFiles = 0;
   while (pending.length) {
@@ -1243,4 +1291,3 @@ async function nonEmptySafeIconBundle(directory: string): Promise<boolean> {
   return contentFiles > 0;
 }
 function isReviewScreenshotDimension(manifest: ShipLayerManifest, width: number, height: number): boolean { return manifest.app.deviceFamilies.some((family) => { const supported = family === "iphone" ? IPHONE_REVIEW_SCREENSHOT_DIMENSIONS : IPAD_REVIEW_SCREENSHOT_DIMENSIONS; return supported.has(`${width}x${height}`) || supported.has(`${height}x${width}`); }); }
-export function sameOrientationOrReverse(width: number, height: number, expectedWidth: number, expectedHeight: number): boolean { return (width === expectedWidth && height === expectedHeight) || (width === expectedHeight && height === expectedWidth); }
