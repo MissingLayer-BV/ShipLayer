@@ -25,19 +25,34 @@ function intersects(left: Iterable<string>, right: Set<string>): boolean { for (
 // A finding whose only evidence lives under a fixtures/samples/examples/docs/testdata directory,
 // or a conventional test-only path, is not production evidence: it must not by itself force a
 // contradiction block, and it must not be counted as an unresolved production finding either.
+//
+// Single, exported source of truth: preflight.ts's evidence-role checks (production source
+// evidence for AI consent / purchase presentation) import isNonProductionSourcePath and
+// isNonProductionEvidenceDirectory from here instead of keeping their own copies. Two
+// independently-maintained copies of this exact predicate already drifted once (examples? was
+// added here but not there, which meant preflight.ts would accept Examples/ConsentView.swift as
+// valid production evidence for an in-app AI disclosure while this file correctly refused to
+// treat an endpoint finding sourced only from Examples/ as production evidence) — accepting the
+// wrong evidence for a disclosure screen is a false pass on the exact App Review surface
+// (5.1.1(i)) this project exists to protect, so this must never have two answers.
 
-export function isFixtureOrTestEvidencePath(file: string): boolean {
+export function isNonProductionSourcePath(file: string): boolean {
   const normalized = file.replace(/\\/g, "/");
   const parts = normalized.split("/");
   const basename = parts.at(-1) || "";
-  const testOnly = parts.includes("app-store-screenshots")
+  return parts.includes("app-store-screenshots")
     || /\.d\.ts$/i.test(basename)
     || parts.some((component) => /(?:UI)?Tests$|^(?:scripts?|benchmarks?)$/i.test(component))
     || /(?:UI)?Tests?\.(?:swift|m|mm)$/i.test(basename)
     || /(?:\.test|\.spec)\.[cm]?[jt]sx?$/i.test(basename)
     || /(?:UI)?Tests?\.xcconfig$/i.test(basename);
-  const nonProductionDirectory = parts.some((component) => /^(?:fixtures?|samples?|examples?|docs?|testdata)$/i.test(component));
-  return testOnly || nonProductionDirectory;
+}
+export function isNonProductionEvidenceDirectory(file: string): boolean {
+  const parts = file.replace(/\\/g, "/").split("/");
+  return parts.some((component) => /^(?:fixtures?|samples?|examples?|docs?|testdata)$/i.test(component));
+}
+export function isFixtureOrTestEvidencePath(file: string): boolean {
+  return isNonProductionSourcePath(file) || isNonProductionEvidenceDirectory(file);
 }
 
 /** Drops fixture/sample/example/docs/test-only evidence entries; drops a finding entirely if nothing production-relevant is left. */
@@ -100,7 +115,15 @@ const AI_PROVIDER_API_ONLY_HOST_PATTERNS = [/(?:^|\.)aiplatform\.googleapis\.com
 const AI_API_PATH_PATTERN = /\/(?:v\d+\/)?(?:chat\/completions|messages|generate|inference|completions|embeddings)(?:\/|$)/i;
 
 function apexMatch(host: string, apex: string): boolean { return host === apex || host.endsWith(`.${apex}`); }
-function isApiLabeledSubdomain(host: string): boolean { const label = host.split(".")[0]; return label === "api" || label.startsWith("api-"); }
+// "api-" is not exclusively an API-only signal: api-docs.<provider>, api-reference.<provider>, and
+// similar are a real documentation-hosting convention, not the API itself. Exclude those specific
+// doc-ish labels rather than trusting every "api-" prefix.
+const API_LABEL_DOC_EXCEPTIONS = new Set(["api-docs", "api-doc", "api-reference", "api-ref", "api-help"]);
+function isApiLabeledSubdomain(host: string): boolean {
+  const label = host.split(".")[0];
+  if (API_LABEL_DOC_EXCEPTIONS.has(label)) return false;
+  return label === "api" || label.startsWith("api-");
+}
 function isMixedProviderApex(host: string): boolean { return AI_PROVIDER_MIXED_APEX_HOSTS.some((apex) => apexMatch(host, apex)); }
 function isApiOnlyProviderHost(host: string): boolean {
   if (AI_PROVIDER_EXACT_API_ONLY_HOSTS.has(host)) return true;
@@ -126,7 +149,9 @@ function isApiOnlyProviderHost(host: string): boolean {
 export function classifyAiEndpoint(endpointUrl: string): "provider" | "path-shape" | "policy" | "none" {
   let url: URL;
   try { url = new URL(endpointUrl); } catch { return "none"; }
-  const host = url.hostname.toLowerCase();
+  // DNS (and URLSession) treat "api.openai.com" and "api.openai.com." as the same host; a
+  // trailing root-label dot must not evade every apex/exact/pattern match below.
+  const host = url.hostname.toLowerCase().replace(/\.$/, "");
   if (isApiOnlyProviderHost(host)) return "provider";
   if (isMixedProviderApex(host)) return AI_API_PATH_PATTERN.test(url.pathname) ? "provider" : "policy";
   return AI_API_PATH_PATTERN.test(url.pathname) ? "path-shape" : "none";

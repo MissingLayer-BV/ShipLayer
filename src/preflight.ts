@@ -7,7 +7,7 @@ import { resolveContained, walkRepository } from "./fs.js";
 import { inspectImage } from "./image.js";
 import { validateAscPrivateKey } from "./asc.js";
 import { appReviewNotes } from "./generator.js";
-import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, MONETIZATION_CONTRADICTION_FINDING, resolveContradictionOverride, storekitPurchaseEvidence } from "./evidence.js";
+import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, isNonProductionSourcePath, MONETIZATION_CONTRADICTION_FINDING, resolveContradictionOverride, storekitPurchaseEvidence } from "./evidence.js";
 
 const IPHONE_SCREENSHOT_DIMENSIONS = new Set([
   "1320x2868", // iPhone 6.9-inch
@@ -683,12 +683,11 @@ function isRelevantSourcePath(file: string): boolean {
   const normalized = file.replace(/\\/g, "/");
   return !isNonProductionSourcePath(normalized) && /(?:^|\/)(?:project\.yml|project\.pbxproj|Info\.plist|\.xcconfig|PrivacyInfo\.xcprivacy|[^/]+\.(?:swift|m|mm|h|ts|tsx|js|jsx|mjs|cjs|mts|cts|entitlements|storekit))$/i.test(normalized);
 }
-function isNonProductionSourcePath(file: string): boolean { const parts = file.replace(/\\/g, "/").split("/"); const basename = parts.at(-1) || ""; return parts.includes("app-store-screenshots") || /\.d\.ts$/i.test(basename) || parts.some((component) => /(?:UI)?Tests$|^(?:scripts?|benchmarks?)$/i.test(component)) || /(?:UI)?Tests?\.(?:swift|m|mm)$/i.test(basename) || /(?:\.test|\.spec)\.[cm]?[jt]sx?$/i.test(basename) || /(?:UI)?Tests?\.xcconfig$/i.test(basename); }
 function isProductionSourceEvidencePath(file: string): boolean {
   const normalized = file.replace(/\\/g, "/");
   const parts = normalized.split("/");
   return !isNonProductionSourcePath(normalized)
-    && !parts.some((component) => /^(?:fixtures?|samples?|docs?|testdata)$/i.test(component))
+    && !parts.some((component) => /^(?:fixtures?|samples?|examples?|docs?|testdata)$/i.test(component))
     && /\.(?:swift|m|mm)$/i.test(normalized);
 }
 function isTestSourceEvidencePath(file: string): boolean {
