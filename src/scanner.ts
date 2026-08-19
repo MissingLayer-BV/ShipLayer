@@ -2,6 +2,7 @@ import path from "node:path";
 import { parse } from "yaml";
 import { readText, relative, walkRepository } from "./fs.js";
 import type { AnalysisReport, Evidence, Finding } from "./types.js";
+import { isXCUITestSourcePath } from "./evidence.js";
 
 const PERMISSION_KEYS = ["NSCameraUsageDescription", "NSPhotoLibraryUsageDescription", "NSPhotoLibraryAddUsageDescription", "NSMicrophoneUsageDescription", "NSLocationWhenInUseUsageDescription", "NSUserTrackingUsageDescription", "NSContactsUsageDescription", "NSFaceIDUsageDescription"];
 const APPLE_FRAMEWORKS = new Set(["URLSession", "StoreKit", "UserNotifications", "Photos", "AVFoundation", "CoreLocation", "Contacts"]);
@@ -435,3 +436,170 @@ function isCredentialLikePathSegment(value: string): boolean {
 }
 
 export function findValue(report: AnalysisReport, key: string): string | undefined { const value = report.findings.find((finding) => finding.key === key)?.value; return typeof value === "string" ? value : undefined; }
+
+// --- screenshot UI-test harness detection ------------------------------------------------------
+// A screenshot scenario legitimately only exists in a UI-test target, so this pass deliberately
+// re-reads exactly the XCUITest sources the main loop above excludes from production evidence
+// (via isXCUITestSourcePath, not isNonProductionSourcePath — see evidence.ts). It only ever
+// proposes screenshots.scenarios entries; it must never feed privacy/purchase/AI findings.
+
+export interface DetectedScreenshotScenario { id: string; title: string; launchArguments: string[]; launchArgumentsDetermined: boolean; sourceFile: string; testFunction?: string }
+export interface DetectedScreenshotHarness { scenarios: DetectedScreenshotScenario[]; sourceFiles: string[] }
+
+/**
+ * Looks for the exact contract ShipLayer's own generated template uses (see
+ * screenshotHarnessTemplate in generator.ts): a helper shaped `func <name>(named x: String)` that
+ * builds `XCTAttachment(screenshot: XCUIScreen.main.screenshot())` and keeps it. Detection is
+ * intentionally literal rather than a full Swift parse — a file must contain both the attachment
+ * construction and the screenshot call before any extraction runs at all, so an unrelated helper
+ * named e.g. `named(...)` elsewhere cannot produce a false positive.
+ */
+export async function detectScreenshotHarness(repository: string): Promise<DetectedScreenshotHarness> {
+  const root = path.resolve(repository);
+  const walked = await walkRepository(root);
+  const scenarios: DetectedScreenshotScenario[] = [];
+  const sourceFiles: string[] = [];
+  const usedIds = new Set<string>();
+  for (const file of walked.files) {
+    const source = relative(root, file);
+    if (!isXCUITestSourcePath(source)) continue;
+    let content: string;
+    try { content = await readText(file); } catch { continue; }
+    if (!/XCTAttachment\s*\(\s*screenshot\s*:/.test(content) || !/XCUIScreen\.main\.screenshot\s*\(\s*\)/.test(content)) continue;
+    const helperName = screenshotHelperName(content);
+    const callPattern = new RegExp(`\\b${escapeRegExp(helperName)}\\s*\\(\\s*named:\\s*"((?:[^"\\\\]|\\\\.)*)"\\s*\\)`, "g");
+    let sawCall = false;
+    for (const match of content.matchAll(callPattern)) {
+      const rawName = unescapeSwiftString(match[1]);
+      if (!rawName.trim()) continue;
+      const index = match.index ?? 0;
+      const { launchArguments, determined } = nearestLaunchArguments(content, index);
+      const testFunction = nearestFunctionName(content, index);
+      const id = uniqueScenarioId(rawName, usedIds);
+      scenarios.push({ id, title: rawName.trim().slice(0, 200), launchArguments, launchArgumentsDetermined: determined, sourceFile: source, testFunction });
+      sawCall = true;
+    }
+    if (sawCall) sourceFiles.push(source);
+  }
+  return { scenarios, sourceFiles: sourceFiles.sort() };
+}
+
+function screenshotHelperName(content: string): string {
+  const match = content.match(/\bfunc\s+(\w+)\s*\(\s*named\s+\w+\s*:\s*String\s*\)/);
+  return match ? match[1] : "keepScreenshot";
+}
+function escapeRegExp(value: string): string { return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+function unescapeSwiftString(value: string): string { return value.replace(/\\(.)/g, "$1"); }
+
+/** Balances `[` / `]` while skipping quoted string content, ignoring Swift's escape syntax within them. */
+function swiftBracketEnd(content: string, open: number): number | undefined {
+  let depth = 0; let quote = false;
+  for (let index = open; index < content.length; index++) {
+    const character = content[index];
+    if (quote) { if (character === "\\" && index + 1 < content.length) { index++; continue; } if (character === "\"") quote = false; continue; }
+    if (character === "\"") { quote = true; continue; }
+    if (character === "[") depth++;
+    else if (character === "]" && --depth === 0) return index;
+  }
+  return undefined;
+}
+
+/** Splits a Swift array literal's inner text on top-level commas only — commas nested inside a
+ * quoted string, a call's parentheses, or a nested collection literal do not split. Trailing
+ * commas (Swift's multi-line array convention) produce no trailing empty element. */
+function splitSwiftArrayElements(inner: string): string[] {
+  const elements: string[] = []; let depth = 0; let quote = false; let current = "";
+  for (let index = 0; index < inner.length; index++) {
+    const character = inner[index];
+    if (quote) { current += character; if (character === "\\" && index + 1 < inner.length) { current += inner[++index]; continue; } if (character === "\"") quote = false; continue; }
+    if (character === "\"") { quote = true; current += character; continue; }
+    if (character === "(" || character === "[" || character === "{") { depth++; current += character; continue; }
+    if (character === ")" || character === "]" || character === "}") { depth--; current += character; continue; }
+    if (character === "," && depth === 0) { elements.push(current); current = ""; continue; }
+    current += character;
+  }
+  if (current.trim().length) elements.push(current);
+  return elements.map((element) => element.trim()).filter((element) => element.length > 0);
+}
+
+/**
+ * The nearest enclosing `func name(...) { ... }` body-start position strictly before
+ * `beforeIndex` — used to bound launch-argument search to the SAME method a keepScreenshot call
+ * lives in, rather than the whole file. Returns undefined when no enclosing function can be
+ * located (search then finds nothing, which is treated as "could not determine" rather than
+ * silently falling back to an unbounded, cross-method search).
+ */
+function nearestFunctionBodyStart(content: string, beforeIndex: number): number | undefined {
+  const pattern = /\bfunc\s+[A-Za-z_][A-Za-z0-9_]*\s*\(/g;
+  let declarationEnd: number | undefined;
+  for (const match of content.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    if (index >= beforeIndex) break;
+    declarationEnd = index + match[0].length;
+  }
+  if (declarationEnd === undefined) return undefined;
+  const brace = content.indexOf("{", declarationEnd);
+  return brace === -1 || brace > beforeIndex ? undefined : brace;
+}
+
+/**
+ * The launch arguments visibly in effect at `beforeIndex`: the nearest preceding
+ * `.launchArguments = [...]` assignment, bounded to the SAME enclosing function's body — an
+ * assignment belonging to an earlier, already-closed method must never be attributed to a later
+ * one that sets no array of its own (e.g. because it launches through a shared helper).
+ * `determined: false` means ShipLayer could not establish real launch arguments for this
+ * scenario — either no bounded assignment was found, or the array is not entirely literal string
+ * elements. A single non-literal element (an enum member, an interpolated variable) is never
+ * dropped and the rest kept: doing that silently shifts every later element one flag to the left,
+ * corrupting `-key value` pairing rather than just losing one argument. The whole array is
+ * dropped instead.
+ */
+function nearestLaunchArguments(content: string, beforeIndex: number): { launchArguments: string[]; determined: boolean } {
+  const bodyStart = nearestFunctionBodyStart(content, beforeIndex);
+  if (bodyStart === undefined) return { launchArguments: [], determined: false };
+  const pattern = /\.launchArguments\s*=\s*\[/g;
+  let best: { open: number; close: number } | undefined;
+  for (const match of content.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    if (index < bodyStart) continue;
+    if (index >= beforeIndex) break;
+    const open = index + match[0].length - 1;
+    const close = swiftBracketEnd(content, open);
+    if (close === undefined) continue;
+    best = { open, close };
+  }
+  if (!best) return { launchArguments: [], determined: false };
+  const inner = content.slice(best.open + 1, best.close);
+  const rawElements = splitSwiftArrayElements(inner);
+  // A syntactically valid quoted string is not necessarily a fixed literal value: Swift string
+  // interpolation ("\\(expression)") is itself backslash-escape-shaped and passes literalPattern,
+  // which would let a computed value such as "\\(storeName)" through as if it were the fixed text
+  // "(storeName)" — a fabricated, confidently-wrong value, not merely a missing one. Any element
+  // containing an interpolation marker is treated exactly like a bare non-literal element: the
+  // whole array is dropped and this scenario's arguments are undetermined.
+  const literalPattern = /^"(?:[^"\\]|\\.)*"$/;
+  const hasInterpolation = (element: string): boolean => /\\\(/.test(element);
+  if (!rawElements.every((element) => literalPattern.test(element) && !hasInterpolation(element))) return { launchArguments: [], determined: false };
+  const launchArguments = rawElements.map((element) => unescapeSwiftString(element.slice(1, -1))).filter((value) => value.length > 0).slice(0, 20);
+  return { launchArguments, determined: true };
+}
+
+/** The nearest enclosing `func name(...)` declaration before `beforeIndex`, for traceable-but-not-fabricated scenario steps. */
+function nearestFunctionName(content: string, beforeIndex: number): string | undefined {
+  const pattern = /\bfunc\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
+  let name: string | undefined;
+  for (const match of content.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    if (index >= beforeIndex) break;
+    name = match[1];
+  }
+  return name;
+}
+function uniqueScenarioId(name: string, used: Set<string>): string {
+  const base = (name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "scenario");
+  const normalizedBase = /^[a-z0-9]/.test(base) ? base : `scenario-${base}`;
+  let candidate = normalizedBase; let suffix = 2;
+  while (used.has(candidate)) candidate = `${normalizedBase}-${suffix++}`;
+  used.add(candidate);
+  return candidate;
+}

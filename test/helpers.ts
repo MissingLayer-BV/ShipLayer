@@ -31,7 +31,7 @@ export function readyManifest(type: "free" | "paid-app" | "non-consumables" | "s
   manifest.app.primaryCategory = "Productivity"; manifest.app.appStoreAppId = "1234567890"; manifest.contacts = { supportEmail: "support@example.com", supportUrl: "https://example.com/support", privacyUrl: "https://example.com/privacy", copyright: "2026 Example" };
   manifest.metadata.localizations["en-US"] = { name: "Example", description: "A complete App Store description.", keywords: ["example"] };
   manifest.review = { contact: { firstName: "Ada", lastName: "Reviewer", email: "ada@example.com", phone: "+12025550123" }, demoAccount: { required: false }, recordingScenarios: [{ id: "home", title: "Home", steps: ["Launch"] }] };
-  manifest.screenshots.scenarios = [{ id: "home", title: "Home", steps: ["Launch"] }]; manifest.screenshots.configurations = [{ device: "iPhone 16 Pro Max", family: "iphone", locale: "en-US", requiredDimensions: { width: 1320, height: 2868 } }];
+  manifest.screenshots.scenarios = [{ id: "home", title: "Home", steps: ["Launch"], confirmation: "confirmed" }]; manifest.screenshots.configurations = [{ device: "iPhone 16 Pro Max", family: "iphone", locale: "en-US", requiredDimensions: { width: 1320, height: 2868 } }];
   manifest.build = { signing: "automatic", exportCompliance: "exempt", testFlightUpload: false }; manifest.confirmations = { privacy: "confirmed", legal: "confirmed", trader: "confirmed", paidAgreements: "confirmed", ageRating: "confirmed", contentRights: "confirmed" };
   if (type === "free") manifest.monetization = { type: "free", confirmation: "confirmed" };
   if (type === "paid-app") manifest.monetization = { type: "paid-app", pricePointReference: "P1" };

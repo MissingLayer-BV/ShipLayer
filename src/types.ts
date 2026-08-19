@@ -148,6 +148,10 @@ export interface ScreenshotScenario {
   title: string;
   launchArguments?: string[];
   steps: string[];
+  /** Absent (legacy/manually-authored) is treated as confirmed. A scenario proposed from a
+   * detected or templated UI-test harness is always written with "needs-human-confirmation" and
+   * must never be silently promoted to "confirmed" by ShipLayer itself. */
+  confirmation?: Confirmation;
 }
 
 export interface ShipLayerManifest {
