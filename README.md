@@ -29,15 +29,25 @@ This package is intentionally private in v0.1; it is not published to npm. Run `
 | `prepare <repo> [--out DIR]` | Generates a deterministic release package. Does not upload or submit. |
 | `check <repo> [--json]` | Preflight. Returns exit status 2 when blockers remain. |
 | `plan <repo> [--remote]` | Offline App Store Connect plan, or explicit authenticated read/discovery only. |
-| `capture <repo>` | Produces a deterministic screenshot-harness hand-off; v0.1 never fabricates or runs a generic capture command. |
+| `capture <repo>` | Reports the detected/missing screenshot UI-test harness and hand-off steps. `--from DIR --family iphone\|ipad --locale LOCALE` ingests and validates already-exported PNGs. v0.1 never fabricates navigation or runs a generic simulator/build command. |
 | `apply <repo>` | Dry-run by default. `--apply --yes-i-understand` reports the manual handoff and exits 3 because v0.1 has no tested write adapter. |
 | `submit <repo>` | Separate final gate. `--submit --yes-submit` reports the manual handoff and exits 3 because v0.1 deliberately does not submit. |
 
-No command creates a GitHub Action, triggers cloud CI, or uses a paid service.
+ShipLayer itself never creates, installs, commits, or dispatches a GitHub Action, and it never triggers cloud CI. `prepare` can *emit* a `workflow_dispatch`-only screenshot capture workflow as a file inside the generated `shiplayer-release/` package (see "Screenshots" below) — that file is not wired into anything until a human manually copies it into the target app repository's own `.github/workflows/` and presses "Run workflow" themselves.
 
 ## Release package
 
-`prepare` writes a managed `shiplayer-release/` package (or a safe relative `--out`) containing a normalized manifest, analysis/preflight reports, per-locale metadata drafts, App Privacy draft and evidence matrix, privacy/support/Terms-of-Use drafts, App Review notes, physical-device recording script, screenshot capture plan, neutral marketing-composition hand-off, StoreKit checklist, dry-run ASC plan, and remaining human actions. It refuses traversal, symlinks, the repository root, VCS/vendor/build paths, manifest-input collisions, and unmanaged output directories; managed packages regenerate atomically from staging.
+`prepare` writes a managed `shiplayer-release/` package (or a safe relative `--out`) containing a normalized manifest, analysis/preflight reports, per-locale metadata drafts, App Privacy draft and evidence matrix, privacy/support/Terms-of-Use drafts, App Review notes, physical-device recording script, a screenshot capture plan, a screenshot UI-test harness template and its contract, a manually-installed capture workflow, a neutral marketing-composition hand-off, StoreKit checklist, dry-run ASC plan, and remaining human actions. It refuses traversal, symlinks, the repository root, VCS/vendor/build paths, manifest-input collisions, and unmanaged output directories; managed packages regenerate atomically from staging.
+
+## Screenshots
+
+ShipLayer never invents app navigation, but it does real, verifiable work around it:
+
+- `init` scans XCUITest sources (`*UITests` targets) for the `keepScreenshot(named:)` contract — an `XCTAttachment(screenshot: XCUIScreen.main.screenshot())` kept with `.lifetime = .keepAlways` — and proposes each detected call as a `screenshots.scenarios` entry (id, title, launch arguments), always `confirmation: needs-human-confirmation`, never silently confirmed. This is a separate, narrowly-scoped scan (`isXCUITestSourcePath` in `src/evidence.ts`) from the privacy/purchase/AI production-evidence predicates and must never be conflated with them.
+- If no harness is detected, `prepare` emits a fillable template (`screenshots/ui-test-harness-template.swift`) and its written contract (`screenshots/ui-test-harness-contract.md`) into the release package. An agent or human with real knowledge of the app fills in the TODO navigation; ShipLayer only defines and later verifies the contract.
+- `prepare` also emits `screenshots/capture-workflow.yml`: a `workflow_dispatch`-only, single-simulator, concurrency-guarded, timeout-bounded GitHub Actions workflow that runs the screenshot UI tests and uploads the exported `.xcresult` attachments as an artifact. It carries a header comment stating that macOS runners bill at roughly 10x and that this must never be made automatic. It is not installed anywhere; a human copies it into the app repository's `.github/workflows/` and dispatches it manually.
+- `shiplayer capture <repo> --from <dir> --family iphone|ipad --locale <locale>` ingests the exported PNGs (from that workflow's artifact, or a local export): it validates format, rejects an alpha channel, requires an Apple-accepted dimension for the family, and requires every image in one family/locale set to be internally consistent with what has already been ingested, then copies matching files into `screenshots.rawOutputDir/{family}/{locale}/<scenario-id>.png`. This is a genuine local file operation, not a plan; `shiplayer check` remains the authoritative gate.
+- The per-image `check` gate accepts any of Apple's currently accepted dimensions for the configured device family (e.g. a 6.9" iPhone capture may be 1320×2868, 1290×2796, or 1260×2736 depending on which simulator produced it) rather than only the exact `requiredDimensions` value `init` proposed, while still requiring one uniform size across every image in a given family/locale set, because App Store Connect only accepts a single uniform size per screenshot slot.
 
 ## Safety model
 
@@ -79,4 +89,4 @@ npm install
 make check
 ```
 
-There is intentionally no automatic GitHub Actions workflow. A future workflow must be manually dispatched and must never run macOS/TestFlight jobs on each pull request without a documented cost guardrail.
+There is intentionally no automatic GitHub Actions workflow in this repository, and ShipLayer never adds one to itself. The only workflow file ShipLayer's code ever produces is the `workflow_dispatch`-only screenshot capture workflow described above, and it is written solely as a `shiplayer-release/` artifact for a human to review and install into a *target app repository* — never committed, installed, or dispatched by ShipLayer itself, and never wired to `push`/`pull_request`/`schedule`.
