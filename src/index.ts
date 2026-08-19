@@ -8,7 +8,7 @@ import { generateReleasePackage } from "./generator.js";
 import { defaultManifest, manifestPath, readManifest, writeManifest } from "./manifest.js";
 import { preflight } from "./preflight.js";
 import { stableJson } from "./fs.js";
-import { classifyAiEndpoint, storekitPurchaseEvidence } from "./evidence.js";
+import { classifyAiEndpoint, externalServiceFindings, storekitPurchaseEvidence } from "./evidence.js";
 import type { AnalysisReport, Finding, ShipLayerManifest } from "./types.js";
 
 const VERSION = "0.1.0";
@@ -65,17 +65,37 @@ function externalProcessorProposals(report: AnalysisReport): ShipLayerManifest["
     for (const item of finding.evidence) entry.evidence.add(item.source);
     byName.set(name, entry);
   };
-  for (const finding of report.findings) {
+  // Route through the same fixture/sample/test-path exclusion used everywhere else (evidence.ts),
+  // so a finding that only exists under fixtures/samples/examples/docs/testdata never becomes a
+  // proposal at all.
+  for (const finding of externalServiceFindings(report)) {
     if (finding.key.startsWith("endpoint:")) {
       const url = finding.key.slice("endpoint:".length);
       let host: string; try { host = new URL(url).hostname; } catch { continue; }
-      record(host, classifyAiEndpoint(url) === "none" ? "network" : "ai", `https://${host}/`, finding);
+      // kind: "ai" is a real, load-bearing signal (it forces the ai-sharing.declaration gate on
+      // its own once confirmed) — only assign it when the endpoint is strong provider evidence,
+      // never for a policy/docs link on a known AI host, and never for the ambiguous path-shape
+      // case on an unrecognized host (that one is resolved through the source-contradiction
+      // override instead; forcing kind: "ai" there would make it unoverridable, since
+      // sourceContradictionOverrides only resolves *.source-contradiction blockers, not this
+      // separate declaration check).
+      const kind = classifyAiEndpoint(url) === "provider" ? "ai" : "network";
+      record(host, kind, placeholderPrivacyPolicyUrl(host), finding);
     } else if (finding.key.startsWith("thirdPartySdkCandidate:")) {
       const name = finding.key.slice("thirdPartySdkCandidate:".length);
       record(name, "other", `https://unconfirmed.invalid/${encodeURIComponent(name)}`, finding);
     }
   }
   return [...byName.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([name, entry]) => ({ name, kind: entry.kind, aiPipelineRecipient: false, purpose: "Other Purposes", dataCategories: ["Other Data"], privacyPolicyUrl: entry.privacyPolicyUrl, protectionConfirmation: "needs-human-confirmation", confirmation: "needs-human-confirmation", evidence: [...entry.evidence].sort() }));
+}
+/** A synthesized https://<host>/ guess is only usable when it is itself a schema-valid URL (the
+ * schema's URL pattern requires a dotted hostname); a single-label host such as "localhost" or an
+ * intranet/router hostname is not, so fall back to an explicit unconfirmed placeholder instead of
+ * writing an invalid manifest that makes `init` itself crash. */
+function placeholderPrivacyPolicyUrl(host: string): string {
+  const candidate = `https://${host}/`;
+  const hostnamePattern = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+$/;
+  return hostnamePattern.test(host) ? candidate : `https://unconfirmed.invalid/${encodeURIComponent(host)}`;
 }
 function humanAnalysis(report: Awaited<ReturnType<typeof analyzeRepository>>): string { return `Repository: ${report.repository}\nScanned ${report.ignored.filesScanned} bounded files.\n\n${report.findings.map((finding) => `- ${finding.key}: ${Array.isArray(finding.value) ? finding.value.join(", ") : String(finding.value)} [${finding.confidence}] (${finding.evidence.map((item) => item.source).join(", ")})${finding.proposal ? " — proposal; human confirmation required" : ""}`).join("\n")}\n\nUnresolved questions:\n${report.unresolvedQuestions.map((item) => `- ${item}`).join("\n")}${report.contradictions.length ? `\n\nContradictions:\n${report.contradictions.map((item) => `- ${item}`).join("\n")}` : ""}`; }
 function optionValue(options: string[], name: string): string | undefined { const index = options.indexOf(name); return index >= 0 ? options[index + 1] : undefined; }
