@@ -24,10 +24,16 @@ const IPHONE_65_INCH_DIMENSIONS = new Set([
   "1284x2778" // iPhone 6.5-inch legacy
 ]);
 const IPHONE_SCREENSHOT_DIMENSIONS = new Set([...IPHONE_69_INCH_DIMENSIONS, ...IPHONE_65_INCH_DIMENSIONS]);
-const IPAD_SCREENSHOT_DIMENSIONS = new Set([
+// iPad currently has only one required class, but it gets the same structural per-class Set as
+// iPhone rather than one flat table: today that is equivalent (there is nothing else to leak from),
+// but iPhone's cross-class bug (a 6.5-inch pair passing a 6.9-inch slot) happened precisely because
+// a family-wide table was trusted as if it were class-scoped. Adding an 11-inch class here later
+// must not silently reintroduce that bug by relying on a flat Set "coincidentally" rejecting it.
+const IPAD_13_INCH_DIMENSIONS = new Set([
   "2064x2752", // iPad 13-inch
   "2048x2732" // iPad 13-inch (12.9-inch legacy hardware, same required slot)
 ]);
+const IPAD_SCREENSHOT_DIMENSIONS = new Set([...IPAD_13_INCH_DIMENSIONS]);
 // Storefront decks use the focused current marketing classes above. App Review
 // screenshots may use any supported capture size for a declared device family.
 const IPHONE_REVIEW_SCREENSHOT_DIMENSIONS = new Set([...IPHONE_SCREENSHOT_DIMENSIONS, "1206x2622", "1179x2556", "1170x2532", "1125x2436", "1080x2340", "828x1792", "1242x2208", "750x1334", "640x1136", "640x1096", "640x960", "640x920", "2622x1206", "2556x1179", "2532x1170", "2436x1125", "2340x1080", "1792x828", "2208x1242", "1334x750", "1136x640", "1096x640", "960x640", "920x640"]);
@@ -1263,17 +1269,17 @@ export function isFamilyScreenshotDimensions(family: "iphone" | "ipad", width: n
 // recognized size at all (screenshotConfigurationChecks already blocks that configuration on its
 // own; every per-image check then correctly fails closed instead of silently accepting anything).
 export function acceptedDimensionsForConfig(config: { family: "iphone" | "ipad"; requiredDimensions: { width: number; height: number } }): Set<string> {
-  if (config.family === "ipad") return IPAD_SCREENSHOT_DIMENSIONS;
   const key = `${config.requiredDimensions.width}x${config.requiredDimensions.height}`; const keyReverse = `${config.requiredDimensions.height}x${config.requiredDimensions.width}`;
+  if (config.family === "ipad") { if (IPAD_13_INCH_DIMENSIONS.has(key) || IPAD_13_INCH_DIMENSIONS.has(keyReverse)) return IPAD_13_INCH_DIMENSIONS; return new Set(); }
   if (IPHONE_69_INCH_DIMENSIONS.has(key) || IPHONE_69_INCH_DIMENSIONS.has(keyReverse)) return IPHONE_69_INCH_DIMENSIONS;
   if (IPHONE_65_INCH_DIMENSIONS.has(key) || IPHONE_65_INCH_DIMENSIONS.has(keyReverse)) return IPHONE_65_INCH_DIMENSIONS;
   return new Set();
 }
 function dimensionClassLabel(config: { family: "iphone" | "ipad"; requiredDimensions: { width: number; height: number } }): string {
-  if (config.family === "ipad") return "13-inch";
   const accepted = acceptedDimensionsForConfig(config);
   if (accepted === IPHONE_69_INCH_DIMENSIONS) return "6.9-inch";
   if (accepted === IPHONE_65_INCH_DIMENSIONS) return "6.5-inch";
+  if (accepted === IPAD_13_INCH_DIMENSIONS) return "13-inch";
   return "unrecognized-display-class";
 }
 async function nonEmptySafeIconBundle(directory: string): Promise<boolean> {
