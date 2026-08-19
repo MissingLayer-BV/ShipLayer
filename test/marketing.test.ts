@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -9,7 +9,8 @@ import { preflight } from "../src/preflight.js";
 import { generateReleasePackage } from "../src/generator.js";
 import { analyzeRepository } from "../src/scanner.js";
 import { inspectImage } from "../src/image.js";
-import { buildMarketingSlideEntries, renderSlideHtml, STRIP_ALPHA_MJS, MAX_CAPTION_LENGTH } from "../src/marketing.js";
+import { deflateSync, inflateSync } from "node:zlib";
+import { buildMarketingSlideEntries, DEFAULT_MARKETING_FINAL_DIR, EXPORT_MJS, renderPackageJson, renderReadme, renderSlideHtml, SLIDE_BACKGROUND_RGB, STRIP_ALPHA_MJS, MAX_CAPTION_LENGTH } from "../src/marketing.js";
 import { png, readyManifest, writeReadyAssets } from "./helpers.js";
 
 // ---------------------------------------------------------------------------------------------
@@ -89,6 +90,7 @@ test("buildMarketingSlideEntries computes correct relative hrefs for every confi
   const entries = buildMarketingSlideEntries({
     outputDirectory: "shiplayer-release",
     rawOutputDir: "release/raw-screenshots",
+    finalOutputDir: "shiplayer-release/screenshots/final",
     configurations: [
       { device: "iPhone 16 Pro Max", family: "iphone", locale: "en-US", requiredDimensions: { width: 1320, height: 2868 } },
       { device: "iPad Pro 13-inch (M4)", family: "ipad", locale: "en-US", requiredDimensions: { width: 2064, height: 2752 } }
@@ -273,4 +275,255 @@ test("preflight rejects more than 10 rendered marketing screenshots in one set",
   for (let i = 0; i < 11; i++) await writeFile(path.join(finalDir, `slide-${i}.png`), png(1320, 2868));
   const report = await preflight(root, manifest);
   assert.ok(report.results.some((item) => item.id === "marketing.iphone.en-US.count" && item.severity === "block"));
+});
+
+// ---------------------------------------------------------------------------------------------
+// PR #4 review findings F1-F8: regression coverage.
+// ---------------------------------------------------------------------------------------------
+
+// --- F1/F2: no redundant/broken postinstall; export.mjs fails with actionable advice ----------
+
+test("F1: the generated package.json has no postinstall script (current Playwright has none of its own; a redundant one only breaks npm install)", () => {
+  const packageJson = JSON.parse(renderPackageJson()) as { scripts: Record<string, string> };
+  assert.equal(packageJson.scripts.postinstall, undefined);
+  assert.equal(packageJson.scripts.export, "node export.mjs");
+  assert.deepEqual(Object.keys(packageJson.dependencies || {}), ["playwright"]);
+});
+
+test("F1: the generated README documents an explicit playwright install step, not a nonexistent postinstall hook", () => {
+  const readme = renderReadme([], DEFAULT_MARKETING_FINAL_DIR);
+  assert.ok(readme.includes("npx playwright install chromium"));
+  assert.ok(!readme.includes("postinstall"));
+});
+
+test("F2: export.mjs wraps the browser launch in try/catch and prints the SHIPLAYER_PW_CHANNEL escape hatch, never bare Playwright install advice", () => {
+  assert.ok(EXPORT_MJS.includes("try {\n  browser = await chromium.launch"));
+  assert.ok(EXPORT_MJS.includes("catch (error)"));
+  assert.ok(EXPORT_MJS.includes("SHIPLAYER_PW_CHANNEL=chrome npm run export"));
+  assert.ok(EXPORT_MJS.includes("process.exit(1)"));
+});
+
+// --- F3: re-running prepare must not destroy a prior render or npm install --------------------
+
+test("F3: prepare preserves a prior render (screenshots/final) and npm install (marketing/node_modules) across a second prepare", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-marketing-preserve-"));
+  const manifest = readyManifest(); await writeReadyAssets(root, manifest);
+  const analysis = await analyzeRepository(root);
+  const report = await preflight(root, manifest, false, analysis);
+  const first = await generateReleasePackage(root, manifest, analysis, report, "shiplayer-release");
+
+  // Simulate what a human/agent does between two `prepare` runs: `npm install` inside the
+  // marketing project, and running `npm run export` to render a final PNG.
+  const nodeModulesMarker = path.join(first.directory, "screenshots/marketing/node_modules/playwright/package.json");
+  await mkdir(path.dirname(nodeModulesMarker), { recursive: true });
+  await writeFile(nodeModulesMarker, JSON.stringify({ name: "playwright", version: "1.48.0" }));
+  const lockFile = path.join(first.directory, "screenshots/marketing/package-lock.json");
+  await writeFile(lockFile, "{}");
+  const renderedFinal = path.join(first.directory, "screenshots/final/iphone/en-US/home.png");
+  await mkdir(path.dirname(renderedFinal), { recursive: true });
+  await writeFile(renderedFinal, png(1320, 2868));
+
+  // Re-run prepare exactly as the generated README instructs after confirming a scenario.
+  const second = await generateReleasePackage(root, manifest, analysis, report, "shiplayer-release");
+  assert.equal(second.directory, first.directory);
+
+  assert.equal((await readFile(nodeModulesMarker, "utf8")).includes("playwright"), true, "node_modules must survive a second prepare");
+  assert.equal(await readFile(lockFile, "utf8"), "{}", "package-lock.json must survive a second prepare");
+  const finalBytes = await readFile(renderedFinal);
+  assert.ok(finalBytes.length > 0, "a previously rendered final PNG must survive a second prepare");
+  const details = await inspectImage(renderedFinal);
+  assert.equal(details?.width, 1320);
+  assert.equal(details?.height, 2868);
+});
+
+test("F3: a first-ever prepare (nothing to preserve) is unaffected", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-marketing-preserve-first-"));
+  const manifest = readyManifest(); await writeReadyAssets(root, manifest);
+  const analysis = await analyzeRepository(root);
+  const report = await preflight(root, manifest, false, analysis);
+  const pkg = await generateReleasePackage(root, manifest, analysis, report, "shiplayer-release");
+  assert.ok(pkg.files.includes("screenshots/marketing/export.mjs"));
+});
+
+// --- F4: a non-default finalOutputDir must not make check silently skip -----------------------
+
+test("F4: check reads screenshots.finalOutputDir, not a hardcoded convention — a custom location is actually validated", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-marketing-custom-final-"));
+  const manifest = readyManifest(); manifest.screenshots.finalOutputDir = "custom-release/screens"; await writeReadyAssets(root, manifest);
+  const customDir = path.join(root, "custom-release/screens/iphone/en-US");
+  await mkdir(customDir, { recursive: true });
+  // Deliberately bad on two axes at once (wrong display class AND alpha), matching the reviewer's repro.
+  await writeFile(path.join(customDir, "home.png"), png(640, 480, true));
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "marketing.iphone.en-US.home.png.alpha" && item.severity === "block"), "a bad image at the CONFIGURED finalOutputDir must be caught, not silently skipped");
+  assert.ok(report.results.some((item) => item.id === "marketing.iphone.en-US.home.png.accepted-dimensions" && item.severity === "block"));
+  // The old hardcoded default location must NOT be consulted once finalOutputDir is set explicitly.
+  const staleDefaultDir = path.join(root, "shiplayer-release/screenshots/final/iphone/en-US");
+  await mkdir(staleDefaultDir, { recursive: true });
+  await writeFile(path.join(staleDefaultDir, "home.png"), png(1320, 2868)); // a perfectly valid image at the OLD default
+  const secondReport = await preflight(root, manifest);
+  // Still exactly the same two blockers from the configured location — the valid image sitting at
+  // the stale default must not silently launder the result into a pass.
+  assert.ok(secondReport.results.some((item) => item.id === "marketing.iphone.en-US.home.png.alpha" && item.severity === "block"));
+});
+
+test("F4: an absent finalOutputDir (a manifest predating the field) still falls back to the documented default", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-marketing-legacy-final-"));
+  const manifest = readyManifest(); delete (manifest.screenshots as { finalOutputDir?: string }).finalOutputDir; await writeReadyAssets(root, manifest);
+  const defaultDir = path.join(root, DEFAULT_MARKETING_FINAL_DIR, "iphone/en-US");
+  await mkdir(defaultDir, { recursive: true });
+  await writeFile(path.join(defaultDir, "home.png"), png(1320, 2868, true));
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "marketing.iphone.en-US.home.png.alpha" && item.severity === "block"));
+});
+
+test("F4: generation and validation agree on where a custom finalOutputDir actually renders to", () => {
+  const entries = buildMarketingSlideEntries({
+    outputDirectory: "shiplayer-release",
+    rawOutputDir: "release/raw-screenshots",
+    finalOutputDir: "custom-release/screens",
+    configurations: [{ device: "iPhone 16 Pro Max", family: "iphone", locale: "en-US", requiredDimensions: { width: 1320, height: 2868 } }],
+    scenarios: [{ id: "home", title: "Home", confirmation: "confirmed" }]
+  });
+  // Marketing project root is shiplayer-release/screenshots/marketing; a custom finalOutputDir
+  // that lives entirely outside --out must still resolve to a correct (if longer) relative path.
+  assert.equal(entries[0].outputRelativePath, "../../../custom-release/screens/iphone/en-US/home.png");
+});
+
+// --- F5: more than 10 scenarios warns at prepare time, not only after a wasted render ----------
+
+test("F5: preflight warns (does not block) when more than 10 scenarios are declared", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-marketing-oversized-"));
+  const manifest = readyManifest();
+  manifest.screenshots.scenarios = Array.from({ length: 12 }, (_, index) => ({ id: `scenario-${index}`, title: `Scenario ${index}`, steps: ["Launch"], confirmation: "confirmed" as const }));
+  await writeReadyAssets(root, manifest);
+  await rm(path.join(root, "release/raw-screenshots/iphone/en-US/home.png"), { force: true });
+  for (const scenario of manifest.screenshots.scenarios) await writeFile(path.join(root, "release/raw-screenshots/iphone/en-US", `${scenario.id}.png`), png(1320, 2868));
+  const report = await preflight(root, manifest);
+  const warning = report.results.find((item) => item.id === "screenshots.scenarios.count");
+  assert.equal(warning?.severity, "warn");
+  assert.ok(warning?.message.includes("12"));
+});
+
+test("F5: the generated README warns about an oversized set instead of silently reporting the slide count", () => {
+  const entries = buildMarketingSlideEntries({
+    outputDirectory: "shiplayer-release",
+    rawOutputDir: "release/raw-screenshots",
+    finalOutputDir: DEFAULT_MARKETING_FINAL_DIR,
+    configurations: [{ device: "iPhone 16 Pro Max", family: "iphone", locale: "en-US", requiredDimensions: { width: 1320, height: 2868 } }],
+    scenarios: Array.from({ length: 12 }, (_, index) => ({ id: `scenario-${index}`, title: `Scenario ${index}` }))
+  });
+  const readme = renderReadme(entries, DEFAULT_MARKETING_FINAL_DIR);
+  assert.ok(readme.includes("Warning"));
+  assert.ok(readme.includes("iphone/en-US has 12"));
+});
+
+test("F5: 10 or fewer scenarios triggers no warning, at preflight or in the README", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-marketing-not-oversized-"));
+  const manifest = readyManifest(); await writeReadyAssets(root, manifest);
+  const report = await preflight(root, manifest);
+  assert.equal(report.results.some((item) => item.id === "screenshots.scenarios.count"), false);
+  const entries = buildMarketingSlideEntries({ outputDirectory: "shiplayer-release", rawOutputDir: "release/raw-screenshots", finalOutputDir: DEFAULT_MARKETING_FINAL_DIR, configurations: [{ device: "iPhone 16 Pro Max", family: "iphone", locale: "en-US", requiredDimensions: { width: 1320, height: 2868 } }], scenarios: [{ id: "home", title: "Home" }] });
+  assert.ok(!renderReadme(entries, DEFAULT_MARKETING_FINAL_DIR).includes("Warning"));
+});
+
+// --- F6: alpha must be composited against the known background, never dropped ------------------
+
+function crc32(bytes: Buffer): number { let crc = 0xffffffff; for (const byte of bytes) { crc ^= byte; for (let index = 0; index < 8; index++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0); } return (crc ^ 0xffffffff) >>> 0; }
+function pngChunk(type: string, data: Buffer): Buffer { const name = Buffer.from(type); const out = Buffer.alloc(12 + data.length); out.writeUInt32BE(data.length, 0); name.copy(out, 4); data.copy(out, 8); out.writeUInt32BE(crc32(Buffer.concat([name, data])), 8 + data.length); return out; }
+/** Builds a 1x1 PNG of a specific color. colorType 6 = RGBA (4-tuple), colorType 4 = grayscale+alpha (2-tuple: [gray, alpha]). */
+function solidPixelPng(pixel: number[]): Buffer {
+  const colorType = pixel.length === 4 ? 6 : 4;
+  const row = Buffer.from([0, ...pixel]);
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(1, 0); ihdr.writeUInt32BE(1, 4); ihdr[8] = 8; ihdr[9] = colorType;
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), pngChunk("IHDR", ihdr), pngChunk("IDAT", deflateSync(row)), pngChunk("IEND", Buffer.alloc(0))]);
+}
+/** Reads pixel (0,0) of a PNG stripAlphaPng produced: guaranteed non-interlaced RGB/8-bit/filter-None. */
+function firstPixelOfStrippedPng(buffer: Buffer): [number, number, number] {
+  let offset = 8; let idat = Buffer.alloc(0);
+  while (offset + 8 <= buffer.length) {
+    const length = buffer.readUInt32BE(offset);
+    const type = buffer.subarray(offset + 4, offset + 8).toString("ascii");
+    const data = buffer.subarray(offset + 8, offset + 8 + length);
+    if (type === "IDAT") idat = Buffer.concat([idat, data]);
+    if (type === "IEND") break;
+    offset += 12 + length;
+  }
+  const raw = inflateSync(idat);
+  return [raw[1], raw[2], raw[3]];
+}
+function compositeOver(src: number, alpha: number, bg: number): number { return Math.round((src * alpha + bg * (255 - alpha)) / 255); }
+
+test("F6: a half-transparent RGBA pixel is composited against the slide background, not left as its own un-blended color", async () => {
+  const stripAlphaPng = await loadStripAlpha();
+  const input = solidPixelPng([255, 0, 0, 128]); // half-transparent red
+  const output = stripAlphaPng(input);
+  const [r, g, b] = firstPixelOfStrippedPng(output);
+  const [bgR, bgG, bgB] = SLIDE_BACKGROUND_RGB;
+  assert.notDeepEqual([r, g, b], [255, 0, 0], "must not be the naive drop-alpha result (pure red)");
+  assert.equal(r, compositeOver(255, 128, bgR));
+  assert.equal(g, compositeOver(0, 128, bgG));
+  assert.equal(b, compositeOver(0, 128, bgB));
+});
+
+test("F6: a fully transparent grayscale+alpha pixel becomes exactly the slide background, not opaque gray", async () => {
+  const stripAlphaPng = await loadStripAlpha();
+  const input = solidPixelPng([200, 0]); // gray=200, alpha=0 (fully transparent)
+  const output = stripAlphaPng(input);
+  const [r, g, b] = firstPixelOfStrippedPng(output);
+  assert.deepEqual([r, g, b], SLIDE_BACKGROUND_RGB, "fully transparent must become the background color, not opaque (200,200,200)");
+});
+
+test("F6: a fully opaque RGBA pixel is unaffected by compositing", async () => {
+  const stripAlphaPng = await loadStripAlpha();
+  const input = solidPixelPng([10, 20, 30, 255]);
+  const output = stripAlphaPng(input);
+  assert.deepEqual(firstPixelOfStrippedPng(output), [10, 20, 30]);
+});
+
+// --- F7: a truncated/short pixel stream must throw, never silently zero-fill -------------------
+
+test("F7: a decompressed pixel stream shorter than expected throws a clear error instead of silently zero-filling the tail", async () => {
+  const stripAlphaPng = await loadStripAlpha();
+  // Build a structurally valid PNG (correct IHDR, correct CRCs) whose IDAT decompresses to fewer
+  // bytes than IHDR's width/height promise -- a corrupt-but-not-obviously-broken file.
+  const width = 4; const height = 4; const channels = 4;
+  const shortRaw = Buffer.alloc((1 + width * channels) * height - 5); // 5 bytes short of the last row
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(width, 0); ihdr.writeUInt32BE(height, 4); ihdr[8] = 8; ihdr[9] = 6;
+  const truncated = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), pngChunk("IHDR", ihdr), pngChunk("IDAT", deflateSync(shortRaw)), pngChunk("IEND", Buffer.alloc(0))]);
+  assert.throws(() => stripAlphaPng(truncated), /Corrupt PNG/);
+});
+
+// --- F8: a caption at the documented max length must not be silently clipped -------------------
+
+test("F8: a long caption at the documented max length gets a smaller font than a short one, not the same size clipped by line-clamp", () => {
+  const fontSizeOf = (html: string): number => Number(/\.caption \{[\s\S]*?font-size: (\d+)px;/.exec(html)?.[1]);
+  const shortHtml = renderSlideHtml({ id: "home", title: "Home", caption: "Ship faster", confirmed: true, family: "iphone", device: "iPhone 16 Pro Max", locale: "en-US", width: 1320, height: 2868, screenshotPngHref: "x.png", screenshotJpgHref: "x.jpg", frameHref: "f.png", htmlRelativePath: "h.html", outputRelativePath: "o.png" });
+  const longHtml = renderSlideHtml({ id: "home", title: "Home", caption: "M".repeat(MAX_CAPTION_LENGTH), confirmed: true, family: "iphone", device: "iPhone 16 Pro Max", locale: "en-US", width: 1320, height: 2868, screenshotPngHref: "x.png", screenshotJpgHref: "x.jpg", frameHref: "f.png", htmlRelativePath: "h.html", outputRelativePath: "o.png" });
+  const shortFontSize = fontSizeOf(shortHtml);
+  const longFontSize = fontSizeOf(longHtml);
+  assert.ok(shortFontSize > 0 && longFontSize > 0);
+  assert.ok(longFontSize < shortFontSize, `expected the ${MAX_CAPTION_LENGTH}-char caption (${longFontSize}px) to auto-shrink below the short caption's size (${shortFontSize}px)`);
+  assert.ok(longHtml.includes(`M`.repeat(MAX_CAPTION_LENGTH)), "the full caption text must still be present in the DOM (line-clamp is a CSS ellipsis fallback, not truncation of the source text)");
+});
+
+// ---------------------------------------------------------------------------------------------
+// Found while re-verifying F2 end-to-end: an embedded double-quote inside a nested console.error
+// string produced syntactically invalid generated JS (a real "SyntaxError: missing ) after
+// argument list" at actual `npm run export` time, not caught by any string-content assertion
+// above). Both generated modules are Node ESM syntax-checked directly, permanently, so a future
+// edit that reintroduces broken quoting/escaping fails the test suite instead of only surfacing
+// when a human/agent actually runs `npm run export`.
+// ---------------------------------------------------------------------------------------------
+
+test("EXPORT_MJS and STRIP_ALPHA_MJS are syntactically valid Node ESM (node --check)", async () => {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const execFileAsync = promisify(execFile);
+  for (const [name, source] of [["export.mjs", EXPORT_MJS], ["strip-alpha.mjs", STRIP_ALPHA_MJS]] as const) {
+    const dir = await mkdtemp(path.join(tmpdir(), "shiplayer-syntax-check-"));
+    const file = path.join(dir, name);
+    await writeFile(file, source);
+    await assert.doesNotReject(execFileAsync(process.execPath, ["--check", file]), `${name} must be syntactically valid`);
+  }
 });
