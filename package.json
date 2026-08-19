@@ -4,6 +4,7 @@
   "private": true,
   "files": [
     "dist",
+    "assets",
     "README.md",
     "docs",
     "skills",
