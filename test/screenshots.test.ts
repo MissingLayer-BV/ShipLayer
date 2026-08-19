@@ -8,7 +8,7 @@ import { parse } from "yaml";
 import { detectScreenshotHarness } from "../src/scanner.js";
 import { isXCUITestSourcePath } from "../src/evidence.js";
 import { ingestCaptures } from "../src/capture.js";
-import { preflight, isFamilyScreenshotDimensions } from "../src/preflight.js";
+import { preflight, isFamilyScreenshotDimensions, acceptedDimensionsForConfig } from "../src/preflight.js";
 import { generateReleasePackage } from "../src/generator.js";
 import { analyzeRepository } from "../src/scanner.js";
 import { readManifest, writeManifest } from "../src/manifest.js";
@@ -114,6 +114,44 @@ test("detectScreenshotHarness never attributes another method's launch arguments
   assert.ok(mixed); assert.equal(mixed?.launchArgumentsDetermined, false); assert.deepEqual(mixed?.launchArguments, []);
 });
 
+// Round-2 review High-1: a Swift string-interpolation element ("\(expr)") is itself
+// backslash-escape-shaped and previously PASSED the literal-string test, so it was fabricated
+// into the plausible-looking (but wrong) fixed value "(expr)" instead of being treated as
+// non-literal. BackYet never exposed this because it only uses the bare-variable form
+// ("--ui-testing-store", store), which was already correctly rejected.
+const INTERPOLATION_HARNESS_SOURCE = `import XCTest
+
+final class InterpUITests: XCTestCase {
+    func testInterpolated() {
+        let app = XCUIApplication()
+        let storeName = "abc"
+        app.launchArguments = ["--ui-testing-store", "\\(storeName)", "--reset"]
+        app.launch()
+        keepScreenshot(named: "Interpolated Scenario")
+    }
+
+    private func keepScreenshot(named name: String) {
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+}
+`;
+
+test("detectScreenshotHarness never fabricates a Swift string-interpolation element into a fixed literal value", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-harness-interpolation-"));
+  await mkdir(path.join(root, "InterpUITests"), { recursive: true });
+  await writeFile(path.join(root, "InterpUITests/InterpUITests.swift"), INTERPOLATION_HARNESS_SOURCE);
+  const harness = await detectScreenshotHarness(root);
+  assert.equal(harness.scenarios.length, 1);
+  const interpolated = harness.scenarios[0];
+  assert.equal(interpolated.id, "interpolated-scenario");
+  // Must NOT resolve to a fabricated concrete value such as ["--ui-testing-store", "(storeName)", "--reset"].
+  assert.equal(interpolated.launchArgumentsDetermined, false);
+  assert.deepEqual(interpolated.launchArguments, []);
+});
+
 test("isXCUITestSourcePath is scoped to *UITests sources and stays independent from production-evidence predicates", () => {
   assert.equal(isXCUITestSourcePath("SampleUITests/SampleUITests.swift"), true);
   assert.equal(isXCUITestSourcePath("App/Views/Home.swift"), false);
@@ -194,6 +232,35 @@ test("preflight rejects a 6.5-inch dimension in a 6.9-inch-configured iPhone slo
   assert.ok(report.results.some((item) => item.id === "screenshots.iphone.en-US.home.png.accepted-dimensions" && item.severity === "block"));
 });
 
+// Round-2 review Low-4: iPad must be gated by the same STRUCTURAL per-class Set lookup as
+// iPhone, not a flat family table that only happens to reject an off-class size today because it
+// has nothing else in it. acceptedDimensionsForConfig must do a real key lookup for iPad too, so
+// adding an 11-inch class later cannot silently reintroduce the cross-class bug iPhone already
+// fixed (see the "6.5-inch dimension in a 6.9-inch-configured slot" test above).
+test("acceptedDimensionsForConfig structurally scopes iPad to its own display class, not a flat family table", () => {
+  const config13 = { family: "ipad" as const, requiredDimensions: { width: 2064, height: 2752 } };
+  const accepted = acceptedDimensionsForConfig(config13);
+  assert.ok(accepted.has("2064x2752")); assert.ok(accepted.has("2048x2732"));
+  // An 11-inch iPad Pro dimension is a real, valid App Store screenshot size — just not for the
+  // 13-inch slot this configuration declares — so it must resolve to a class that rejects it.
+  assert.equal(accepted.has("1668x2388"), false);
+  // A requiredDimensions value that is not itself a recognized iPad size must fail closed (an
+  // empty accepted set), the same behavior iPhone already has, not silently fall back to the
+  // whole iPad table.
+  const configUnrecognized = { family: "ipad" as const, requiredDimensions: { width: 1668, height: 2388 } };
+  assert.equal(acceptedDimensionsForConfig(configUnrecognized).size, 0);
+});
+
+test("preflight rejects an 11-inch iPad dimension in a 13-inch-configured slot, even though it is a valid App Store size for a different class", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-ipad-display-class-"));
+  const manifest = readyManifest(); manifest.app.deviceFamilies = ["ipad"]; manifest.screenshots.configurations = [{ device: "iPad Pro 13-inch (M4)", family: "ipad", locale: "en-US", requiredDimensions: { width: 2064, height: 2752 } }]; manifest.screenshots.scenarios = [{ id: "home", title: "Home", steps: ["Launch"], confirmation: "confirmed" }];
+  await writeReadyAssets(root, manifest);
+  await mkdir(path.join(root, "release/raw-screenshots/ipad/en-US"), { recursive: true });
+  await writeFile(path.join(root, "release/raw-screenshots/ipad/en-US/home.png"), png(1668, 2388)); // real 11-inch iPad Pro size
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "screenshots.ipad.en-US.home.png.accepted-dimensions" && item.severity === "block"));
+});
+
 test("preflight rejects a screenshot set mixing two individually-valid dimensions", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-mixed-dimensions-"));
   const manifest = readyManifest(); manifest.screenshots.scenarios = [{ id: "home", title: "Home", steps: ["Launch"], confirmation: "confirmed" }, { id: "detail", title: "Detail", steps: ["Open detail"], confirmation: "confirmed" }]; await writeReadyAssets(root, manifest);
@@ -252,6 +319,28 @@ test("capturePlan and marketingProject carry each scenario's confirmation status
   const marketingJson = JSON.parse(await readFile(path.join(pkg.directory, "screenshots/marketing-composition-plan.json"), "utf8"));
   const slide = (marketingJson.decks[0].slides as Array<{ id: string; confirmation: string }>).find((item) => item.id === "home");
   assert.equal(slide?.confirmation, "needs-human-confirmation");
+});
+
+// Round-2 review Moderate-2: preflight blocks a scenario with an ABSENT confirmation field
+// (Moderate-7 from the previous round), but the generated artifacts were still defaulting an
+// absent field to "confirmed" — the inverse of the laundering defect: the artifact asserted
+// something STRONGER than the gate allows. Every place a scenario's confirmation is repeated
+// must default an absent field to "needs-human-confirmation", matching preflight.ts exactly.
+test("generated artifacts never assert \"confirmed\" for a scenario whose confirmation is absent", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-confirmation-absent-carry-"));
+  const manifest = readyManifest(); manifest.screenshots.scenarios = [{ id: "home", title: "Home", steps: ["Launch"] }]; await writeReadyAssets(root, manifest);
+  const analysis = await analyzeRepository(root);
+  const report = await preflight(root, manifest, false, analysis);
+  assert.ok(report.results.some((item) => item.id === "screenshots.scenarios.home.confirmation" && item.severity === "block"));
+  const pkg = await generateReleasePackage(root, manifest, analysis, report, "shiplayer-release");
+  const capturePlanJson = JSON.parse(await readFile(path.join(pkg.directory, "screenshots/capture-plan.json"), "utf8"));
+  const planScenario = (capturePlanJson.configurations[0].scenarios as Array<{ id: string; confirmation: string }>).find((item) => item.id === "home");
+  assert.equal(planScenario?.confirmation, "needs-human-confirmation");
+  const marketingJson = JSON.parse(await readFile(path.join(pkg.directory, "screenshots/marketing-composition-plan.json"), "utf8"));
+  const slide = (marketingJson.decks[0].slides as Array<{ id: string; confirmation: string }>).find((item) => item.id === "home");
+  assert.equal(slide?.confirmation, "needs-human-confirmation");
+  const recordingScript = await readFile(path.join(pkg.directory, "review/physical-device-recording-script.md"), "utf8");
+  assert.ok(recordingScript.includes("UNVERIFIED"));
 });
 
 test("capture --from ingests, validates, and refuses to fabricate matches for exported PNGs", async () => {
