@@ -71,41 +71,64 @@ export function storekitPurchaseEvidence(analysis: AnalysisReport): Finding[] {
 }
 
 // --- AI/inference endpoint classification -------------------------------------------------
+//
+// Two different shapes of "known AI provider" exist in the wild:
+//   - "mixed" apex hosts, where marketing/docs/legal/model-card pages and the actual API plausibly
+//     coexist on the very same hostname (openrouter.ai serves both its docs and its API at the
+//     same apex, distinguished only by path) — these need a path-shape check, and doc/legal/blog/
+//     model-card paths are far too open-ended to enumerate, so the check is inverted: only an
+//     API-shaped path is strong evidence here, everything else on that host is at most a warning.
+//   - "API-only" hosts/subdomains, which never serve anything but the API (api.openai.com,
+//     api.anthropic.com, generativelanguage.googleapis.com, a customer's <resource>.openai.azure.com,
+//     ...) — any call to one of these is strong evidence regardless of path, because there is no
+//     marketing/docs page living there to false-positive on.
+// Getting this split wrong in either direction is real damage: too narrow blocks a provider's own
+// real privacy-policy/model-card links (which ai-sharing.consent-privacy-link and
+// externalProcessor.privacyPolicyUrl *require* the app to surface); too broad waves through a real
+// API call as a "documentation" link.
 
-// Apex hosts for known third-party AI/LLM providers. Matched by exact host or any subdomain, so
-// e.g. "api.openai.com" matches the "openai.com" entry.
-const AI_PROVIDER_APEX_HOSTS = ["openrouter.ai", "openai.com", "anthropic.com", "mistral.ai", "cohere.ai", "cohere.com", "replicate.com", "stability.ai", "huggingface.co", "perplexity.ai", "groq.com", "deepseek.com", "x.ai", "together.ai", "together.xyz", "openai.azure.com", "fireworks.ai", "cerebras.ai", "deepinfra.com", "novita.ai"];
-// Hosts that must match exactly, or by a specific known subdomain shape (their apex domain hosts
-// many unrelated APIs, so a bare apex/subdomain match would be too broad).
-const AI_PROVIDER_EXACT_HOSTS = new Set(["generativelanguage.googleapis.com", "aiplatform.googleapis.com"]);
-const AI_PROVIDER_HOST_PATTERNS = [/(?:^|\.)aiplatform\.googleapis\.com$/i, /(?:^|\.)bedrock-runtime\.[a-z0-9-]+\.amazonaws\.com$/i];
+// Apex hosts where the marketing/docs site and the API plausibly share one hostname.
+const AI_PROVIDER_MIXED_APEX_HOSTS = ["openrouter.ai", "openai.com", "anthropic.com", "mistral.ai", "cohere.ai", "cohere.com", "replicate.com", "stability.ai", "huggingface.co", "perplexity.ai", "groq.com", "deepseek.com", "x.ai", "together.ai", "together.xyz", "fireworks.ai", "cerebras.ai", "deepinfra.com", "novita.ai"];
+// Apex hosts that only ever serve the API itself — no marketing/docs page is ever served under
+// this apex (or any subdomain of it), so a call here is strong evidence regardless of path.
+const AI_PROVIDER_API_ONLY_APEX_HOSTS = ["openai.azure.com"];
+// Hosts that must match exactly (not by apex+subdomain), because their own apex hosts many
+// unrelated marketing/docs/other-API surfaces.
+const AI_PROVIDER_EXACT_API_ONLY_HOSTS = new Set(["generativelanguage.googleapis.com", "aiplatform.googleapis.com", "router.huggingface.co", "api-inference.huggingface.co"]);
+const AI_PROVIDER_API_ONLY_HOST_PATTERNS = [/(?:^|\.)aiplatform\.googleapis\.com$/i, /(?:^|\.)bedrock-runtime\.[a-z0-9-]+\.amazonaws\.com$/i];
 // Path shapes typical of an actual inference/completion API call, as opposed to a docs/privacy page.
 const AI_API_PATH_PATTERN = /\/(?:v\d+\/)?(?:chat\/completions|messages|generate|inference|completions|embeddings)(?:\/|$)/i;
-// Path shapes typical of documentation/policy/marketing pages rather than an API call, plus a
-// bare root path. Only used to *downgrade* a known-provider host to a warning.
-const AI_DOC_PATH_PATTERN = /^\/?(?:$|(?:privacy|terms|docs?|documentation|pricing|blog|about)(?:\/|$))/i;
 
-function isKnownAiProviderHost(host: string): boolean {
-  const normalized = host.toLowerCase();
-  if (AI_PROVIDER_EXACT_HOSTS.has(normalized)) return true;
-  if (AI_PROVIDER_HOST_PATTERNS.some((pattern) => pattern.test(normalized))) return true;
-  return AI_PROVIDER_APEX_HOSTS.some((apex) => normalized === apex || normalized.endsWith(`.${apex}`));
+function apexMatch(host: string, apex: string): boolean { return host === apex || host.endsWith(`.${apex}`); }
+function isApiLabeledSubdomain(host: string): boolean { const label = host.split(".")[0]; return label === "api" || label.startsWith("api-"); }
+function isMixedProviderApex(host: string): boolean { return AI_PROVIDER_MIXED_APEX_HOSTS.some((apex) => apexMatch(host, apex)); }
+function isApiOnlyProviderHost(host: string): boolean {
+  if (AI_PROVIDER_EXACT_API_ONLY_HOSTS.has(host)) return true;
+  if (AI_PROVIDER_API_ONLY_HOST_PATTERNS.some((pattern) => pattern.test(host))) return true;
+  if (AI_PROVIDER_API_ONLY_APEX_HOSTS.some((apex) => apexMatch(host, apex))) return true;
+  // An "api."/"api-"-labeled subdomain of a known provider (mixed-apex or API-only) is itself
+  // API-only, even when its parent apex also serves marketing/docs content.
+  if (isApiLabeledSubdomain(host) && (isMixedProviderApex(host) || AI_PROVIDER_API_ONLY_APEX_HOSTS.some((apex) => apexMatch(host, apex)))) return true;
+  return false;
 }
 
 /**
- * "provider" — a known AI-provider host with a path that is not recognizably documentation/
- * policy/marketing; treated as strong evidence that forces a block. "path-shape" — an
- * AI/inference-shaped API path (e.g. /chat/completions) on a host ShipLayer does not recognize;
- * this is the proxied-endpoint case (an app's own backend that forwards to an AI provider) and
- * still forces a block, but under a distinct id so the message can name the ambiguity. "policy" —
- * a known AI-provider host whose path looks like docs/privacy/terms/pricing/marketing, or a bare
- * root path; warn only, never block on this alone. "none" — no AI/inference signal.
+ * "provider" — an API-only known-provider host (any path), or a mixed-apex known-provider host
+ * with an API-shaped path; treated as strong evidence that forces a block. "path-shape" — an
+ * AI/inference-shaped API path (e.g. /chat/completions) on a host ShipLayer does not recognize as
+ * any known provider; this is the proxied-endpoint case (an app's own backend that forwards to an
+ * AI provider) and still forces a block, but under a distinct id so the message can name the
+ * ambiguity. "policy" — a mixed-apex known-provider host whose path is not API-shaped (this
+ * necessarily also covers docs/privacy/legal/pricing/blog/model-card pages, since those are far
+ * too open-ended to enumerate); warn only, never block on this alone. "none" — no AI/inference
+ * signal.
  */
 export function classifyAiEndpoint(endpointUrl: string): "provider" | "path-shape" | "policy" | "none" {
   let url: URL;
   try { url = new URL(endpointUrl); } catch { return "none"; }
-  const knownProvider = isKnownAiProviderHost(url.hostname);
-  if (knownProvider) return AI_DOC_PATH_PATTERN.test(url.pathname) ? "policy" : "provider";
+  const host = url.hostname.toLowerCase();
+  if (isApiOnlyProviderHost(host)) return "provider";
+  if (isMixedProviderApex(host)) return AI_API_PATH_PATTERN.test(url.pathname) ? "provider" : "policy";
   return AI_API_PATH_PATTERN.test(url.pathname) ? "path-shape" : "none";
 }
 
