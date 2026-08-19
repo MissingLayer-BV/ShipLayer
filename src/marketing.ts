@@ -240,8 +240,8 @@ export function renderSlideHtml(entry: MarketingSlideEntry): string {
   <div class="device">
     <img class="frame" alt="" src="${escapeAttr(entry.frameHref)}">
     <div class="screenshot-wrap">
-      <img class="screenshot" alt="" src="${escapeAttr(entry.screenshotPngHref)}"
-        onerror="this.onerror=function(){this.style.display='none';this.nextElementSibling.style.display='flex';};this.src='${escapeAttr(entry.screenshotJpgHref)}';">
+      <img class="screenshot" alt="" src="${escapeAttr(entry.screenshotPngHref)}" data-fallback-src="${escapeAttr(entry.screenshotJpgHref)}"
+        onerror="if(!this.dataset.triedFallback){this.dataset.triedFallback='1';this.src=this.dataset.fallbackSrc;}else{this.style.display='none';this.nextElementSibling.style.display='flex';}">
       <div class="missing">Screenshot pending for scenario '${escapeHtml(entry.id)}' — run shiplayer capture, then re-run export.</div>
     </div>
   </div>
