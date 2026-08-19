@@ -89,6 +89,7 @@ export async function preflight(repository: string, manifest: ShipLayerManifest,
   await purchasePresentationChecks(repository, manifest, add);
   screenshotConfigurationChecks(manifest, add);
   await screenshotChecks(repository, manifest, add);
+  await marketingScreenshotChecks(repository, manifest, add);
   await purchaseAssetChecks(repository, manifest, add);
   await iconChecks(repository, manifest, add);
   await sourceConsistencyChecks(repository, manifest, scan, add);
@@ -517,6 +518,53 @@ async function screenshotChecks(repository: string, manifest: ShipLayerManifest,
         return mostSpecific === scenario;
       });
       if (!covered) add(`${id}.${scenario}`, "block", `No screenshot file corresponds to scenario '${scenario}'.`, `Capture ${scenario}.png (or ${scenario}-*.png) for this declared scenario.`);
+    }
+  }
+}
+
+// The rendered marketing PNGs (shiplayer prepare's screenshots/marketing/ project, exported by a
+// human/agent running its own README-documented commands — see src/marketing.ts) get the SAME
+// exact-dimension/uniform-size/count/no-alpha validation as raw captures above, because they are
+// candidates for what actually gets uploaded and Apple applies the identical rules to them. This
+// intentionally uses the real decoded pixel dimensions and a real alpha-channel inspection of each
+// file on disk (inspectImage), never a self-declared value from slides.json or shiplayer.yml, so a
+// broken/stale export cannot pass by merely claiming to be correct.
+//
+// The conventional output location (shiplayer-release/screenshots/final/{family}/{locale}/) is a
+// fixed, hardcoded path matching `prepare`'s own hardcoded "shiplayer-release" --out default
+// (index.ts) — there is no persisted manifest field recording a custom --out, matching how
+// rawOutputDir already sits outside that convention entirely. A custom `prepare --out` is a known
+// v0.1 limitation: this check will not find final PNGs written under it.
+//
+// Unlike the raw-capture gate, an absent/empty final directory is never a blocker: rendering the
+// marketing project is an optional, additional step in v0.1 (nothing in `apply`/`submit` consumes
+// it yet), so a repository that has not run the export project must not be blocked by this check.
+const MARKETING_FINAL_OUTPUT_DIR = "shiplayer-release/screenshots/final";
+async function marketingScreenshotChecks(repository: string, manifest: ShipLayerManifest, add: Add): Promise<void> {
+  for (const config of manifest.screenshots.configurations) {
+    const id = `marketing.${config.family}.${config.locale}`;
+    const relativeDirectory = `${MARKETING_FINAL_OUTPUT_DIR}/${config.family}/${config.locale}`;
+    let directory: string;
+    try { directory = await resolveContained(repository, relativeDirectory, `marketing screenshots for ${config.family}`); }
+    catch { continue; }
+    if (!existsSync(directory)) continue;
+    let imageFiles: string[];
+    try { imageFiles = (await readdir(directory)).filter((file) => /\.(png|jpe?g)$/i.test(file)).sort(); }
+    catch { add(id, "block", `Marketing screenshot directory is unreadable: ${relativeDirectory}.`); continue; }
+    if (!imageFiles.length) { add(id, "block", `${relativeDirectory} exists but contains no rendered PNG/JPEG marketing screenshots.`, "Run npm install && npm run export inside screenshots/marketing, or remove the empty directory."); continue; }
+    if (imageFiles.length > 10) add(`${id}.count`, "block", `${imageFiles.length} rendered marketing screenshots found; App Store allows at most 10.`);
+    else add(`${id}.count`, "pass", `${imageFiles.length} rendered marketing screenshot(s) found.`);
+    const acceptedForConfig = acceptedDimensionsForConfig(config);
+    let reference: { width: number; height: number; image: string } | undefined;
+    for (const image of imageFiles) {
+      const details = await inspectImage(path.join(directory, image));
+      const imageId = `${id}.${image}`;
+      if (!details) { add(imageId, "block", `Could not inspect rendered marketing screenshot ${image}; it must be a readable PNG/JPEG without alpha.`); continue; }
+      if (details.alpha) add(`${imageId}.alpha`, "block", `Rendered marketing screenshot ${image} has an alpha channel; Apple rejects screenshots with transparency.`, "export.mjs must emit alpha-free PNGs; re-run the export.");
+      if (!acceptedForConfig.has(`${details.width}x${details.height}`) && !acceptedForConfig.has(`${details.height}x${details.width}`)) { add(`${imageId}.accepted-dimensions`, "block", `Rendered marketing screenshot ${image} is ${details.width}×${details.height}, which is not an accepted dimension for this ${config.family} ${dimensionClassLabel(config)} configuration.`, "Fix the slide's target width/height and re-render."); continue; }
+      if (!reference) { reference = { width: details.width, height: details.height, image }; add(`${imageId}.dimensions`, "pass", `${image} is an accepted ${config.family} dimension (${details.width}×${details.height}).`); }
+      else if (details.width !== reference.width || details.height !== reference.height) add(`${imageId}.dimensions`, "block", `Rendered marketing screenshot ${image} is ${details.width}×${details.height}, which differs from ${reference.image} (${reference.width}×${reference.height}) already in this set; App Store Connect requires one uniform size per screenshot set.`);
+      else add(`${imageId}.dimensions`, "pass", `${image} matches ${reference.image}'s dimensions.`);
     }
   }
 }
