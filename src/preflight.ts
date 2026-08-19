@@ -7,6 +7,7 @@ import { resolveContained, walkRepository } from "./fs.js";
 import { inspectImage } from "./image.js";
 import { validateAscPrivateKey } from "./asc.js";
 import { appReviewNotes } from "./generator.js";
+import { DEFAULT_MARKETING_FINAL_DIR } from "./marketing.js";
 import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, isNonProductionSourcePath, MONETIZATION_CONTRADICTION_FINDING, resolveContradictionOverride, storekitPurchaseEvidence } from "./evidence.js";
 
 // Apple requires ONE uniform size per required display class, and the classes are not
@@ -456,6 +457,13 @@ function screenshotConfigurationChecks(manifest: ShipLayerManifest, add: Add): v
   }
   if (!manifest.screenshots.scenarios.length) add("screenshots.scenarios", "block", "No screenshot/recording scenarios exist.", "Define real app-state scenarios and launch arguments.");
   else add("screenshots.scenarios", "pass", `${manifest.screenshots.scenarios.length} screenshot scenarios are defined.`);
+  // App Store allows at most 10 screenshots per family/locale set, and the marketing composition
+  // project (see src/marketing.ts) renders exactly one slide per scenario for EVERY configured
+  // family/locale — so more than 10 scenarios is already known, at prepare time, to over-produce
+  // every set it renders. Warn here instead of only discovering it after a full render (the
+  // post-hoc marketingScreenshotChecks/screenshotChecks file-count block below still catches it,
+  // but only after `npm install && npm run export` has already done the (wasted) work).
+  if (manifest.screenshots.scenarios.length > 10) add("screenshots.scenarios.count", "warn", `${manifest.screenshots.scenarios.length} screenshot scenarios are declared; App Store allows at most 10 screenshots per family/locale set. The marketing composition project will render one slide per scenario for every configured family/locale, over-producing each set.`, "Reduce to 10 or fewer scenarios, or accept that check will block the resulting set(s) after rendering.");
   // A scenario detected from an existing UI-test harness, or copied from the generated template,
   // is never silently promoted to confirmed — a human must verify the real on-screen navigation.
   // An absent confirmation field also blocks (rather than being treated as implicitly confirmed):
@@ -530,20 +538,22 @@ async function screenshotChecks(repository: string, manifest: ShipLayerManifest,
 // file on disk (inspectImage), never a self-declared value from slides.json or shiplayer.yml, so a
 // broken/stale export cannot pass by merely claiming to be correct.
 //
-// The conventional output location (shiplayer-release/screenshots/final/{family}/{locale}/) is a
-// fixed, hardcoded path matching `prepare`'s own hardcoded "shiplayer-release" --out default
-// (index.ts) — there is no persisted manifest field recording a custom --out, matching how
-// rawOutputDir already sits outside that convention entirely. A custom `prepare --out` is a known
-// v0.1 limitation: this check will not find final PNGs written under it.
+// The output location is manifest.screenshots.finalOutputDir — an explicit, persisted field
+// (defaulting to DEFAULT_MARKETING_FINAL_DIR for a manifest that predates this field), the SAME
+// field emitMarketingProject() uses to compute where export.mjs actually writes. This is
+// deliberate: it must never be a hardcoded convention independent of what generateReleasePackage
+// actually used, or a custom `--out`/finalOutputDir would make this check silently look at the
+// wrong (or a stale) directory and report nothing — indistinguishable from "validated and fine"
+// (see PR review finding F4).
 //
 // Unlike the raw-capture gate, an absent/empty final directory is never a blocker: rendering the
 // marketing project is an optional, additional step in v0.1 (nothing in `apply`/`submit` consumes
 // it yet), so a repository that has not run the export project must not be blocked by this check.
-const MARKETING_FINAL_OUTPUT_DIR = "shiplayer-release/screenshots/final";
 async function marketingScreenshotChecks(repository: string, manifest: ShipLayerManifest, add: Add): Promise<void> {
+  const finalOutputDir = manifest.screenshots.finalOutputDir || DEFAULT_MARKETING_FINAL_DIR;
   for (const config of manifest.screenshots.configurations) {
     const id = `marketing.${config.family}.${config.locale}`;
-    const relativeDirectory = `${MARKETING_FINAL_OUTPUT_DIR}/${config.family}/${config.locale}`;
+    const relativeDirectory = `${finalOutputDir}/${config.family}/${config.locale}`;
     let directory: string;
     try { directory = await resolveContained(repository, relativeDirectory, `marketing screenshots for ${config.family}`); }
     catch { continue; }

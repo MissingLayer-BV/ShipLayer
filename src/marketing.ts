@@ -47,8 +47,35 @@ const DEVICE_BOTTOM_MARGIN_FRACTION = 0.045;
 const CAPTION_TOP_FRACTION = 0.055;
 const CAPTION_SIDE_MARGIN_FRACTION = 0.08;
 const CAPTION_FONT_SCALE = 0.062;
+const CAPTION_MIN_FONT_SCALE = 0.028;
+const CAPTION_MAX_LINES = 3;
+// Node has no real text-measurement API, so this is an estimate (average glyph advance, as a
+// fraction of font-size, for a bold system-sans headline) — not exact per-glyph shaping. It exists
+// to keep the documented max-length caption (100 characters, see MAX_CAPTION_LENGTH) from visibly
+// clipping under the CSS line-clamp below, by shrinking the font for a long caption rather than
+// silently truncating it. Short captions are unaffected and keep the original, larger size.
+
+// The one background color every slide uses. A single canonical constant so the CSS below and
+// strip-alpha.mjs's alpha-compositing (see stripAlphaPng) can never drift out of sync with each
+// other — compositing against the wrong background would produce a visibly wrong-colored PNG.
+export const SLIDE_BACKGROUND_RGB: [number, number, number] = [244, 239, 231];
+export const SLIDE_BACKGROUND_HEX = `#${SLIDE_BACKGROUND_RGB.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
 
 interface DeviceBox { left: number; top: number; width: number; height: number }
+// A rough average glyph-advance ratio (fraction of font-size) for a bold system-sans headline —
+// Node has no real text-shaping API to measure exactly. Used only to shrink the font for a long
+// caption so it does not visibly clip under the fixed CAPTION_MAX_LINES CSS line-clamp.
+const CAPTION_AVG_CHAR_WIDTH_EM = 0.58;
+function fitCaptionFontSize(canvasWidth: number, areaWidth: number, text: string): number {
+  const minFontSize = Math.max(1, Math.round(canvasWidth * CAPTION_MIN_FONT_SCALE));
+  let fontSize = Math.round(canvasWidth * CAPTION_FONT_SCALE);
+  while (fontSize > minFontSize) {
+    const charsPerLine = Math.floor(areaWidth / (fontSize * CAPTION_AVG_CHAR_WIDTH_EM));
+    if (text.length <= charsPerLine * CAPTION_MAX_LINES) break;
+    fontSize -= 2;
+  }
+  return fontSize;
+}
 function computeDeviceBox(canvasWidth: number, canvasHeight: number, frame: FrameGeometry): DeviceBox {
   const aspect = frame.canvasWidthPx / frame.canvasHeightPx;
   let height = canvasHeight * DEVICE_HEIGHT_FRACTION;
@@ -85,7 +112,18 @@ export interface MarketingSlideEntry {
 
 /** Relative to the emitted release package's own output directory (e.g. "shiplayer-release"). */
 export const MARKETING_PROJECT_ROOT = "screenshots/marketing";
-export const MARKETING_FINAL_ROOT = "screenshots/final";
+/**
+ * Default, repo-root-relative location for rendered final PNGs, used only when a manifest
+ * predates screenshots.finalOutputDir or leaves it unset. Once a manifest has run through
+ * `shiplayer prepare`, the ACTUAL location is always screenshots.finalOutputDir — an explicit,
+ * persisted field, deliberately independent of whatever --out was used at generation time,
+ * exactly like screenshots.rawOutputDir already is. This is what lets `shiplayer check`, which
+ * receives no --out, find the same directory export.mjs actually wrote to instead of guessing a
+ * hardcoded convention that silently stops matching reality under a custom --out (see PR review
+ * finding F4: a custom --out previously made preflight's marketing checks silently report
+ * nothing, no different from "validated and fine").
+ */
+export const DEFAULT_MARKETING_FINAL_DIR = "shiplayer-release/screenshots/final";
 
 /**
  * Pure path arithmetic (no filesystem access): computes every relative href/output path a slide
@@ -94,7 +132,7 @@ export const MARKETING_FINAL_ROOT = "screenshots/final";
  * relative-path math is done against a shared synthetic "/" root so it is independent of
  * process.cwd() and stays deterministic/testable without touching disk.
  */
-export function buildMarketingSlideEntries(params: { outputDirectory: string; rawOutputDir: string; configurations: Array<{ device: string; family: "iphone" | "ipad"; locale: string; requiredDimensions: { width: number; height: number } }>; scenarios: Array<{ id: string; title: string; caption?: string; confirmation?: string }> }): MarketingSlideEntry[] {
+export function buildMarketingSlideEntries(params: { outputDirectory: string; rawOutputDir: string; finalOutputDir: string; configurations: Array<{ device: string; family: "iphone" | "ipad"; locale: string; requiredDimensions: { width: number; height: number } }>; scenarios: Array<{ id: string; title: string; caption?: string; confirmation?: string }> }): MarketingSlideEntry[] {
   const abs = (relative: string): string => path.posix.join("/", relative);
   const relativeFrom = (fromDir: string, to: string): string => path.posix.relative(abs(fromDir), abs(to));
   const marketingRoot = path.posix.join(params.outputDirectory, MARKETING_PROJECT_ROOT);
@@ -106,7 +144,7 @@ export function buildMarketingSlideEntries(params: { outputDirectory: string; ra
       const screenshotPngAbsolute = path.posix.join(params.rawOutputDir, config.family, config.locale, `${scenario.id}.png`);
       const screenshotJpgAbsolute = path.posix.join(params.rawOutputDir, config.family, config.locale, `${scenario.id}.jpg`);
       const frameAbsolute = path.posix.join(marketingRoot, "assets", `${config.family}-frame.png`);
-      const outputAbsolute = path.posix.join(params.outputDirectory, MARKETING_FINAL_ROOT, config.family, config.locale, `${scenario.id}.png`);
+      const outputAbsolute = path.posix.join(params.finalOutputDir, config.family, config.locale, `${scenario.id}.png`);
       entries.push({
         id: scenario.id, title: scenario.title, caption: scenario.caption, confirmed: scenario.confirmation === "confirmed",
         family: config.family, device: config.device, locale: config.locale,
@@ -134,15 +172,15 @@ export function renderSlideHtml(entry: MarketingSlideEntry): string {
   const screenHeight = box.height * frame.screenHeightPct;
   const radiusX = screenWidth * frame.screenRadiusXPct;
   const radiusY = screenHeight * frame.screenRadiusYPct;
-  const fontSize = Math.round(entry.width * CAPTION_FONT_SCALE);
   const captionTop = Math.round(entry.height * CAPTION_TOP_FRACTION) + (entry.confirmed ? 0 : 70);
   const captionSide = Math.round(entry.width * CAPTION_SIDE_MARGIN_FRACTION);
   const hasCaption = Boolean(entry.caption && entry.caption.trim());
   const captionText = hasCaption ? entry.caption!.trim() : entry.title;
   const captionClass = hasCaption ? "caption" : "caption caption-placeholder";
+  const fontSize = fitCaptionFontSize(entry.width, entry.width - 2 * captionSide, captionText);
   const round = (value: number): number => Math.round(value * 100) / 100;
   return `<!doctype html>
-<html lang="en">
+<html lang="${escapeAttr(entry.locale)}">
 <head>
 <meta charset="utf-8">
 <title>${escapeHtml(entry.id)}</title>
@@ -154,7 +192,7 @@ export function renderSlideHtml(entry: MarketingSlideEntry): string {
     position: relative;
     width: ${entry.width}px;
     height: ${entry.height}px;
-    background: #F4EFE7;
+    background: ${SLIDE_BACKGROUND_HEX};
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
   }
   .badge {
@@ -184,7 +222,7 @@ export function renderSlideHtml(entry: MarketingSlideEntry): string {
     line-height: 1.08;
     letter-spacing: -0.02em;
     display: -webkit-box;
-    -webkit-line-clamp: 3;
+    -webkit-line-clamp: ${CAPTION_MAX_LINES};
     -webkit-box-orient: vertical;
     overflow: hidden;
     word-wrap: break-word;
@@ -258,7 +296,7 @@ export function renderPackageJson(): string {
     version: "1.0.0",
     type: "module",
     description: "Generated by ShipLayer. Renders shiplayer-release/screenshots/marketing/slides/**/*.html to final PNGs with Playwright. Not part of the ShipLayer CLI itself.",
-    scripts: { postinstall: "playwright install chromium", export: "node export.mjs" },
+    scripts: { export: "node export.mjs" },
     dependencies: { playwright: "^1.48.0" }
   }, null, 2)}\n`;
 }
@@ -279,7 +317,19 @@ export const STRIP_ALPHA_MJS = `// Generated by ShipLayer. Decodes a PNG (any 8-
 // screenshot encoder plausibly emits) and re-encodes it as a true color-type-2 RGB PNG with no
 // alpha channel. Zero imports beyond Node builtins — see src/marketing.ts for why this must never
 // depend on Playwright being installed to be tested.
+//
+// Any pixel with partial/full transparency is composited (the standard "over" operator) against
+// the exact background color every generated slide uses, never simply dropped — dropping alpha
+// silently turns e.g. a fully transparent pixel into an opaque, wrong-colored one. Kept in sync
+// with the slide CSS by construction: both come from SLIDE_BACKGROUND_RGB in src/marketing.ts.
 import { inflateSync, deflateSync } from "node:zlib";
+
+const BG_R = 244;
+const BG_G = 239;
+const BG_B = 231;
+function compositeOver(src, alpha, bg) {
+  return Math.round((src * alpha + bg * (255 - alpha)) / 255);
+}
 
 const CRC_TABLE = (() => {
   const table = new Uint32Array(256);
@@ -335,6 +385,7 @@ export function stripAlphaPng(buffer) {
   if (!samplesPerPixel) throw new Error(\`Unsupported PNG color type \${colorType}.\`);
   const raw = inflateSync(Buffer.concat(idatParts));
   const rowBytes = width * samplesPerPixel;
+  if (raw.length !== height * (1 + rowBytes)) throw new Error(\`Corrupt PNG: decompressed pixel data is \${raw.length} bytes, expected \${height * (1 + rowBytes)} for \${width}x\${height} at \${samplesPerPixel} samples/pixel.\`);
   const reconstructed = Buffer.alloc(height * rowBytes);
   let src = 0;
   for (let y = 0; y < height; y++) {
@@ -355,8 +406,10 @@ export function stripAlphaPng(buffer) {
       reconstructed[rowStart + x] = value & 0xff;
     }
   }
-  // Drop alpha (and expand grayscale to RGB) to build RGB raw scanlines, each prefixed with a
-  // "None" filter byte.
+  // Composite any alpha channel against the known slide background (the standard "over"
+  // operator) rather than dropping it — a dropped alpha channel silently turns e.g. a fully
+  // transparent pixel into an opaque, wrong-colored one, which check's alpha gate would no longer
+  // catch. Opaque inputs (no alpha channel at all: colorType 0/2) pass through unchanged.
   const outRowBytes = width * 3;
   const outRaw = Buffer.alloc(height * (1 + outRowBytes));
   for (let y = 0; y < height; y++) {
@@ -367,8 +420,16 @@ export function stripAlphaPng(buffer) {
       const inOffset = inRowStart + x * samplesPerPixel;
       let r, g, b;
       if (samplesPerPixel === 1) { r = g = b = reconstructed[inOffset]; }
-      else if (samplesPerPixel === 2) { r = g = b = reconstructed[inOffset]; }
-      else { r = reconstructed[inOffset]; g = reconstructed[inOffset + 1]; b = reconstructed[inOffset + 2]; }
+      else if (samplesPerPixel === 3) { r = reconstructed[inOffset]; g = reconstructed[inOffset + 1]; b = reconstructed[inOffset + 2]; }
+      else if (samplesPerPixel === 2) {
+        const gray = reconstructed[inOffset]; const alpha = reconstructed[inOffset + 1];
+        r = compositeOver(gray, alpha, BG_R); g = compositeOver(gray, alpha, BG_G); b = compositeOver(gray, alpha, BG_B);
+      } else {
+        const alpha = reconstructed[inOffset + 3];
+        r = compositeOver(reconstructed[inOffset], alpha, BG_R);
+        g = compositeOver(reconstructed[inOffset + 1], alpha, BG_G);
+        b = compositeOver(reconstructed[inOffset + 2], alpha, BG_B);
+      }
       outRaw[outOffset++] = r; outRaw[outOffset++] = g; outRaw[outOffset++] = b;
     }
   }
@@ -399,7 +460,24 @@ if (!manifest.slides.length) {
   process.exit(0);
 }
 
-const browser = await chromium.launch({ channel: process.env.SHIPLAYER_PW_CHANNEL || undefined });
+let browser;
+try {
+  browser = await chromium.launch({ channel: process.env.SHIPLAYER_PW_CHANNEL || undefined });
+} catch (error) {
+  console.error("Failed to launch a browser for rendering.");
+  console.error(error instanceof Error ? error.message : String(error));
+  console.error("");
+  console.error("If Playwright's bundled Chromium download failed or is unsupported on your OS,");
+  console.error("point SHIPLAYER_PW_CHANNEL at a browser you already have installed instead of");
+  console.error("downloading one, e.g.:");
+  console.error("");
+  console.error("    SHIPLAYER_PW_CHANNEL=chrome npm run export");
+  console.error("");
+  console.error("(chrome/chromium/msedge are common channel values; see Playwright's docs for the");
+  console.error("full list.) Do not follow generic Playwright 'npx playwright install' advice from");
+  console.error("here without first trying the channel override above.");
+  process.exit(1);
+}
 try {
   for (const slide of manifest.slides) {
     const htmlPath = path.join(scriptDir, slide.html);
@@ -425,11 +503,15 @@ export function renderSlidesManifestJson(entries: MarketingSlideEntry[]): string
   return `${JSON.stringify({ version: 1, slides: entries.map((entry) => ({ id: entry.id, family: entry.family, device: entry.device, locale: entry.locale, width: entry.width, height: entry.height, confirmed: entry.confirmed, html: entry.htmlRelativePath, output: entry.outputRelativePath })) }, null, 2)}\n`;
 }
 
-export function renderReadme(entries: MarketingSlideEntry[]): string {
+export function renderReadme(entries: MarketingSlideEntry[], finalOutputDir: string): string {
   const families = [...new Set(entries.map((entry) => entry.family))].sort();
   const unconfirmed = entries.filter((entry) => !entry.confirmed).length;
+  const perSetCounts = new Map<string, number>();
+  for (const entry of entries) { const key = `${entry.family}/${entry.locale}`; perSetCounts.set(key, (perSetCounts.get(key) || 0) + 1); }
+  const oversizedSets = [...perSetCounts.entries()].filter(([, count]) => count > 10);
+  const oversizedWarning = oversizedSets.length ? `\n> **Warning:** App Store allows at most 10 screenshots per family/locale set. ${oversizedSets.map(([key, count]) => `${key} has ${count}`).join(", ")}. Reduce screenshots.scenarios in shiplayer.yml to 10 or fewer, or \`shiplayer check\` will block the resulting set(s) after you render them.\n` : "";
   return `# ShipLayer marketing screenshot composition
-
+${oversizedWarning}
 Generated by \`shiplayer prepare\`. This is a self-contained, offline-renderable project — the
 only dependency is Playwright, and it belongs to this generated project, not to ShipLayer itself.
 
@@ -437,17 +519,21 @@ only dependency is Playwright, and it belongs to this generated project, not to 
 
 \`\`\`
 npm install
+npx playwright install chromium   # one-time browser download; Playwright does not do this for you
 npm run export
 \`\`\`
 
-\`npm install\` also downloads Playwright's bundled Chromium (via its own \`postinstall\` script,
-\`playwright install chromium\`) — a one-time, possibly large download. If that download is blocked
-or unsupported on your machine/OS, install a browser yourself (\`npx playwright install chromium\`,
-or point \`SHIPLAYER_PW_CHANNEL\` at an already-installed browser, e.g. \`SHIPLAYER_PW_CHANNEL=chrome
-npm run export\` to use a system-installed Google Chrome instead of downloading one).
+If the bundled Chromium download is blocked or unsupported on your machine/OS (Playwright drops
+support for old OS versions over time), point \`SHIPLAYER_PW_CHANNEL\` at an already-installed
+browser instead of downloading one, e.g. \`SHIPLAYER_PW_CHANNEL=chrome npm run export\` to use a
+system-installed Google Chrome. \`export.mjs\` also prints this exact suggestion if the browser
+launch fails.
 
-This renders every slide in \`slides/\` to \`../final/{family}/{locale}/<scenario-id>.png\`
-(i.e. \`shiplayer-release/screenshots/final/...\`, a sibling of this \`marketing/\` directory).
+This renders every slide in \`slides/\` to \`${finalOutputDir}/{family}/{locale}/<scenario-id>.png\`
+(each slide's exact output path is also in \`slides.json\`, relative to this \`marketing/\`
+directory). This is \`screenshots.finalOutputDir\` in shiplayer.yml — \`shiplayer check <repo>\`
+reads the same field, so it always looks in the same place export.mjs actually wrote to, even
+after a custom \`--out\`.
 Then run \`shiplayer check <repo>\` from the app repository to validate the rendered PNGs the same
 way raw captures are validated: exact per-display-class dimensions, one uniform size per
 family/locale set, at most 10 per set, and no alpha channel (Apple rejects screenshots with

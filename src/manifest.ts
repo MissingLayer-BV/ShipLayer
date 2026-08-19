@@ -4,6 +4,7 @@ import path from "node:path";
 import { lstat, rename, rm, writeFile } from "node:fs/promises";
 import { realpath } from "node:fs/promises";
 import { readText, safeRelativePath } from "./fs.js";
+import { DEFAULT_MARKETING_FINAL_DIR } from "./marketing.js";
 import schema from "./schema.json" with { type: "json" };
 import type { ShipLayerManifest } from "./types.js";
 
@@ -19,7 +20,7 @@ const ISO_TERRITORIES = new Set("AFG ALB DZA ASM AND AGO AIA ATA ATG ARG ARM ABW
 export function manifestPath(repo: string): string { return path.join(repo, "shiplayer.yml"); }
 export function defaultManifest(input: Partial<ShipLayerManifest["app"]> = {}): ShipLayerManifest {
   const app = { name: input.name || "", bundleId: input.bundleId || "", deviceFamilies: input.deviceFamilies || ["iphone", "ipad"], locales: input.locales || ["en-US"], primaryLocale: input.primaryLocale || "en-US", availability: input.availability || "all", releaseMode: input.releaseMode || "manual", ...input } as ShipLayerManifest["app"];
-  return { schemaVersion: 1, app, contacts: {}, metadata: { localizations: { [app.primaryLocale]: {} } }, permissions: [], dataProcessing: [], externalProcessors: [], aiDataSharing: { enabled: false }, externalServiceDecisions: [], sourceContradictionOverrides: [], secondaryTargetConfirmations: [], review: { demoAccount: { required: false }, recordingScenarios: [] }, screenshots: { scenarios: [], configurations: screenshotConfigs(app.primaryLocale, app.deviceFamilies), rawOutputDir: "release/raw-screenshots", marketingProjectPath: "design/app-store-screenshots" }, monetization: { type: "free", confirmation: "needs-human-confirmation" }, build: { signing: "unknown", exportCompliance: "unknown", testFlightUpload: false }, sync: { mode: "dry-run", appStoreConnectKeyIdEnv: "APP_STORE_CONNECT_KEY_ID", issuerIdEnv: "APP_STORE_CONNECT_ISSUER_ID", privateKeyPathEnv: "APP_STORE_CONNECT_PRIVATE_KEY_PATH" }, confirmations: { privacy: "needs-human-confirmation", legal: "needs-human-confirmation", trader: "needs-human-confirmation", paidAgreements: "needs-human-confirmation", ageRating: "needs-human-confirmation", contentRights: "needs-human-confirmation" } };
+  return { schemaVersion: 1, app, contacts: {}, metadata: { localizations: { [app.primaryLocale]: {} } }, permissions: [], dataProcessing: [], externalProcessors: [], aiDataSharing: { enabled: false }, externalServiceDecisions: [], sourceContradictionOverrides: [], secondaryTargetConfirmations: [], review: { demoAccount: { required: false }, recordingScenarios: [] }, screenshots: { scenarios: [], configurations: screenshotConfigs(app.primaryLocale, app.deviceFamilies), rawOutputDir: "release/raw-screenshots", marketingProjectPath: "design/app-store-screenshots", finalOutputDir: DEFAULT_MARKETING_FINAL_DIR }, monetization: { type: "free", confirmation: "needs-human-confirmation" }, build: { signing: "unknown", exportCompliance: "unknown", testFlightUpload: false }, sync: { mode: "dry-run", appStoreConnectKeyIdEnv: "APP_STORE_CONNECT_KEY_ID", issuerIdEnv: "APP_STORE_CONNECT_ISSUER_ID", privateKeyPathEnv: "APP_STORE_CONNECT_PRIVATE_KEY_PATH" }, confirmations: { privacy: "needs-human-confirmation", legal: "needs-human-confirmation", trader: "needs-human-confirmation", paidAgreements: "needs-human-confirmation", ageRating: "needs-human-confirmation", contentRights: "needs-human-confirmation" } };
 }
 
 function screenshotConfigs(locale: string, families: Array<"iphone" | "ipad">): ShipLayerManifest["screenshots"]["configurations"] {
@@ -76,7 +77,7 @@ export function validateManifest(candidate: unknown): asserts candidate is ShipL
   };
   validateLocalizationMap("metadata.localizations", manifest.metadata.localizations);
   for (const locale of manifest.app.locales) if (!manifest.metadata.localizations[locale]) errors.push(`metadata.localizations is missing configured locale ${locale}`);
-  for (const [label, candidatePath] of [["screenshots.rawOutputDir", manifest.screenshots.rawOutputDir], ["screenshots.marketingProjectPath", manifest.screenshots.marketingProjectPath]] as const) {
+  for (const [label, candidatePath] of [["screenshots.rawOutputDir", manifest.screenshots.rawOutputDir], ["screenshots.marketingProjectPath", manifest.screenshots.marketingProjectPath], ["screenshots.finalOutputDir", manifest.screenshots.finalOutputDir]] as const) {
     if (!candidatePath) continue;
     try { safeRelativePath(candidatePath, label); } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
   }

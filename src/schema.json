@@ -802,6 +802,9 @@
         },
         "marketingProjectPath": {
           "$ref": "#/$defs/repoPath"
+        },
+        "finalOutputDir": {
+          "$ref": "#/$defs/repoPath"
         }
       }
     },
