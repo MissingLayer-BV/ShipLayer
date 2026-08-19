@@ -13,9 +13,10 @@ Use the repository's `shiplayer` CLI for all deterministic work. Do not recreate
 2. Run `shiplayer init <repo>` only when no manifest exists. Do not overwrite a manifest without an explicit user request.
 3. Ask for confirmation only for facts the scanner cannot prove: pricing, availability, privacy collection/third parties, legal/trader status, App Review contact, and paywall behavior. Never infer that Zero Data Retention, no-training, or disabled provider collection means user data was not shared with the processors that received it.
 4. Update and validate `shiplayer.yml`, then run `shiplayer prepare <repo>` and `shiplayer check <repo>`.
-5. Preview every generated screenshot, metadata field, privacy/support page, review note, and preflight warning with the user.
-6. Run `shiplayer plan <repo>` first. Use `--remote` only with the user's credentials configured as environment variables; it is read-only.
-7. Treat `apply` and `submit` as separate explicit user-authorized gates. Do not pass their confirmation flags on the user's behalf. In v0.1 explicit execution reports a manual/unsupported handoff and exits 3; explain that no operation happened.
+5. `prepare` emits a marketing screenshot composition project at `shiplayer-release/screenshots/marketing/` — a device frame + caption + background HTML slide per scenario, not the raw UI screenshot. Draft a concise, human-reviewed `screenshots.scenarios[].caption` for each scenario in `shiplayer.yml` (max 100 characters, no line breaks; sell one outcome per slide, not a feature list) — ShipLayer never invents these itself, and `init`'s unresolved questions will call out scenarios still missing one. A caption on an unconfirmed scenario still renders with a visible "Draft — needs confirmation" badge; do not treat it as finished until the scenario's `confirmation` is `confirmed`. Then run the two commands the generated `screenshots/marketing/README.md` documents (`npm install && npx playwright install chromium`, then `npm run export`) to render final PNGs, and re-run `shiplayer check <repo>` to validate them.
+6. Preview every generated screenshot, metadata field, privacy/support page, review note, and preflight warning with the user.
+7. Run `shiplayer plan <repo>` first. Use `--remote` only with the user's credentials configured as environment variables; it is read-only.
+8. Treat `apply` and `submit` as separate explicit user-authorized gates. Do not pass their confirmation flags on the user's behalf. In v0.1 explicit execution reports a manual/unsupported handoff and exits 3; explain that no operation happened.
 
 ## App Review hard gates
 
