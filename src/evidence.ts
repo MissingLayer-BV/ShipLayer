@@ -55,6 +55,23 @@ export function isFixtureOrTestEvidencePath(file: string): boolean {
   return isNonProductionSourcePath(file) || isNonProductionEvidenceDirectory(file);
 }
 
+// --- screenshot UI-test harness path detection -----------------------------------------------
+// Deliberately independent from isNonProductionSourcePath/isFixtureOrTestEvidencePath above:
+// those two gate whether *production* evidence (privacy/purchase/AI disclosure proof) can be
+// trusted, and must never be broadened or repurposed — that predicate pair was the subject of a
+// four-round security review. A screenshot scenario legitimately only ever exists inside a UI
+// test target, so this accessor exists purely to let the scanner look INTO XCUITest sources for
+// one narrow, opposite purpose (proposing App Store screenshot scenarios), never as production
+// evidence for privacy, purchases, or AI disclosure. Do not call this from any production-
+// evidence code path, and do not fold its logic back into isNonProductionSourcePath.
+export function isXCUITestSourcePath(file: string): boolean {
+  const normalized = file.replace(/\\/g, "/");
+  const parts = normalized.split("/");
+  const basename = parts.at(-1) || "";
+  if (!/\.(?:swift|m|mm)$/i.test(basename)) return false;
+  return parts.some((component) => /UITests$/.test(component)) || /UITests?\.(?:swift|m|mm)$/.test(basename);
+}
+
 /** Drops fixture/sample/example/docs/test-only evidence entries; drops a finding entirely if nothing production-relevant is left. */
 export function productionEvidenceOnly(findings: Finding[]): Finding[] {
   return findings
