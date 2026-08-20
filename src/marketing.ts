@@ -66,12 +66,28 @@ interface DeviceBox { left: number; top: number; width: number; height: number }
 // Node has no real text-shaping API to measure exactly. Used only to shrink the font for a long
 // caption so it does not visibly clip under the fixed CAPTION_MAX_LINES CSS line-clamp.
 const CAPTION_AVG_CHAR_WIDTH_EM = 0.58;
+// CJK ideographs/kana/hangul/fullwidth forms render roughly full-em wide (near-square glyphs),
+// materially wider than the Latin-lowercase-average CAPTION_AVG_CHAR_WIDTH_EM above assumes --
+// without this, a caption well under the documented character limit but written in one of these
+// scripts could still visibly clip with NO shrink applied at all. This is still an estimate (a
+// real per-glyph width table is out of scope for a Node script with no text-shaping engine), so
+// wording that references the character limit is deliberately qualified for these scripts rather
+// than promising zero clipping outright — see MAX_CAPTION_LENGTH's own doc comment, the generated
+// README, and src/types.ts.
+const WIDE_SCRIPT_PATTERN = /[\u1100-\u115F\u2E80-\u303E\u3041-\u33FF\u3400-\u4DBF\u4E00-\u9FFF\uA960-\uA97F\uAC00-\uD7A3\uF900-\uFAFF\uFF00-\uFF60\uFFE0-\uFFE6]/;
+const WIDE_SCRIPT_WIDTH_MULTIPLIER = 1.8;
+function estimatedTextWidthUnits(text: string): number {
+  let units = 0;
+  for (const character of text) units += WIDE_SCRIPT_PATTERN.test(character) ? WIDE_SCRIPT_WIDTH_MULTIPLIER : 1;
+  return units;
+}
 function fitCaptionFontSize(canvasWidth: number, areaWidth: number, text: string): number {
   const minFontSize = Math.max(1, Math.round(canvasWidth * CAPTION_MIN_FONT_SCALE));
+  const widthUnits = estimatedTextWidthUnits(text);
   let fontSize = Math.round(canvasWidth * CAPTION_FONT_SCALE);
   while (fontSize > minFontSize) {
-    const charsPerLine = Math.floor(areaWidth / (fontSize * CAPTION_AVG_CHAR_WIDTH_EM));
-    if (text.length <= charsPerLine * CAPTION_MAX_LINES) break;
+    const unitsPerLine = areaWidth / (fontSize * CAPTION_AVG_CHAR_WIDTH_EM);
+    if (widthUnits <= unitsPerLine * CAPTION_MAX_LINES) break;
     fontSize -= 2;
   }
   return fontSize;
@@ -560,7 +576,12 @@ the browser produced; see export.mjs).
 - A slide with an italic gray headline has no drafted \`caption\` yet (it falls back to the
   scenario title so the slide still renders legibly) — write a real, human-reviewed caption in
   \`screenshots.scenarios[].caption\` in shiplayer.yml. One idea per slide; sell an outcome, not a
-  feature list. Max ${MAX_CAPTION_LENGTH} characters, no line breaks.
+  feature list. Max ${MAX_CAPTION_LENGTH} characters, no line breaks. The font auto-shrinks (with
+  a floor) to fit ${CAPTION_MAX_LINES} lines based on an ESTIMATED character width — reliable for
+  Latin-script text at or under the limit, but a caption entirely in a wide script (CJK ideographs,
+  kana, hangul, fullwidth forms) can still clip even under ${MAX_CAPTION_LENGTH} characters, since
+  those glyphs render close to full-width. Keep a wide-script caption noticeably shorter than the
+  limit and check the rendered PNG.
 - A "Screenshot pending" placeholder means no raw screenshot has been ingested yet for that
   scenario/family/locale. Run \`shiplayer capture <repo> --from <dir> --family <family> --locale
   <locale>\`, then re-run export.

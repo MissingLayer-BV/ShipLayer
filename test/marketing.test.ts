@@ -678,3 +678,33 @@ test("N3: the documented default finalOutputDir (which starts with shiplayer-rel
     assert.equal(reserved, undefined);
   });
 });
+
+// --- F8 residual: wide scripts (CJK/kana/hangul/fullwidth) get a wider per-character estimate ---
+
+function fontSizeOfCaption(entry: Parameters<typeof renderSlideHtml>[0]): number {
+  return Number(/\.caption \{[\s\S]*?font-size: (\d+)px;/.exec(renderSlideHtml(entry))?.[1]);
+}
+function baseSlideEntry(caption: string): Parameters<typeof renderSlideHtml>[0] {
+  return { id: "home", title: "Home", caption, confirmed: true, family: "iphone", device: "iPhone 16 Pro Max", locale: "ja", width: 1320, height: 2868, screenshotPngHref: "x.png", screenshotJpgHref: "x.jpg", frameHref: "f.png", htmlRelativePath: "h.html", outputRelativePath: "o.png" };
+}
+
+test("F8 residual: a 58-character CJK caption (well under the 100-character limit) now shrinks, where it previously stayed at full size", () => {
+  const cjk58 = "毎".repeat(58);
+  assert.equal(cjk58.length, 58);
+  const fontSize = fontSizeOfCaption(baseSlideEntry(cjk58));
+  const unshrunkSize = fontSizeOfCaption(baseSlideEntry("短い")); // a short CJK caption: no shrink needed
+  assert.ok(fontSize < unshrunkSize, `expected the 58-char CJK caption (${fontSize}px) to shrink below an unconstrained CJK caption's size (${unshrunkSize}px)`);
+});
+
+test("F8 residual: a wide-script caption at the documented maximum shrinks at least as much as an all-Latin one of the same length", () => {
+  const cjk100 = "毎".repeat(MAX_CAPTION_LENGTH);
+  const latin100 = "M".repeat(MAX_CAPTION_LENGTH);
+  const cjkFontSize = fontSizeOfCaption(baseSlideEntry(cjk100));
+  const latinFontSize = fontSizeOfCaption({ ...baseSlideEntry(latin100), locale: "en-US" });
+  assert.ok(cjkFontSize <= latinFontSize, `a same-length wide-script caption (${cjkFontSize}px) must never be estimated as needing LESS shrinking than a Latin one (${latinFontSize}px)`);
+});
+
+test("F8 residual: a short Latin caption is unaffected by the wide-script estimate", () => {
+  const fontSize = fontSizeOfCaption({ ...baseSlideEntry("Ship faster"), locale: "en-US" });
+  assert.equal(fontSize, Math.round(1320 * 0.062)); // CAPTION_FONT_SCALE, no shrink triggered
+});

@@ -158,7 +158,11 @@ export interface ScreenshotScenario {
    * with the scenario title as a visibly-marked placeholder. Like every other proposed field on
    * this type, a caption's trustworthiness rides on the scenario's own `confirmation`: a scenario
    * that is not "confirmed" always renders its marketing slide with a visible draft marker,
-   * whether or not it has a caption yet — see src/marketing.ts's renderSlideHtml. */
+   * whether or not it has a caption yet — see src/marketing.ts's renderSlideHtml. The rendered
+   * font auto-shrinks toward the character limit, but only by an ESTIMATE (Node has no real
+   * text-shaping engine): reliable for Latin-script text at or under 100 characters, but a caption
+   * entirely in a wide script (CJK ideographs, kana, hangul, fullwidth forms) can still visibly
+   * clip even under that limit — keep those noticeably shorter and check the rendered PNG. */
   caption?: string;
 }
 
