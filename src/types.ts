@@ -35,6 +35,13 @@ export interface LocaleCopy {
   description?: string;
   keywords?: string[];
   whatsNew?: string;
+  /** Every field above is a human-reviewable proposal, never a fact ShipLayer invents: `init`
+   * always leaves this whole object absent for a locale and records an unresolved question naming
+   * exactly what an agent/human must draft (see manifestFromAnalysis in src/index.ts). Absent is
+   * never read as approved — preflight.ts's metadata.<locale>.confirmation gate blocks on
+   * anything other than a literal "confirmed", exactly like scenario.confirmation and every other
+   * proposal confirmation in this file. */
+  confirmation?: Confirmation;
 }
 
 export interface ExternalProcessor {
