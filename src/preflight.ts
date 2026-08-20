@@ -2,13 +2,13 @@ import path from "node:path";
 import { lstat, readFile, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import type { AnalysisReport, CheckResult, PreflightReport, ShipLayerManifest } from "./types.js";
-import { analyzeRepository, findValue } from "./scanner.js";
+import { analyzeRepository, findPermissionRequestSites, findValue } from "./scanner.js";
 import { resolveContained, walkRepository } from "./fs.js";
 import { inspectImage } from "./image.js";
 import { validateAscPrivateKey } from "./asc.js";
 import { appReviewNotes } from "./generator.js";
 import { DEFAULT_MARKETING_FINAL_DIR } from "./marketing.js";
-import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, isNonProductionSourcePath, MONETIZATION_CONTRADICTION_FINDING, resolveContradictionOverride, storekitPurchaseEvidence } from "./evidence.js";
+import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, isNonProductionSourcePath, MONETIZATION_CONTRADICTION_FINDING, productionEvidenceOnly, resolveContradictionOverride, storekitPurchaseEvidence, stripCodeComments } from "./evidence.js";
 
 // Apple requires ONE uniform size per required display class, and the classes are not
 // interchangeable: a 6.5-inch capture does not satisfy the 6.9-inch slot. Each display class is
@@ -83,6 +83,7 @@ export async function preflight(repository: string, manifest: ShipLayerManifest,
 
   metadataChecks(manifest, add);
   permissionChecks(manifest, add);
+  await permissionFlowChecks(repository, manifest, scan, add);
   exportComplianceCheck(manifest, add);
   confirmationChecks(manifest, add);
   await monetizationChecks(repository, manifest, scan, add);
@@ -161,6 +162,187 @@ function permissionChecks(manifest: ShipLayerManifest, add: Add): void {
     else if (permission.confirmation !== "confirmed") add(`permission.${permission.key}`, "block", `${permission.key} is not human-confirmed.`, "Confirm the permission and purpose before submission.");
     else add(`permission.${permission.key}`, "pass", `${permission.key} has a confirmed purpose string.`);
   }
+}
+
+// --- permission-flow gates (App Review 5.1.1(iv)) --------------------------------------------
+// BackYet was rejected because a dismissible custom sheet sat in front of the one-time system
+// camera prompt, and its denied-access fallback offered alternatives but no Settings link. Three
+// checks per detected runtime permission-request category:
+//   - permission-flow.<category>.confirmation — Gate 2, human-confirmed, always required for
+//     every detected category. No scanner can prove "can the user dismiss a custom screen before
+//     the prompt", so this always blocks until a human/agent answers it via
+//     manifest.permissionFlows; it is never satisfiable by an absent declaration, an unconfirmed
+//     one, or a default value.
+//   - permission-flow.<category>.settings-link — Gate 1, statically checkable. Same-file
+//     correlation only: the production file that requests/checks this permission must ALSO
+//     contain a `.denied`/`.restricted` marker and `openSettingsURLString`. This is a heuristic,
+//     not a proven data-flow/reachability proof — an app whose Settings link genuinely lives in a
+//     separate shared permission helper file will not satisfy it and must inline/duplicate the
+//     link, or restructure, to pass. A Settings link that exists ANYWHERE else in the app (an
+//     unrelated screen) deliberately does not satisfy this — see BackYet 780dcaf, which already
+//     had openSettingsURLString in two unrelated files while the camera denied-path had none.
+//   - permission-flow.<category>.sheet-gated — Gate 3, the owner's heuristic. Only fires when the
+//     permission-request call is reachable, in a given production file, exclusively through a
+//     `.sheet`/`.confirmationDialog`/`.alert`/`.popover` presentation (including a function
+//     invoked only as that presentation's onDismiss callback) — BackYet's exact rejected shape.
+//     Clearable only by a confirmed permissionFlows declaration stating
+//     dismissibleScreenBeforePrompt: false; Apple does permit an always-proceeds explanatory
+//     screen, so this heuristic can false-positive on that legitimate shape, which is exactly what
+//     the declaration is for.
+const SETTINGS_LINK_PATTERN = /\bopenSettingsURLString\b/;
+const DENIED_MARKER_PATTERN = /\.denied\b|\.restricted\b/;
+
+interface SwiftFunctionRegion { name: string; nameStart: number; bodyStart: number; bodyEnd: number; }
+interface TextRegion { start: number; end: number; }
+
+/** Every `func name(...) { ... }` region in `content`, using the same quote-aware balanced-
+ * delimiter scan as the rest of this file (matchingDelimiter). A signature ShipLayer cannot find a
+ * body brace for within a bounded window (a protocol requirement, or an unusually long generic/
+ * where clause) is simply omitted — call sites inside an unrecognized function then have no
+ * enclosing function, which fails a gating check open (not gated), never closed. */
+function permissionFlowFunctionRegions(content: string): SwiftFunctionRegion[] {
+  const regions: SwiftFunctionRegion[] = [];
+  for (const match of content.matchAll(/\bfunc\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>{]*>)?\s*\(/g)) {
+    const name = match[1]; const declStart = match.index ?? 0;
+    // The name's own position, not "func"'s — permissionFlowCallSiteIndices matches on the NAME,
+    // so excluding the declaration itself must compare against the same position.
+    const nameStart = declStart + match[0].indexOf(name, 4);
+    const parenOpen = declStart + match[0].length - 1;
+    const parenClose = matchingDelimiter(content, parenOpen, "(", ")", 20_000);
+    if (parenClose < 0) continue;
+    const between = content.slice(parenClose + 1, Math.min(content.length, parenClose + 1 + 300));
+    const braceOffset = between.search(/\{/);
+    const boundaryOffset = between.search(/[;}]/);
+    if (braceOffset < 0 || (boundaryOffset >= 0 && boundaryOffset < braceOffset)) continue;
+    const braceOpen = parenClose + 1 + braceOffset;
+    const braceClose = matchingDelimiter(content, braceOpen, "{", "}", 200_000);
+    if (braceClose < 0) continue;
+    regions.push({ name, nameStart, bodyStart: braceOpen, bodyEnd: braceClose });
+  }
+  return regions;
+}
+
+/** Every `.sheet(`/`.confirmationDialog(`/`.alert(`/`.popover(` modifier's dismissible region(s):
+ * its primary trailing content closure, a second labeled trailing closure (SwiftUI's
+ * `} message: { ... }` shape), and an inline `onDismiss: { ... }` closure literal. Also collects
+ * the names of any function referenced as a bare `onDismiss: someFunction` value — SwiftUI always
+ * runs onDismiss strictly after that presentation is dismissed (Cancel, swipe, or a selection that
+ * calls dismiss()), so a function reachable only that way is exactly as gated as one called
+ * directly inside the presented screen. */
+function permissionFlowDismissibleRegions(content: string): { regions: TextRegion[]; onDismissNames: Set<string> } {
+  const regions: TextRegion[] = []; const onDismissNames = new Set<string>();
+  for (const match of content.matchAll(/\.(?:sheet|confirmationDialog|alert|popover)\s*\(/g)) {
+    const argsOpen = (match.index ?? 0) + match[0].length - 1;
+    const argsClose = matchingDelimiter(content, argsOpen, "(", ")", 20_000);
+    if (argsClose < 0) continue;
+    const argsText = content.slice(argsOpen + 1, argsClose);
+    // No trailing `[,)]` requirement: argsText is sliced to EXCLUDE the call's own closing paren
+    // (matchingDelimiter returns that index, not a substring including it), so `onDismiss:` as the
+    // last/only argument would never be followed by a `,` or `)` inside argsText itself. A bare
+    // trailing word boundary is sufficient and correct regardless of what (if anything) follows.
+    const namedDismiss = argsText.match(/\bonDismiss\s*:\s*([A-Za-z_][A-Za-z0-9_]*)\b/);
+    if (namedDismiss && namedDismiss[1] !== "nil") onDismissNames.add(namedDismiss[1]);
+    const inlineDismiss = argsText.match(/\bonDismiss\s*:\s*\{/);
+    if (inlineDismiss) {
+      const braceIndex = argsOpen + 1 + (inlineDismiss.index ?? 0) + inlineDismiss[0].length - 1;
+      const braceClose = matchingDelimiter(content, braceIndex, "{", "}", 50_000);
+      if (braceClose >= 0) regions.push({ start: braceIndex, end: braceClose });
+    }
+    const gap = content.slice(argsClose + 1, argsClose + 1 + 40).match(/^\s*/);
+    const afterSpace = argsClose + 1 + (gap ? gap[0].length : 0);
+    if (content[afterSpace] !== "{") continue;
+    const firstClose = matchingDelimiter(content, afterSpace, "{", "}", 50_000);
+    if (firstClose < 0) continue;
+    regions.push({ start: afterSpace, end: firstClose });
+    const labelWindow = content.slice(firstClose + 1, firstClose + 1 + 60);
+    const labelMatch = labelWindow.match(/^\s*[A-Za-z_][A-Za-z0-9_]*\s*:\s*\{/);
+    if (!labelMatch) continue;
+    const secondBrace = firstClose + 1 + labelMatch[0].lastIndexOf("{");
+    const secondClose = matchingDelimiter(content, secondBrace, "{", "}", 50_000);
+    if (secondClose >= 0) regions.push({ start: secondBrace, end: secondClose });
+  }
+  return { regions, onDismissNames };
+}
+
+function withinAnyRegion(index: number, regions: TextRegion[]): boolean { return regions.some((region) => index >= region.start && index <= region.end); }
+function permissionFlowEnclosingFunction(index: number, functions: SwiftFunctionRegion[]): SwiftFunctionRegion | undefined {
+  let best: SwiftFunctionRegion | undefined;
+  for (const region of functions) if (index > region.bodyStart && index < region.bodyEnd && (!best || region.bodyEnd - region.bodyStart < best.bodyEnd - best.bodyStart)) best = region;
+  return best;
+}
+function permissionFlowCallSiteIndices(content: string, name: string, functions: SwiftFunctionRegion[]): number[] {
+  const declStarts = new Set(functions.filter((item) => item.name === name).map((item) => item.nameStart));
+  const pattern = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\(`, "g");
+  const indices: number[] = [];
+  for (const match of content.matchAll(pattern)) { const index = match.index ?? 0; if (!declStarts.has(index)) indices.push(index); }
+  return indices;
+}
+/** True when EVERY call site of `name` is itself gated: lexically inside a dismissible-
+ * presentation region, or inside a function that is (recursively) exclusively gated the same way.
+ * A function with zero found call sites is treated as an entry point, not gated (fail open) — this
+ * is deliberately the same direction as an unrecognized/unclassifiable call site below: this
+ * heuristic must never manufacture a block it cannot actually support with a located call chain. */
+function isFunctionExclusivelyGated(name: string, content: string, functions: SwiftFunctionRegion[], regions: TextRegion[], onDismissNames: Set<string>, memo: Map<string, boolean>, stack: Set<string>, depth: number): boolean {
+  if (memo.has(name)) return memo.get(name) as boolean;
+  if (stack.has(name) || depth > 12) return false;
+  stack.add(name);
+  let result: boolean;
+  if (onDismissNames.has(name)) result = true;
+  else {
+    const sites = permissionFlowCallSiteIndices(content, name, functions);
+    result = sites.length > 0 && sites.every((index) => {
+      if (withinAnyRegion(index, regions)) return true;
+      const enclosing = permissionFlowEnclosingFunction(index, functions);
+      return enclosing ? isFunctionExclusivelyGated(enclosing.name, content, functions, regions, onDismissNames, memo, stack, depth + 1) : false;
+    });
+  }
+  stack.delete(name); memo.set(name, result);
+  return result;
+}
+function isRequestSiteGated(index: number, content: string, functions: SwiftFunctionRegion[], regions: TextRegion[], onDismissNames: Set<string>): boolean {
+  if (withinAnyRegion(index, regions)) return true;
+  const enclosing = permissionFlowEnclosingFunction(index, functions);
+  return enclosing ? isFunctionExclusivelyGated(enclosing.name, content, functions, regions, onDismissNames, new Map(), new Set(), 0) : false;
+}
+
+async function permissionFlowChecks(repository: string, manifest: ShipLayerManifest, analysis: AnalysisReport, add: Add): Promise<void> {
+  const findings = productionEvidenceOnly(analysis.findings.filter((item) => item.key.startsWith("permissionFlow:")));
+  for (const finding of findings) {
+    const category = finding.key.slice("permissionFlow:".length);
+    const evidenceSourcesForCategory = [...new Set(finding.evidence.map((item) => item.source))].sort();
+    const declaration = manifest.permissionFlows.find((item) => item.category === category);
+
+    if (!declaration || declaration.confirmation !== "confirmed") add(`permission-flow.${category}.confirmation`, "block", `ShipLayer detected a runtime ${category} permission request in ${evidenceSourcesForCategory.join(", ")}, but permissionFlows has no human-confirmed declaration for '${category}' answering whether a dismissible custom screen can appear before the system permission prompt (App Review guideline 5.1.1(iv)).`, "Add a permissionFlows entry for this category, and set confirmation: confirmed only after verifying the real on-device flow.");
+    else add(`permission-flow.${category}.confirmation`, "pass", `permissionFlows has a human-confirmed flow declaration for '${category}'.`);
+
+    const evidence = await evidenceText(repository, evidenceSourcesForCategory);
+    let settingsLinked = false; let gatedFile: string | undefined; let gatedExcerpt: string | undefined;
+    if (evidence.complete) {
+      for (const entry of evidence.entries) {
+        const cleaned = stripNonReleaseConditionalCompilation(stripCodeComments(entry.text));
+        if (!settingsLinked && SETTINGS_LINK_PATTERN.test(cleaned) && DENIED_MARKER_PATTERN.test(cleaned)) settingsLinked = true;
+        if (!gatedFile) {
+          const sites = findPermissionRequestSites(cleaned).filter((site) => site.category === category);
+          if (sites.length) {
+            const functions = permissionFlowFunctionRegions(cleaned);
+            const { regions, onDismissNames } = permissionFlowDismissibleRegions(cleaned);
+            const gatedSite = sites.find((site) => isRequestSiteGated(site.index, cleaned, functions, regions, onDismissNames));
+            if (gatedSite) { gatedFile = entry.path; gatedExcerpt = gatedSite.excerpt; }
+          }
+        }
+      }
+    }
+
+    if (!settingsLinked) add(`permission-flow.${category}.settings-link`, "block", `No production source file requesting ${category} access (${evidenceSourcesForCategory.join(", ")}) also contains both a denied/restricted case and UIApplication.openSettingsURLString in the SAME file. Apple requires a denied-state path to Settings (guideline 5.1.1(iv)). This is a same-file correlation heuristic, not a proven reachability check: a Settings link that genuinely lives only in a separate shared permission helper will not satisfy it.`, "In the same file that requests/checks this permission, handle .denied/.restricted by opening UIApplication.openSettingsURLString.");
+    else add(`permission-flow.${category}.settings-link`, "pass", `A production source file requesting ${category} access reaches UIApplication.openSettingsURLString on its denied/restricted path.`);
+
+    if (gatedFile) {
+      const cleared = declaration?.confirmation === "confirmed" && declaration.dismissibleScreenBeforePrompt === false;
+      if (!cleared) add(`permission-flow.${category}.sheet-gated`, "block", `${gatedFile} only reaches the ${category} permission request (${gatedExcerpt}) from inside a dismissible sheet/confirmationDialog/alert/popover. This is the exact shape Apple rejected under 5.1.1(iv): a dismissible custom screen in front of the one-time system prompt.`, `Either restructure ${gatedFile} so the request is reachable directly, or so the custom screen always proceeds to the prompt with no Cancel/dismiss; or, only after verifying the screen truly cannot be dismissed, set permissionFlows['${category}'].dismissibleScreenBeforePrompt: false and confirmation: confirmed.`);
+      else add(`permission-flow.${category}.sheet-gated`, "pass", `permissionFlows confirms '${category}' has no dismissible screen before the system prompt.`);
+    }
+  }
+  for (const declaration of manifest.permissionFlows) if (!findings.some((finding) => finding.key === `permissionFlow:${declaration.category}`)) add(`permission-flow.${declaration.category}`, "warn", `permissionFlows declares '${declaration.category}' but ShipLayer found no matching runtime permission-request source evidence.`, "Verify this declaration is still accurate, or remove it if the app no longer requests this permission this way.");
 }
 
 function exportComplianceCheck(manifest: ShipLayerManifest, add: Add): void {
@@ -825,44 +1007,6 @@ function isPolicyEvidencePath(file: string): boolean {
   return !isNonProductionSourcePath(normalized)
     && !parts.some((component) => /^(?:fixtures?|samples?|testdata|shiplayer-release|release|dist|build|deriveddata|node_modules|scripts?|tools?)$/i.test(component))
     && /\.(?:md|markdown|html?|txt)$/i.test(normalized);
-}
-function stripCodeComments(source: string): string {
-  let output = "";
-  let index = 0;
-  let state: "normal" | "string" | "multiline-string" | "line-comment" | "block-comment" = "normal";
-  let blockDepth = 0;
-  while (index < source.length) {
-    if (state === "normal") {
-      if (source.startsWith("//", index)) { state = "line-comment"; index += 2; continue; }
-      if (source.startsWith("/*", index)) { state = "block-comment"; blockDepth = 1; index += 2; continue; }
-      if (source.startsWith('"""', index)) { output += '"""'; state = "multiline-string"; index += 3; continue; }
-      if (source[index] === '"') { output += source[index]; state = "string"; index++; continue; }
-      output += source[index++];
-      continue;
-    }
-    if (state === "line-comment") {
-      if (source[index] === "\n") { output += "\n"; state = "normal"; }
-      index++;
-      continue;
-    }
-    if (state === "block-comment") {
-      if (source.startsWith("/*", index)) { blockDepth++; index += 2; continue; }
-      if (source.startsWith("*/", index)) { blockDepth--; index += 2; if (blockDepth === 0) state = "normal"; continue; }
-      if (source[index] === "\n") output += "\n";
-      index++;
-      continue;
-    }
-    if (state === "multiline-string") {
-      if (source.startsWith('"""', index)) { output += '"""'; state = "normal"; index += 3; continue; }
-      output += source[index++];
-      continue;
-    }
-    output += source[index];
-    if (source[index] === "\\" && index + 1 < source.length) output += source[++index];
-    else if (source[index] === '"') state = "normal";
-    index++;
-  }
-  return output;
 }
 function stripNonReleaseConditionalCompilation(source: string): string {
   type ConditionalFrame = { parentActive: boolean; selected: boolean; uncertainPrior: boolean };
