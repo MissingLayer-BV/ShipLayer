@@ -365,6 +365,7 @@
       "required": [
         "category",
         "dismissibleScreenBeforePrompt",
+        "deniedPathOffersSettingsLink",
         "confirmation"
       ],
       "properties": {
@@ -385,6 +386,9 @@
           ]
         },
         "dismissibleScreenBeforePrompt": {
+          "type": "boolean"
+        },
+        "deniedPathOffersSettingsLink": {
           "type": "boolean"
         },
         "confirmation": {

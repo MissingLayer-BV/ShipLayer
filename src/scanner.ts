@@ -24,7 +24,7 @@ export interface PermissionRequestSite { category: PermissionFlowCategory; index
 const PERMISSION_REQUEST_PATTERNS: Array<{ category: PermissionFlowCategory; label: string; pattern: RegExp }> = [
   { category: "camera", label: "AVCaptureDevice.requestAccess(for: .video)", pattern: /\bAVCaptureDevice\.requestAccess\s*\(\s*for:\s*\.video\b/g },
   { category: "microphone", label: "AVCaptureDevice.requestAccess(for: .audio)", pattern: /\bAVCaptureDevice\.requestAccess\s*\(\s*for:\s*\.audio\b/g },
-  { category: "microphone", label: "AVAudioApplication/AVAudioSession.requestRecordPermission", pattern: /\bAVAudioApplication\.requestRecordPermission\b|\.requestRecordPermission\s*\(/g },
+  { category: "microphone", label: "AVAudioApplication/AVAudioSession.requestRecordPermission", pattern: /\bAVAudioApplication\.requestRecordPermission\b|\.requestRecordPermission\s*[({]/g },
   { category: "photo-library", label: "PHPhotoLibrary.requestAuthorization", pattern: /\bPHPhotoLibrary\.requestAuthorization\b/g },
   { category: "location", label: "CLLocationManager requestWhenInUseAuthorization/requestAlwaysAuthorization", pattern: /\.requestWhenInUseAuthorization\s*\(\s*\)|\.requestAlwaysAuthorization\s*\(\s*\)/g },
   { category: "notifications", label: "UNUserNotificationCenter.requestAuthorization", pattern: /\bUNUserNotificationCenter\b[\s\S]{0,120}?\.requestAuthorization\s*\(|\.requestAuthorization\s*\(\s*options:\s*\[[^\]]{0,120}?\.(?:alert|badge|sound)\b/g },

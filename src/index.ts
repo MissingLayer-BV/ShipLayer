@@ -58,14 +58,17 @@ async function submit(repository: string, options: string[], json: boolean): Pro
 function manifestFromAnalysis(report: AnalysisReport, harness: DetectedScreenshotHarness): ShipLayerManifest { const device = findValue(report, "deviceFamily"); const tokens = new Set((device || "").split(",").map((item) => item.trim())); const families: Array<"iphone" | "ipad"> = [tokens.has("1") ? "iphone" : undefined, tokens.has("2") ? "ipad" : undefined].filter((item): item is "iphone" | "ipad" => Boolean(item)); if (!families.length) report.unresolvedQuestions.push("Confirm supported iPhone/iPad device families; scanner could not parse TARGETED_DEVICE_FAMILY."); const manifest = defaultManifest({ name: findValue(report, "appName") || "", bundleId: findValue(report, "bundleId") || "", version: findValue(report, "version"), build: findValue(report, "build"), deploymentTarget: findValue(report, "deploymentTarget"), deviceFamilies: families.length ? families : ["iphone", "ipad"] }); for (const finding of report.findings.filter((item) => item.key.startsWith("permission:"))) manifest.permissions.push({ key: finding.key.slice("permission:".length), purpose: typeof finding.value === "string" ? finding.value : undefined, confirmation: "needs-human-confirmation", evidence: finding.evidence.map((item) => item.source) });
   // Every detected runtime permission-request category becomes a needs-human-confirmation
   // permissionFlows proposal — never confirmed, and never a guessed dismissibleScreenBeforePrompt
-  // value (the boolean here is only ShipLayer's inert starting point; it carries no trust until a
-  // human sets confirmation: confirmed themselves). `init`/an agent must ask a human this question
-  // — see App Review guideline 5.1.1(iv) — never answer it from source alone.
+  // or deniedPathOffersSettingsLink value (both booleans here are only ShipLayer's inert starting
+  // point; neither carries any trust until a human sets confirmation: confirmed themselves).
+  // `init`/an agent must ask a human both questions — see App Review guideline 5.1.1(iv) — never
+  // answer either from source alone, and never treat a "yes, it's dismissible" or "no Settings
+  // link" answer as acceptable just because it was confirmed: preflight.ts blocks on those exact
+  // confirmed answers too.
   for (const finding of report.findings.filter((item) => item.key.startsWith("permissionFlow:"))) {
     const category = finding.key.slice("permissionFlow:".length);
     const evidence = finding.evidence.map((item) => item.source);
-    manifest.permissionFlows.push({ category, dismissibleScreenBeforePrompt: false, confirmation: "needs-human-confirmation", evidence });
-    report.unresolvedQuestions.push(`Detected a runtime ${category} permission request in ${evidence.join(", ")}. Can the user dismiss a custom screen (sheet/confirmationDialog/alert/popover) between requesting this feature and the system permission prompt? Apple requires the system prompt to always follow (guideline 5.1.1(iv)). Verify the real on-device flow, then set permissionFlows[].dismissibleScreenBeforePrompt and confirmation: confirmed for '${category}'.`);
+    manifest.permissionFlows.push({ category, dismissibleScreenBeforePrompt: false, deniedPathOffersSettingsLink: false, confirmation: "needs-human-confirmation", evidence });
+    report.unresolvedQuestions.push(`Detected a runtime ${category} permission request in ${evidence.join(", ")}. Two questions, both required (App Review guideline 5.1.1(iv)): (1) Can the user dismiss a custom screen (sheet/confirmationDialog/alert/popover) between requesting this feature and the system permission prompt? Apple requires the system prompt to always follow. (2) Does the denied-access path offer a link to Settings? Verify the real on-device flow, then set permissionFlows[].dismissibleScreenBeforePrompt, deniedPathOffersSettingsLink, and confirmation: confirmed for '${category}'.`);
   }
   // Screenshot scenarios found in an existing UI-test harness are proposals, exactly like every
   // other detected fact here: always needs-human-confirmation, never silently promoted, and kept

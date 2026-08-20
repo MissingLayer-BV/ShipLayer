@@ -97,22 +97,29 @@ export interface SourceContradictionOverride {
   confirmation: Confirmation;
 }
 /**
- * Answers one question per detected runtime permission-request category (App Review 5.1.1(iv)):
- * "can the user dismiss a custom screen (sheet/confirmationDialog/alert/popover) between
- * requesting this feature and the system permission prompt?" No scanner can prove a runtime flow
- * property, so this is always a human declaration, never inferred. `confirmation` must be exactly
- * "confirmed" before either preflight.ts's `permission-flow.<category>.confirmation` gate or the
- * `permission-flow.<category>.sheet-gated` heuristic-clearance gate trusts
- * `dismissibleScreenBeforePrompt` at all — absence of a declaration, an unconfirmed one, or an
- * empty/default value must never be read as "no dismissible screen" (see the App Review
+ * Answers two questions per detected runtime permission-request category (App Review 5.1.1(iv)):
+ * (1) "can the user dismiss a custom screen (sheet/confirmationDialog/alert/popover) between
+ * requesting this feature and the system permission prompt?", and (2) "does the denied-access
+ * path offer a link to Settings?" No scanner can prove either runtime property, so both are always
+ * a human declaration, never inferred. `confirmation` must be exactly "confirmed" before
+ * preflight.ts trusts EITHER boolean at all — absence of a declaration, an unconfirmed one, or a
+ * default/empty value must never be read as a compliant answer (see the App Review
  * app-review-and-price-gates PR history: an earlier review found this exact "absence means
- * confirmed" shape twice). `init` always proposes `dismissibleScreenBeforePrompt: false` with
- * confirmation `needs-human-confirmation` — the boolean's proposed value carries no trust until a
- * human sets confirmation to "confirmed" themselves.
+ * confirmed" shape twice). Critically, a CONFIRMED declaration is not automatically compliant
+ * either: `permission-flow.<category>.dismissible-screen` blocks on a confirmed
+ * `dismissibleScreenBeforePrompt: true` (a written admission of the violation), and
+ * `permission-flow.<category>.denied-path-settings-link` blocks unless a confirmed declaration
+ * says `deniedPathOffersSettingsLink: true` — these declarations are what gates readiness, not a
+ * same-file text heuristic (see settingsLinkCorroborated in preflight.ts, which is advisory only).
+ * `init` always proposes `dismissibleScreenBeforePrompt: false` and
+ * `deniedPathOffersSettingsLink: false` with confirmation `needs-human-confirmation` — neither
+ * boolean's proposed value carries any trust until a human sets confirmation to "confirmed"
+ * themselves.
  */
 export interface PermissionFlowDeclaration {
   category: string;
   dismissibleScreenBeforePrompt: boolean;
+  deniedPathOffersSettingsLink: boolean;
   confirmation: Confirmation;
   evidence?: string[];
 }
