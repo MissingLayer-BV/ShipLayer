@@ -103,11 +103,24 @@ async function preserveNonDeterministicMarketingArtifacts(repository: string, pr
     candidates.push(relative);
   }
   for (const relative of candidates) {
-    const source = path.join(previousDestination, relative);
-    let details;
-    try { details = await lstat(source); } catch { continue; }
-    if (details.isSymbolicLink()) continue; // never follow/carry forward a symlinked top-level entry
-    try { await copyFileTree(source, path.join(stage, relative)); } catch { /* best-effort; never fail prepare over a prior render/install that could not be carried forward */ }
+    // Component-wise, matching resolveContained's own walk exactly (fs.ts): checks EVERY path
+    // segment from previousDestination down through the candidate itself for a symlink, not only
+    // the final leaf. A symlink at an INTERMEDIATE component (e.g. screenshots/ itself pointing
+    // outside the repository) previously slipped through undetected -- fs.cp/copyFileTree would
+    // follow it, landing outside content inside the managed package, and bypassing
+    // assertNoSecretOutput in the process since it arrives via a raw copy, not emit(). See PR
+    // review round-3 finding N4. A THROW (not a silent skip) matches resolveContained's own
+    // behavior: a symlink where one should not be is treated as an anomaly worth failing loudly
+    // on, not tolerated best-effort like a merely-absent prior artifact.
+    let cursor = previousDestination; let missing = false;
+    for (const part of relative.split("/")) {
+      cursor = path.join(cursor, part);
+      let info;
+      try { info = await lstat(cursor); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") { missing = true; break; } throw error; }
+      if (info.isSymbolicLink()) throw new Error(`Refusing to preserve '${relative}' from the previous release package: '${path.relative(previousDestination, cursor)}' is a symlink.`);
+    }
+    if (missing) continue; // nothing to preserve; not an error
+    try { await copyFileTree(cursor, path.join(stage, relative)); } catch { /* best-effort; never fail prepare over a prior render/install that could not be carried forward */ }
   }
 }
 async function installStage(stage: string, destination: string): Promise<void> {

@@ -621,3 +621,40 @@ test("N2: the default --out still resolves finalOutputDir to shiplayer-release/s
   const resolved = path.resolve(pkg.directory, "screenshots/marketing", slidesJson.slides[0].output);
   assert.ok(resolved.startsWith(path.join(pkg.directory, "screenshots/final") + path.sep));
 });
+
+// --- N4: the preservation copy must refuse an intermediate symlink component, not just the leaf ---
+
+test("N4: a symlinked intermediate path component (screenshots/ pointing outside the repo) is refused, not silently followed", async () => {
+  const { symlink } = await import("node:fs/promises");
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-marketing-n4-"));
+  const manifest = readyManifest(); await writeReadyAssets(root, manifest);
+  const analysis = await analyzeRepository(root);
+  const report = await preflight(root, manifest, false, analysis);
+  const first = await generateReleasePackage(root, manifest, analysis, report, "shiplayer-release");
+
+  // Replace the managed package's own screenshots/ directory with a symlink pointing outside the
+  // repository entirely, containing content that must never be copied into a managed package.
+  const outside = await mkdtemp(path.join(tmpdir(), "shiplayer-marketing-n4-outside-"));
+  await mkdir(path.join(outside, "marketing/node_modules/playwright"), { recursive: true });
+  await writeFile(path.join(outside, "marketing/node_modules/playwright/SECRET"), "outside-content-must-never-be-copied-in");
+  await rm(path.join(first.directory, "screenshots"), { recursive: true, force: true });
+  await symlink(outside, path.join(first.directory, "screenshots"));
+
+  await assert.rejects(
+    generateReleasePackage(root, manifest, analysis, report, "shiplayer-release"),
+    /symlink/i,
+    "a symlinked intermediate component on the path to a preserved candidate must be refused"
+  );
+  // Confirm the outside content never landed inside the repository under any staged path.
+  const stagingRoot = path.join(root, ".shiplayer-staging");
+  let leaked = false;
+  try {
+    const { readdir: rd } = await import("node:fs/promises");
+    const stageDirs = await rd(stagingRoot).catch(() => [] as string[]);
+    for (const dir of stageDirs) {
+      const candidate = path.join(stagingRoot, dir, "screenshots/marketing/node_modules/playwright/SECRET");
+      leaked = leaked || existsSync(candidate);
+    }
+  } catch { /* ignore */ }
+  assert.equal(leaked, false, "outside content reached via a symlinked component must never be staged");
+});
