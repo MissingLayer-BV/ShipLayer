@@ -6,7 +6,7 @@ import { copyFileTree, ensureDirectory, resolveContained, safeRelativePath, stab
 import type { AnalysisReport, PreflightReport, ShipLayerManifest } from "./types.js";
 import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, externalServiceFindings, MONETIZATION_CONTRADICTION_FINDING, resolveContradictionOverride, storekitPurchaseEvidence } from "./evidence.js";
 import { detectScreenshotHarness } from "./scanner.js";
-import { buildMarketingSlideEntries, DEFAULT_MARKETING_FINAL_DIR, EXPORT_MJS, frameForFamily, renderPackageJson, renderReadme, renderSlideHtml, renderSlidesManifestJson, STRIP_ALPHA_MJS } from "./marketing.js";
+import { buildMarketingSlideEntries, DEFAULT_OUTPUT_DIRECTORY, EXPORT_MJS, frameForFamily, renderPackageJson, renderReadme, renderSlideHtml, renderSlidesManifestJson, STRIP_ALPHA_MJS } from "./marketing.js";
 
 export interface PreparedPackage { directory: string; files: string[] }
 const RESERVED_OUTPUT_ROOTS = new Set([".git", ".github", ".shiplayer-staging", "node_modules", "pods", "carthage", "deriveddata", "build", ".build", "dist", ".swiftpm", "vendor", "release", "shiplayer.yml"]);
@@ -36,14 +36,14 @@ export async function generateReleasePackage(repository: string, manifest: ShipL
   await emit("screenshots/ui-test-harness-template.swift", screenshotHarnessTemplate(manifest, screenshotHarness.sourceFiles.length > 0)); await emit("screenshots/ui-test-harness-contract.md", screenshotHarnessContract(manifest, screenshotHarness)); await emit("screenshots/capture-workflow.yml", screenshotCaptureWorkflow(manifest, screenshotHarness));
   await emit("app-store-connect/dry-run-plan.md", dryRunPlan(manifest)); await emit("remaining-human-actions.md", humanActions(packagePreflight));
     await writeText(path.join(stage, ".shiplayer-managed"), "ShipLayer managed release package v1\n"); files.push(".shiplayer-managed");
-  await preserveNonDeterministicMarketingArtifacts(repository, out, stage, manifest.screenshots.finalOutputDir || DEFAULT_MARKETING_FINAL_DIR, files);
+  await preserveNonDeterministicMarketingArtifacts(repository, out, stage, manifest.screenshots.finalOutputDir || `${outputRelative}/screenshots/final`, files);
   await installStage(stage, out); return { directory: out, files: files.sort() };
   } catch (error) {
     await rm(stage, { recursive: true, force: true }).catch(() => undefined);
     throw error;
   }
 }
-function assertOutputPath(outputRelative: string): void { const components = outputRelative.split("/"); const reserved = components.find((component) => RESERVED_OUTPUT_ROOTS.has(component.toLowerCase()) || component.toLowerCase() === "shiplayer-release"); if (reserved && !(components.length === 1 && reserved === "shiplayer-release")) throw new Error(`--out cannot use reserved or source-control path '${reserved}'. Use a separate managed release directory.`); }
+function assertOutputPath(outputRelative: string): void { const components = outputRelative.split("/"); const reserved = components.find((component) => RESERVED_OUTPUT_ROOTS.has(component.toLowerCase()) || component.toLowerCase() === DEFAULT_OUTPUT_DIRECTORY); if (reserved && !(components.length === 1 && reserved === DEFAULT_OUTPUT_DIRECTORY)) throw new Error(`--out cannot use reserved or source-control path '${reserved}'. Use a separate managed release directory.`); }
 function assertOutputDoesNotCollide(manifest: ShipLayerManifest, outputRelative: string): void {
   const inputs = ["shiplayer.yml", manifest.screenshots.rawOutputDir, manifest.screenshots.marketingProjectPath, ...(manifest.monetization.type === "subscriptions" || manifest.monetization.type === "non-consumables" ? manifest.monetization.products.map((product) => product.reviewScreenshot) : [])].filter((item): item is string => Boolean(item)).map((item) => safeRelativePath(item, "manifest input"));
   const normalizedOutput = outputRelative.toLocaleLowerCase("en-US");
@@ -248,7 +248,16 @@ const MODULE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..")
  * generated README for the two commands a human/agent runs to turn it into final PNGs.
  */
 async function emitMarketingProject(manifest: ShipLayerManifest, outputRelative: string, emit: (relativePath: string, contents: string) => Promise<void>, emitDeviceFrameAsset: (relativePath: string, assetFileName: string) => Promise<void>): Promise<void> {
-  const finalOutputDir = manifest.screenshots.finalOutputDir || DEFAULT_MARKETING_FINAL_DIR;
+  // Unset finalOutputDir derives from THIS RUN's actual --out (outputRelative), never the static
+  // DEFAULT_MARKETING_FINAL_DIR literal -- the render must always land inside the package that
+  // was actually requested. Falling back to a location outside --out (as a hardcoded default
+  // would, whenever --out is customized) is exactly how `prepare --out custom-release` used to
+  // create an unmanaged "shiplayer-release/" decoy the moment export.mjs ran, permanently
+  // blocking every later default-`--out` prepare with "not a ShipLayer-managed package". See PR
+  // review round-3 finding N2. `check` (preflight.ts), which never receives --out, still falls
+  // back to the static DEFAULT_MARKETING_FINAL_DIR -- correct only when --out is also left at its
+  // default, a known v0.1 limitation for a customized --out documented in the generated README.
+  const finalOutputDir = manifest.screenshots.finalOutputDir || `${outputRelative}/screenshots/final`;
   const entries = buildMarketingSlideEntries({ outputDirectory: outputRelative, rawOutputDir: manifest.screenshots.rawOutputDir, finalOutputDir, configurations: manifest.screenshots.configurations, scenarios: manifest.screenshots.scenarios });
   const root = "screenshots/marketing";
   for (const entry of entries) await emit(`${root}/${entry.htmlRelativePath}`, renderSlideHtml(entry));

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import test from "node:test";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -591,4 +592,32 @@ test("N1: a safe finalOutputDir (the documented default) never collides and a re
   const secondSlide = await readFile(path.join(second.directory, "screenshots/marketing/slides/iphone/en-US/home.html"), "utf8");
   assert.ok(secondSlide.includes("Updated caption"), "the regenerated slide must reflect the NEW caption, not a stale copy of the old one");
   assert.ok(!secondSlide.includes("Original caption"));
+});
+
+// --- N2: a custom --out must never render outside the requested package -----------------------
+
+test("N2: a custom --out with no explicit finalOutputDir renders inside --out, never a hardcoded shiplayer-release decoy", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-marketing-n2-"));
+  const manifest = readyManifest(); await writeReadyAssets(root, manifest);
+  assert.equal(manifest.screenshots.finalOutputDir, undefined, "a freshly-created manifest must not pin finalOutputDir before any --out has ever been chosen");
+  const analysis = await analyzeRepository(root);
+  const report = await preflight(root, manifest, false, analysis);
+  const pkg = await generateReleasePackage(root, manifest, analysis, report, "custom-release");
+  const slidesJson = JSON.parse(await readFile(path.join(pkg.directory, "screenshots/marketing/slides.json"), "utf8"));
+  assert.equal(slidesJson.slides[0].output, "../final/iphone/en-US/home.png");
+  const resolvedOutput = path.resolve(pkg.directory, "screenshots/marketing", slidesJson.slides[0].output);
+  assert.ok(resolvedOutput.startsWith(`${pkg.directory}${path.sep}`), "the rendered PNG must land inside the requested --out (pkg.directory === custom-release), not outside it");
+  assert.equal(existsSync(path.join(path.dirname(pkg.directory), "shiplayer-release")), false, "no decoy shiplayer-release/ directory may be created under a custom --out");
+});
+
+test("N2: the default --out still resolves finalOutputDir to shiplayer-release/screenshots/final", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-marketing-n2-default-"));
+  const manifest = readyManifest(); await writeReadyAssets(root, manifest);
+  const analysis = await analyzeRepository(root);
+  const report = await preflight(root, manifest, false, analysis);
+  const pkg = await generateReleasePackage(root, manifest, analysis, report, "shiplayer-release");
+  const slidesJson = JSON.parse(await readFile(path.join(pkg.directory, "screenshots/marketing/slides.json"), "utf8"));
+  assert.equal(slidesJson.slides[0].output, "../final/iphone/en-US/home.png");
+  const resolved = path.resolve(pkg.directory, "screenshots/marketing", slidesJson.slides[0].output);
+  assert.ok(resolved.startsWith(path.join(pkg.directory, "screenshots/final") + path.sep));
 });

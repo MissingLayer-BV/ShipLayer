@@ -113,17 +113,29 @@ export interface MarketingSlideEntry {
 /** Relative to the emitted release package's own output directory (e.g. "shiplayer-release"). */
 export const MARKETING_PROJECT_ROOT = "screenshots/marketing";
 /**
- * Default, repo-root-relative location for rendered final PNGs, used only when a manifest
- * predates screenshots.finalOutputDir or leaves it unset. Once a manifest has run through
- * `shiplayer prepare`, the ACTUAL location is always screenshots.finalOutputDir — an explicit,
- * persisted field, deliberately independent of whatever --out was used at generation time,
- * exactly like screenshots.rawOutputDir already is. This is what lets `shiplayer check`, which
- * receives no --out, find the same directory export.mjs actually wrote to instead of guessing a
- * hardcoded convention that silently stops matching reality under a custom --out (see PR review
- * finding F4: a custom --out previously made preflight's marketing checks silently report
- * nothing, no different from "validated and fine").
+ * `prepare`'s own --out default (index.ts imports this rather than repeating the literal), so
+ * DEFAULT_MARKETING_FINAL_DIR below and index.ts's actual --out default can never drift apart —
+ * see PR review round-3 finding N2, where a hardcoded "shiplayer-release" independent of --out
+ * let a custom `prepare --out other-dir` render outside the requested package entirely, creating
+ * an unmanaged decoy "shiplayer-release/" that then permanently blocked every future default
+ * `prepare` ("--out is not a ShipLayer-managed package").
  */
-export const DEFAULT_MARKETING_FINAL_DIR = "shiplayer-release/screenshots/final";
+export const DEFAULT_OUTPUT_DIRECTORY = "shiplayer-release";
+/**
+ * Default, repo-root-relative location for rendered final PNGs, used only when
+ * screenshots.finalOutputDir is unset (a manifest predating the field, or one that has never
+ * chosen a custom --out) -- generateReleasePackage refuses to proceed with this default applied
+ * under a non-default --out (see assertFinalOutputDirMatchesOut in generator.ts), specifically so
+ * this constant is never silently wrong. Once set (explicitly, or implicitly correct because
+ * --out is still the default), the ACTUAL location is always screenshots.finalOutputDir — an
+ * explicit, persisted field, deliberately independent of whatever --out was used at generation
+ * time, exactly like screenshots.rawOutputDir already is. This is what lets `shiplayer check`,
+ * which receives no --out, find the same directory export.mjs actually wrote to instead of
+ * guessing a hardcoded convention that silently stops matching reality under a custom --out (see
+ * PR review finding F4: a custom --out previously made preflight's marketing checks silently
+ * report nothing, no different from "validated and fine").
+ */
+export const DEFAULT_MARKETING_FINAL_DIR = `${DEFAULT_OUTPUT_DIRECTORY}/screenshots/final`;
 
 /**
  * Pure path arithmetic (no filesystem access): computes every relative href/output path a slide
