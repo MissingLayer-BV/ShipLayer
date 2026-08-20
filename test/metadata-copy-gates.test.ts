@@ -111,16 +111,64 @@ test("keyword hygiene (whitespace, name/subtitle overlap, plural duplicates) war
   assert.equal(report.results.filter((item) => item.id.startsWith("metadata.en-US.keywords") && item.severity === "block").length, 0);
 });
 
-test("copy claiming the app is free blocks when monetization actually has a purchase, and honest copy passes", async () => {
+test("a zero-cost claim ('completely free') blocks on a non-consumable, and honest copy passes", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-copy-free-contradiction-"));
   const manifest = readyManifest("non-consumables");
   await writeReadyAssets(root, manifest);
-  manifest.metadata.localizations["en-US"].description = "Completely free, no in-app purchases required.";
+  manifest.metadata.localizations["en-US"].description = "This app is completely free to use.";
   let report = await preflight(root, manifest);
   assert.ok(report.results.some((item) => item.id === "metadata.en-US.description.monetization-contradiction" && item.severity === "block"));
   assert.equal(report.canSubmit, false);
 
   manifest.metadata.localizations["en-US"].description = "Unlock lifetime access with a single one-time purchase.";
+  report = await preflight(root, manifest);
+  assert.equal(report.results.filter((item) => item.id === "metadata.en-US.description.monetization-contradiction").length, 0);
+});
+
+// PR review B1: a bare "no in-app purchases" claim is TRUE for a paid-app (the app itself is a
+// purchase, but not an IN-APP one) and must not block. It must still block for a monetization
+// type that genuinely does model an in-app purchase (non-consumables/subscriptions). Split from
+// the zero-cost claim above (which the original test's single string tested at the same time,
+// masking this exact predicate bug — see PR review B1).
+test("a 'no in-app purchases' claim passes on a paid-app (true — the purchase is not in-app) but blocks on a non-consumable (false — it has one)", async () => {
+  const paidRoot = await mkdtemp(path.join(tmpdir(), "shiplayer-copy-no-iap-paid-app-"));
+  const paidManifest = readyManifest("paid-app");
+  await writeReadyAssets(paidRoot, paidManifest);
+  for (const description of ["Pay once, no IAPs.", "Buy once. There are no in-app purchases.", "One price, no hidden fees, no ads."]) {
+    paidManifest.metadata.localizations["en-US"].description = description;
+    const report = await preflight(paidRoot, paidManifest);
+    assert.equal(report.results.filter((item) => item.id.includes("monetization-contradiction")).length, 0, `expected no block for honest paid-app copy: ${description}`);
+  }
+
+  const nonConsumableRoot = await mkdtemp(path.join(tmpdir(), "shiplayer-copy-no-iap-non-consumable-"));
+  const nonConsumableManifest = readyManifest("non-consumables");
+  await writeReadyAssets(nonConsumableRoot, nonConsumableManifest);
+  nonConsumableManifest.metadata.localizations["en-US"].description = "Buy once. There are no in-app purchases.";
+  const nonConsumableReport = await preflight(nonConsumableRoot, nonConsumableManifest);
+  assert.ok(nonConsumableReport.results.some((item) => item.id === "metadata.en-US.description.monetization-contradiction" && item.severity === "block"));
+});
+
+test("'no hidden fees/costs' never blocks (a transparency claim, not a no-purchase claim) on any monetization type", async () => {
+  for (const type of ["subscriptions", "non-consumables"] as const) {
+    const root = await mkdtemp(path.join(tmpdir(), `shiplayer-copy-no-hidden-fees-${type}-`));
+    const manifest = readyManifest(type);
+    await writeReadyAssets(root, manifest);
+    manifest.metadata.localizations["en-US"].description = type === "subscriptions" ? "Transparent pricing with no hidden costs." : "No hidden fees beyond the one-time unlock.";
+    const report = await preflight(root, manifest);
+    assert.equal(report.results.filter((item) => item.id.includes("monetization-contradiction")).length, 0, `expected no block for ${type}`);
+  }
+});
+
+test("'free to try' blocks without a declared free-trial offer, and passes once one is declared", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-copy-free-trial-"));
+  const manifest = readyManifest("subscriptions");
+  await writeReadyAssets(root, manifest);
+  manifest.metadata.localizations["en-US"].description = "Free to try for 3 days, then Pro renews monthly.";
+  delete manifest.monetization.products[0].introductoryOffer;
+  let report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "metadata.en-US.description.monetization-contradiction" && item.severity === "block"));
+
+  manifest.monetization.products[0].introductoryOffer = { type: "free-trial", duration: "P3D" };
   report = await preflight(root, manifest);
   assert.equal(report.results.filter((item) => item.id === "metadata.en-US.description.monetization-contradiction").length, 0);
 });
@@ -176,6 +224,29 @@ test("copy claiming iPad support does not block when deviceFamilies actually inc
   assert.equal(report.results.filter((item) => item.id === "metadata.en-US.description.device-family-contradiction").length, 0);
 });
 
+// PR review B3: the original negation check scanned a flat 40-character window, so an unrelated
+// negation word anywhere nearby (in a DIFFERENT clause) silently cleared the check. "no ads" is
+// about as common as App Store copy gets, and neither example below has anything to do with iPad
+// support. The fix scopes the negation lookback/lookahead to the same clause (stopping at the
+// nearest sentence-ending punctuation or comma) instead of a fixed character count.
+test("an unrelated negation in a different clause does not clear a genuine iPad claim (B3)", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-copy-ipad-clause-scope-"));
+  const manifest = readyManifest();
+  manifest.app.deviceFamilies = ["iphone"];
+  await writeReadyAssets(root, manifest);
+  for (const description of ["There are no ads at all, and it looks stunning on iPad.", "Whether or not you are at your desk, the iPad app keeps everything in sync."]) {
+    manifest.metadata.localizations["en-US"].description = description;
+    const report = await preflight(root, manifest);
+    assert.ok(report.results.some((item) => item.id === "metadata.en-US.description.device-family-contradiction" && item.severity === "block"), `expected a block for: ${description}`);
+  }
+  // Genuine same-clause negations must still pass cleanly.
+  for (const description of ["This is an iPhone-only app; it is not available on iPad.", "Designed for iPhone, not iPad.", "iPad support is coming soon."]) {
+    manifest.metadata.localizations["en-US"].description = description;
+    const report = await preflight(root, manifest);
+    assert.equal(report.results.filter((item) => item.id === "metadata.en-US.description.device-family-contradiction").length, 0, `expected no block for: ${description}`);
+  }
+});
+
 test("check warns when AI sharing is enabled but no locale's copy mentions AI, and stays silent once it does", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-copy-ai-mention-"));
   const manifest = readyManifest();
@@ -220,4 +291,37 @@ test("prepare writes the drafted copy, character counts, and honest confirmation
   const confirmedGenerated = await generateReleasePackage(root, manifest, analysis, confirmedReport, "shiplayer-release");
   const confirmedJson = JSON.parse(await readFile(path.join(confirmedGenerated.directory, "metadata/en-US.json"), "utf8"));
   assert.equal(confirmedJson.confirmation, "confirmed");
+});
+
+// PR review B2 (top severity — a false pass): hasUnguardedMatch/hasMatchNotNegatedByNo used to
+// call pattern.exec(text) once and return on that single match, so an early GUARDED match (e.g.
+// "ad-free" hyphen-compounded, or a "no in-app purchase" negation) short-circuited the whole
+// check and a LATER, genuinely unguarded claim in the same field was never even examined. Fixed
+// to loop every match, mirroring claimingIpadSupport's own correct /g-loop shape.
+test("an early guarded match never hides a later genuine free-claim in the same field (B2)", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-copy-multi-match-free-"));
+  const manifest = readyManifest("paid-app");
+  await writeReadyAssets(root, manifest);
+  manifest.metadata.localizations["en-US"].description = "An ad-free app you will love. Also: this is a free app with no cost at all.";
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "metadata.en-US.description.monetization-contradiction" && item.severity === "block"));
+  assert.equal(report.canSubmit, false);
+});
+
+test("an early negated match never hides a later genuine paid-claim in the same field (B2)", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-copy-multi-match-paid-"));
+  const manifest = readyManifest("free");
+  await writeReadyAssets(root, manifest);
+  manifest.metadata.localizations["en-US"].description = "No in-app purchases in the basic tier. Unlock Pro with an in-app purchase.";
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "metadata.en-US.description.monetization-contradiction" && item.severity === "block"));
+});
+
+test("the multi-match fix still lets a genuinely all-guarded field pass (control)", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-copy-multi-match-control-"));
+  const manifest = readyManifest("non-consumables");
+  await writeReadyAssets(root, manifest);
+  manifest.metadata.localizations["en-US"].description = "A hassle-free, distraction-free app for tracking every receipt.";
+  const report = await preflight(root, manifest);
+  assert.equal(report.results.filter((item) => item.id.includes("monetization-contradiction")).length, 0);
 });
