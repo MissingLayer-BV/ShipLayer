@@ -551,6 +551,14 @@ async function screenshotChecks(repository: string, manifest: ShipLayerManifest,
 // it yet), so a repository that has not run the export project must not be blocked by this check.
 async function marketingScreenshotChecks(repository: string, manifest: ShipLayerManifest, add: Add): Promise<void> {
   const finalOutputDir = manifest.screenshots.finalOutputDir || DEFAULT_MARKETING_FINAL_DIR;
+  // export.mjs always writes exactly `${scenario.id}.png` (no wildcard/suffix convention, unlike
+  // raw captures) -- so a rendered file whose stem matches no CURRENT scenario id is orphaned: a
+  // leftover from a scenario that has since been removed or renamed. preserveNonDeterministicMarketingArtifacts
+  // in generator.ts carries the final/ directory forward across `prepare` reruns (see PR review
+  // finding F3) precisely so a real render survives; nothing else ever prunes it when a scenario
+  // disappears. Without this check, that orphaned PNG sits in the set `check` approves and a human
+  // uploads it as if it still represented a current scenario. See PR review finding N5.
+  const currentScenarioIds = new Set(manifest.screenshots.scenarios.map((scenario) => scenario.id));
   for (const config of manifest.screenshots.configurations) {
     const id = `marketing.${config.family}.${config.locale}`;
     const relativeDirectory = `${finalOutputDir}/${config.family}/${config.locale}`;
@@ -570,6 +578,8 @@ async function marketingScreenshotChecks(repository: string, manifest: ShipLayer
       const details = await inspectImage(path.join(directory, image));
       const imageId = `${id}.${image}`;
       if (!details) { add(imageId, "block", `Could not inspect rendered marketing screenshot ${image}; it must be a readable PNG/JPEG without alpha.`); continue; }
+      const stem = path.basename(image, path.extname(image));
+      if (!currentScenarioIds.has(stem)) { add(`${imageId}.orphaned`, "block", `Rendered marketing screenshot ${image} does not correspond to any current screenshot scenario; it is left over from a removed or renamed scenario.`, "Delete this file (or the whole stale set) from the finalOutputDir and re-run npm run export, or restore the matching scenario in shiplayer.yml."); continue; }
       if (details.alpha) add(`${imageId}.alpha`, "block", `Rendered marketing screenshot ${image} has an alpha channel; Apple rejects screenshots with transparency.`, "export.mjs must emit alpha-free PNGs; re-run the export.");
       if (!acceptedForConfig.has(`${details.width}x${details.height}`) && !acceptedForConfig.has(`${details.height}x${details.width}`)) { add(`${imageId}.accepted-dimensions`, "block", `Rendered marketing screenshot ${image} is ${details.width}×${details.height}, which is not an accepted dimension for this ${config.family} ${dimensionClassLabel(config)} configuration.`, "Fix the slide's target width/height and re-render."); continue; }
       if (!reference) { reference = { width: details.width, height: details.height, image }; add(`${imageId}.dimensions`, "pass", `${image} is an accepted ${config.family} dimension (${details.width}×${details.height}).`); }

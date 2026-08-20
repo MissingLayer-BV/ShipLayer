@@ -527,3 +527,32 @@ test("EXPORT_MJS and STRIP_ALPHA_MJS are syntactically valid Node ESM (node --ch
     await assert.doesNotReject(execFileAsync(process.execPath, ["--check", file]), `${name} must be syntactically valid`);
   }
 });
+
+// ---------------------------------------------------------------------------------------------
+// PR #4 review round 3 findings N1-N5, F8 residual: regression coverage.
+// ---------------------------------------------------------------------------------------------
+
+// --- N5: an orphaned rendered PNG (a scenario that was later removed) must not pass silently ---
+
+test("N5: preflight blocks a rendered marketing screenshot that matches no current scenario (a stale render left over after a scenario was removed)", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-marketing-orphan-"));
+  const manifest = readyManifest(); await writeReadyAssets(root, manifest); // scenario id "home"
+  const finalDir = path.join(root, "shiplayer-release/screenshots/final/iphone/en-US");
+  await mkdir(finalDir, { recursive: true });
+  await writeFile(path.join(finalDir, "home.png"), png(1320, 2868)); // matches the current scenario
+  await writeFile(path.join(finalDir, "removed-scenario.png"), png(1320, 2868)); // scenario no longer declared
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "marketing.iphone.en-US.removed-scenario.png.orphaned" && item.severity === "block"));
+  assert.equal(report.results.some((item) => item.id === "marketing.iphone.en-US.home.png.orphaned"), false, "the still-current scenario's own render must not be flagged");
+});
+
+test("N5: preflight is unaffected when every rendered file matches a current scenario", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-marketing-no-orphan-"));
+  const manifest = readyManifest(); await writeReadyAssets(root, manifest);
+  const finalDir = path.join(root, "shiplayer-release/screenshots/final/iphone/en-US");
+  await mkdir(finalDir, { recursive: true });
+  await writeFile(path.join(finalDir, "home.png"), png(1320, 2868));
+  const report = await preflight(root, manifest);
+  assert.equal(report.results.some((item) => item.id.includes(".orphaned")), false);
+  assert.equal(report.summary.block, 0);
+});
