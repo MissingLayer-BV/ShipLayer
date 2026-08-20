@@ -264,6 +264,7 @@ test("sourceContradictionOverride schema round-trips through generateReleasePack
   validateManifest(manifest);
   const analysis = await analyzeRepository(root);
   const report = await preflight(root, manifest, false, analysis);
+  manifest.screenshots.finalOutputDir = "release-m4/screenshots/final";
   const generated = await generateReleasePackage(root, manifest, analysis, report, "release-m4");
   const matrix = JSON.parse(await readFile(path.join(generated.directory, "privacy/evidence-matrix.json"), "utf8")) as { sourceContradictionOverrides: unknown[] };
   assert.equal(matrix.sourceContradictionOverrides.length, 1);
@@ -281,6 +282,7 @@ test("M5: the recording script requires the StoreKit price step when evidence ex
   validateManifest(manifest);
   const analysis = await analyzeRepository(root);
   const report = await preflight(root, manifest, false, analysis);
+  manifest.screenshots.finalOutputDir = "release-m5/screenshots/final";
   const generated = await generateReleasePackage(root, manifest, analysis, report, "release-m5");
   const script = await readFile(path.join(generated.directory, "review/physical-device-recording-script.md"), "utf8");
   assert.ok(script.includes("Show StoreKit's localized price"));
@@ -330,6 +332,7 @@ test("C5: privacy/questionnaire-draft.md names unresolved permission/processor/A
   await writeFile(path.join(root, "worker.ts"), "fetch('https://openrouter.ai/api/v1/chat/completions')");
   const analysis = await analyzeRepository(root);
   const report = await preflight(root, manifest, false, analysis);
+  manifest.screenshots.finalOutputDir = "release-c5/screenshots/final";
   const generated = await generateReleasePackage(root, manifest, analysis, report, "release-c5");
   const draft = await readFile(path.join(generated.directory, "privacy/questionnaire-draft.md"), "utf8");
   assert.equal(draft.includes("No permissions declared. Confirm this is accurate."), false);
@@ -346,6 +349,7 @@ test("C5: a clean manifest with matching declarations still gets the ordinary co
   await writeReadyAssets(root, manifest);
   const analysis = await analyzeRepository(root);
   const report = await preflight(root, manifest, false, analysis);
+  manifest.screenshots.finalOutputDir = "release-c5-clean/screenshots/final";
   const generated = await generateReleasePackage(root, manifest, analysis, report, "release-c5-clean");
   const draft = await readFile(path.join(generated.directory, "privacy/questionnaire-draft.md"), "utf8");
   assert.ok(draft.includes("No permissions declared. Confirm this is accurate."));
@@ -361,6 +365,7 @@ test("H2: legal/privacy-policy-draft.html does not claim no permissions are list
   await writeFile(path.join(root, "Info.plist"), "<key>NSCameraUsageDescription</key><string>Capture proof</string>");
   const analysis = await analyzeRepository(root);
   const report = await preflight(root, manifest, false, analysis);
+  manifest.screenshots.finalOutputDir = "release-h2/screenshots/final";
   const generated = await generateReleasePackage(root, manifest, analysis, report, "release-h2");
   const page = await readFile(path.join(generated.directory, "legal/privacy-policy-draft.html"), "utf8");
   assert.equal(page.includes("No confirmed permissions are listed."), false);
@@ -374,6 +379,7 @@ test("H2: legal/privacy-policy-draft.html keeps the plain confident text when no
   await writeReadyAssets(root, manifest);
   const analysis = await analyzeRepository(root);
   const report = await preflight(root, manifest, false, analysis);
+  manifest.screenshots.finalOutputDir = "release-h2-clean/screenshots/final";
   const generated = await generateReleasePackage(root, manifest, analysis, report, "release-h2-clean");
   const page = await readFile(path.join(generated.directory, "legal/privacy-policy-draft.html"), "utf8");
   assert.ok(page.includes("No confirmed permissions are listed."));
@@ -387,6 +393,7 @@ test("H1: legal/support-page-draft.html does not claim no restorable IAP exists 
   await writeFile(path.join(root, "Sources/Paywall.swift"), STOREKIT_PAYWALL_SOURCE);
   const analysis = await analyzeRepository(root);
   const report = await preflight(root, manifest, false, analysis);
+  manifest.screenshots.finalOutputDir = "release-h1/screenshots/final";
   const generated = await generateReleasePackage(root, manifest, analysis, report, "release-h1");
   const page = await readFile(path.join(generated.directory, "legal/support-page-draft.html"), "utf8");
   assert.equal(page.includes("This app does not offer restorable in-app purchases."), false);
@@ -399,6 +406,7 @@ test("H1: legal/support-page-draft.html keeps the plain confident text for a gen
   await writeReadyAssets(root, manifest);
   const analysis = await analyzeRepository(root);
   const report = await preflight(root, manifest, false, analysis);
+  manifest.screenshots.finalOutputDir = "release-h1-clean/screenshots/final";
   const generated = await generateReleasePackage(root, manifest, analysis, report, "release-h1-clean");
   const page = await readFile(path.join(generated.directory, "legal/support-page-draft.html"), "utf8");
   assert.ok(page.includes("This app does not offer restorable in-app purchases."));

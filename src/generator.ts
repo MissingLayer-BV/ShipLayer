@@ -6,12 +6,12 @@ import { copyFileTree, ensureDirectory, resolveContained, safeRelativePath, stab
 import type { AnalysisReport, PreflightReport, ShipLayerManifest } from "./types.js";
 import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, externalServiceFindings, MONETIZATION_CONTRADICTION_FINDING, resolveContradictionOverride, storekitPurchaseEvidence } from "./evidence.js";
 import { detectScreenshotHarness } from "./scanner.js";
-import { buildMarketingSlideEntries, DEFAULT_OUTPUT_DIRECTORY, EXPORT_MJS, frameForFamily, renderPackageJson, renderReadme, renderSlideHtml, renderSlidesManifestJson, STRIP_ALPHA_MJS } from "./marketing.js";
+import { buildMarketingSlideEntries, DEFAULT_MARKETING_FINAL_DIR, DEFAULT_OUTPUT_DIRECTORY, EXPORT_MJS, frameForFamily, renderPackageJson, renderReadme, renderSlideHtml, renderSlidesManifestJson, STRIP_ALPHA_MJS } from "./marketing.js";
 
 export interface PreparedPackage { directory: string; files: string[] }
 const RESERVED_OUTPUT_ROOTS = new Set([".git", ".github", ".shiplayer-staging", "node_modules", "pods", "carthage", "deriveddata", "build", ".build", "dist", ".swiftpm", "vendor", "release", "shiplayer.yml"]);
 export async function generateReleasePackage(repository: string, manifest: ShipLayerManifest, analysis: AnalysisReport, preflight: PreflightReport, outputDirectory: string): Promise<PreparedPackage> {
-  assertManifestPaths(manifest); const outputRelative = safeRelativePath(outputDirectory, "--out"); assertOutputPath(outputRelative); assertOutputDoesNotCollide(manifest, outputRelative); const out = await resolveContained(repository, outputRelative, "--out"); await ensureOutputParent(repository, outputRelative); await assertManagedDestination(out); const stage = await createStage(repository); const files: string[] = []; const emit = async (relativePath: string, contents: string): Promise<void> => { assertNoSecretOutput(contents, relativePath); await writeText(path.join(stage, relativePath), contents); files.push(relativePath); }; // Deliberately narrow: this can ONLY read from ShipLayer's own bundled assets/device-frames/
+  assertManifestPaths(manifest); const outputRelative = safeRelativePath(outputDirectory, "--out"); assertOutputPath(outputRelative); assertOutputDoesNotCollide(manifest, outputRelative); assertFinalOutputDirMatchesOut(manifest, outputRelative); const out = await resolveContained(repository, outputRelative, "--out"); await ensureOutputParent(repository, outputRelative); await assertManagedDestination(out); const stage = await createStage(repository); const files: string[] = []; const emit = async (relativePath: string, contents: string): Promise<void> => { assertNoSecretOutput(contents, relativePath); await writeText(path.join(stage, relativePath), contents); files.push(relativePath); }; // Deliberately narrow: this can ONLY read from ShipLayer's own bundled assets/device-frames/
   // directory (never an arbitrary Buffer a caller could pass in), which is why it skips the
   // secret-text scan emit() applies to every generated string -- there is no future binary-emit
   // call site that could smuggle untrusted content through it, unlike a general emitBinary(path,
@@ -48,6 +48,32 @@ function assertOutputDoesNotCollide(manifest: ShipLayerManifest, outputRelative:
   const inputs = ["shiplayer.yml", manifest.screenshots.rawOutputDir, manifest.screenshots.marketingProjectPath, ...(manifest.monetization.type === "subscriptions" || manifest.monetization.type === "non-consumables" ? manifest.monetization.products.map((product) => product.reviewScreenshot) : [])].filter((item): item is string => Boolean(item)).map((item) => safeRelativePath(item, "manifest input"));
   const normalizedOutput = outputRelative.toLocaleLowerCase("en-US");
   if (inputs.map((input) => input.toLocaleLowerCase("en-US")).some((input) => normalizedOutput === input || normalizedOutput.startsWith(`${input}/`) || input.startsWith(`${normalizedOutput}/`))) throw new Error("--out collides with a manifest source input. Choose a separate managed release directory.");
+}
+/**
+ * screenshots.finalOutputDir, when unset, resolves relative to THIS RUN's actual --out (see
+ * emitMarketingProject) -- correct for generation, but `check` (preflight.ts) never receives
+ * --out and can only fall back to the static DEFAULT_MARKETING_FINAL_DIR literal. Those two only
+ * agree when --out is left at its own default; under a customized --out with finalOutputDir still
+ * unset, `check` would silently look in the wrong place and pass (or reject) nothing, no
+ * different from "validated and fine" -- verbatim PR review finding F4, reopened as NEW-1 when an
+ * earlier version of this exact guard was written about in three places (this comment's own
+ * ancestors) but never actually implemented. Refusing this combination outright, loudly, at
+ * generation time, is what makes "screenshots.finalOutputDir ... deliberately independent of
+ * whatever --out was used" and "check reads the same field, so it always looks in the same place
+ * export.mjs actually wrote to, even after a custom --out" (the generated README) true statements
+ * rather than aspirational ones: whenever generateReleasePackage succeeds, either --out is the
+ * default (both sides agree on DEFAULT_MARKETING_FINAL_DIR) or finalOutputDir is explicitly set
+ * (both sides agree on that explicit value) -- there is no third, silently-wrong state left.
+ */
+function assertFinalOutputDirMatchesOut(manifest: ShipLayerManifest, outputRelative: string): void {
+  if (manifest.screenshots.finalOutputDir) return;
+  if (outputRelative === DEFAULT_OUTPUT_DIRECTORY) return;
+  // Nothing for `check` to ever look for if the marketing project itself would never render any
+  // slide (no declared scenario, or no configuration for it to pair with) -- scoping the guard to
+  // only the case that can actually go silently wrong avoids false-blocking every unrelated use
+  // of a non-default --out that has nothing to do with screenshots at all.
+  if (!manifest.screenshots.scenarios.length || !manifest.screenshots.configurations.length) return;
+  throw new Error(`--out '${outputRelative}' differs from ShipLayer's default ('${DEFAULT_OUTPUT_DIRECTORY}'), but screenshots.finalOutputDir is not set. shiplayer check never receives --out, so it would silently look for rendered marketing screenshots in the wrong place (the default '${DEFAULT_MARKETING_FINAL_DIR}') and report nothing, indistinguishable from "validated and fine". Set screenshots.finalOutputDir explicitly (e.g. '${outputRelative}/screenshots/final') before using a non-default --out, or omit --out to use the default.`);
 }
 async function createStage(repository: string): Promise<string> {
   const root = await resolveContained(repository, ".shiplayer-staging", "staging directory");
@@ -281,9 +307,12 @@ async function emitMarketingProject(manifest: ShipLayerManifest, outputRelative:
   // would, whenever --out is customized) is exactly how `prepare --out custom-release` used to
   // create an unmanaged "shiplayer-release/" decoy the moment export.mjs ran, permanently
   // blocking every later default-`--out` prepare with "not a ShipLayer-managed package". See PR
-  // review round-3 finding N2. `check` (preflight.ts), which never receives --out, still falls
-  // back to the static DEFAULT_MARKETING_FINAL_DIR -- correct only when --out is also left at its
-  // default, a known v0.1 limitation for a customized --out documented in the generated README.
+  // review round-3 finding N2. assertFinalOutputDirMatchesOut (above) has already refused the one
+  // combination where this would disagree with `check`'s own fallback (an unset finalOutputDir
+  // under a non-default --out), so by the time this line runs, either --out is the default (this
+  // expression and DEFAULT_MARKETING_FINAL_DIR are equal) or finalOutputDir is explicitly set
+  // (the `||` never triggers) -- `check`, which never receives --out, always ends up looking in
+  // the same place this line just resolved. See PR review finding NEW-1.
   const finalOutputDir = manifest.screenshots.finalOutputDir || `${outputRelative}/screenshots/final`;
   const entries = buildMarketingSlideEntries({ outputDirectory: outputRelative, rawOutputDir: manifest.screenshots.rawOutputDir, finalOutputDir, configurations: manifest.screenshots.configurations, scenarios: manifest.screenshots.scenarios });
   const root = "screenshots/marketing";

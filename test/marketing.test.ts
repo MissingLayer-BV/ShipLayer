@@ -596,18 +596,55 @@ test("N1: a safe finalOutputDir (the documented default) never collides and a re
 
 // --- N2: a custom --out must never render outside the requested package -----------------------
 
-test("N2: a custom --out with no explicit finalOutputDir renders inside --out, never a hardcoded shiplayer-release decoy", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-marketing-n2-"));
+// NEW-1 (round-3 re-audit): an earlier version of this test asserted that an unset finalOutputDir
+// under a custom --out silently rendered inside that --out. That is exactly the state
+// preflight.ts (which never receives --out) cannot tell apart from a --out left at its own
+// default -- it would still fall back to the static DEFAULT_MARKETING_FINAL_DIR and silently miss
+// (or wrongly validate) whatever actually rendered under the custom --out, reopening F4
+// verbatim. generateReleasePackage now refuses this combination outright instead.
+test("NEW-1: an unset finalOutputDir under a non-default --out is refused, not silently mismatched with check", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-marketing-new1-"));
   const manifest = readyManifest(); await writeReadyAssets(root, manifest);
   assert.equal(manifest.screenshots.finalOutputDir, undefined, "a freshly-created manifest must not pin finalOutputDir before any --out has ever been chosen");
+  const analysis = await analyzeRepository(root);
+  const report = await preflight(root, manifest, false, analysis);
+  await assert.rejects(
+    generateReleasePackage(root, manifest, analysis, report, "custom-release"),
+    /screenshots\.finalOutputDir is not set/,
+    "a non-default --out with finalOutputDir unset must be refused, not silently mismatched with check's own hardcoded fallback"
+  );
+  assert.equal(existsSync(path.join(root, "shiplayer-release")), false, "refusing the mismatch must not leave any decoy shiplayer-release/ directory behind either");
+});
+
+test("NEW-1: setting finalOutputDir explicitly makes a non-default --out succeed, and generation/validation agree on the real location", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-marketing-new1-explicit-"));
+  const manifest = readyManifest(); manifest.screenshots.finalOutputDir = "custom-release/screenshots/final"; await writeReadyAssets(root, manifest);
   const analysis = await analyzeRepository(root);
   const report = await preflight(root, manifest, false, analysis);
   const pkg = await generateReleasePackage(root, manifest, analysis, report, "custom-release");
   const slidesJson = JSON.parse(await readFile(path.join(pkg.directory, "screenshots/marketing/slides.json"), "utf8"));
   assert.equal(slidesJson.slides[0].output, "../final/iphone/en-US/home.png");
   const resolvedOutput = path.resolve(pkg.directory, "screenshots/marketing", slidesJson.slides[0].output);
-  assert.ok(resolvedOutput.startsWith(`${pkg.directory}${path.sep}`), "the rendered PNG must land inside the requested --out (pkg.directory === custom-release), not outside it");
-  assert.equal(existsSync(path.join(path.dirname(pkg.directory), "shiplayer-release")), false, "no decoy shiplayer-release/ directory may be created under a custom --out");
+  assert.ok(resolvedOutput.startsWith(`${pkg.directory}${path.sep}`), "the rendered PNG must land inside the requested --out");
+});
+
+test("NEW-1: the default --out (finalOutputDir unset) is completely unaffected by the guard", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-marketing-new1-default-"));
+  const manifest = readyManifest(); await writeReadyAssets(root, manifest);
+  const analysis = await analyzeRepository(root);
+  const report = await preflight(root, manifest, false, analysis);
+  const pkg = await generateReleasePackage(root, manifest, analysis, report, "shiplayer-release");
+  const slidesJson = JSON.parse(await readFile(path.join(pkg.directory, "screenshots/marketing/slides.json"), "utf8"));
+  assert.equal(slidesJson.slides[0].output, "../final/iphone/en-US/home.png");
+});
+
+test("NEW-1: the guard does not fire when there is nothing for the marketing project to ever render (no scenarios)", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-marketing-new1-empty-"));
+  const manifest = readyManifest(); manifest.screenshots.scenarios = []; await writeReadyAssets(root, manifest);
+  const analysis = await analyzeRepository(root);
+  const report = await preflight(root, manifest, false, analysis);
+  const pkg = await generateReleasePackage(root, manifest, analysis, report, "custom-release-empty");
+  assert.ok(pkg.files.includes("screenshots/marketing/slides.json"));
 });
 
 test("N2: the default --out still resolves finalOutputDir to shiplayer-release/screenshots/final", async () => {

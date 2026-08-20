@@ -124,6 +124,7 @@ test("generated review notes and StoreKit checklist name unresolved evidence ins
   await writeFile(path.join(root, "worker/src/index.ts"), "fetch('https://openrouter.ai/api/v1/chat/completions')");
   const analysis = await analyzeRepository(root);
   const report = await preflight(root, manifest, false, analysis);
+  manifest.screenshots.finalOutputDir = "release-honesty/screenshots/final";
   const generated = await generateReleasePackage(root, manifest, analysis, report, "release-honesty");
   const notes = await readFile(path.join(generated.directory, "review/app-review-notes.md"), "utf8");
   assert.equal(notes.includes("No In-App Purchases or subscriptions are offered."), false);
@@ -142,6 +143,7 @@ test("a clean free/no-processor app still gets the ordinary confident text (no s
   await writeReadyAssets(root, manifest);
   const analysis = await analyzeRepository(root);
   const report = await preflight(root, manifest, false, analysis);
+  manifest.screenshots.finalOutputDir = "release-clean/screenshots/final";
   const generated = await generateReleasePackage(root, manifest, analysis, report, "release-clean");
   const notes = await readFile(path.join(generated.directory, "review/app-review-notes.md"), "utf8");
   assert.ok(notes.includes("No In-App Purchases or subscriptions are offered."));
@@ -167,6 +169,7 @@ test("remaining-human-actions.md lists each scanner question once, not twice", a
   await writeReadyAssets(root, manifest);
   const analysis = await analyzeRepository(root);
   const report = await preflight(root, manifest, false, analysis);
+  manifest.screenshots.finalOutputDir = "release-dedup/screenshots/final";
   const generated = await generateReleasePackage(root, manifest, analysis, report, "release-dedup");
   const actions = await readFile(path.join(generated.directory, "remaining-human-actions.md"), "utf8");
   const occurrences = actions.split("Confirm App Privacy questionnaire answers and all third-party processor data handling").length - 1;
