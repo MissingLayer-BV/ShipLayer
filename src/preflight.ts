@@ -472,6 +472,13 @@ function screenshotConfigurationChecks(manifest: ShipLayerManifest, add: Add): v
   // make deletion a silent, undetectable bypass of this exact gate.
   for (const scenario of manifest.screenshots.scenarios) {
     if (scenario.confirmation !== "confirmed") add(`screenshots.scenarios.${scenario.id}.confirmation`, "block", `Screenshot scenario '${scenario.id}' is not human-confirmed.`, "Verify the real on-screen navigation, then set confirmation: confirmed.");
+    // A caption is optional (the slide still renders legibly with a placeholder), so this is a
+    // warn, never a block. `init`'s unresolved question only fires for scenarios it detects from
+    // an existing harness at init time; a scenario hand-added afterward gets no other reminder
+    // from the CLI at all, only the rendered slide's own italic placeholder styling. Surfacing it
+    // here too means `check` -- the one command actually re-run before every submission -- says
+    // so as well, not just a one-time init message an agent may not still have in context.
+    if (!scenario.caption) add(`screenshots.scenarios.${scenario.id}.caption`, "warn", `Screenshot scenario '${scenario.id}' has no drafted caption yet; its marketing slide falls back to the scenario title as a placeholder.`, "Draft a concise, human-reviewed caption (one idea per slide, max 100 characters, no line breaks) in screenshots.scenarios[].caption.");
   }
 }
 

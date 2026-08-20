@@ -708,3 +708,17 @@ test("F8 residual: a short Latin caption is unaffected by the wide-script estima
   const fontSize = fontSizeOfCaption({ ...baseSlideEntry("Ship faster"), locale: "en-US" });
   assert.equal(fontSize, Math.round(1320 * 0.062)); // CAPTION_FONT_SCALE, no shrink triggered
 });
+
+// --- Nit: check warns (never blocks) when a scenario has no drafted caption --------------------
+
+test("check warns when a scenario has no drafted caption, and stays silent once one is drafted", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-marketing-caption-warn-"));
+  const manifest = readyManifest(); await writeReadyAssets(root, manifest);
+  let report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "screenshots.scenarios.home.caption" && item.severity === "warn"));
+  assert.equal(report.summary.block, 0);
+
+  manifest.screenshots.scenarios[0].caption = "See everything at a glance";
+  report = await preflight(root, manifest);
+  assert.equal(report.results.some((item) => item.id === "screenshots.scenarios.home.caption"), false);
+});
