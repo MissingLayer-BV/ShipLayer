@@ -9,6 +9,7 @@
     "contacts",
     "metadata",
     "permissions",
+    "permissionFlows",
     "dataProcessing",
     "externalProcessors",
     "aiDataSharing",
@@ -55,6 +56,12 @@
       "type": "array",
       "items": {
         "$ref": "#/$defs/permission"
+      }
+    },
+    "permissionFlows": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/permissionFlow"
       }
     },
     "dataProcessing": {
@@ -340,6 +347,49 @@
         },
         "purpose": {
           "type": "string"
+        },
+        "confirmation": {
+          "$ref": "#/$defs/confirmation"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/repoPath"
+          }
+        }
+      }
+    },
+    "permissionFlow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "category",
+        "dismissibleScreenBeforePrompt",
+        "deniedPathOffersSettingsLink",
+        "confirmation"
+      ],
+      "properties": {
+        "category": {
+          "enum": [
+            "camera",
+            "microphone",
+            "photo-library",
+            "location",
+            "notifications",
+            "contacts",
+            "calendar",
+            "reminders",
+            "media-library",
+            "speech-recognition",
+            "motion",
+            "tracking"
+          ]
+        },
+        "dismissibleScreenBeforePrompt": {
+          "type": "boolean"
+        },
+        "deniedPathOffersSettingsLink": {
+          "type": "boolean"
         },
         "confirmation": {
           "$ref": "#/$defs/confirmation"

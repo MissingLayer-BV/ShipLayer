@@ -2,11 +2,52 @@ import path from "node:path";
 import { parse } from "yaml";
 import { readText, relative, walkRepository } from "./fs.js";
 import type { AnalysisReport, Evidence, Finding } from "./types.js";
-import { isXCUITestSourcePath } from "./evidence.js";
+import { isXCUITestSourcePath, stripCodeComments } from "./evidence.js";
 
 const PERMISSION_KEYS = ["NSCameraUsageDescription", "NSPhotoLibraryUsageDescription", "NSPhotoLibraryAddUsageDescription", "NSMicrophoneUsageDescription", "NSLocationWhenInUseUsageDescription", "NSUserTrackingUsageDescription", "NSContactsUsageDescription", "NSFaceIDUsageDescription"];
 const APPLE_FRAMEWORKS = new Set(["URLSession", "StoreKit", "UserNotifications", "Photos", "AVFoundation", "CoreLocation", "Contacts"]);
 const THIRD_PARTY_SDK_CANDIDATES = ["Alamofire", "Moya", "Firebase", "Sentry", "RevenueCat"];
+// The permission-flow gates (src/preflight.ts) ask one question per category: "can the user
+// dismiss a custom screen between requesting this feature and the system permission prompt?"
+// (App Review 5.1.1(iv)). This list is the single source of truth for valid
+// shiplayer.yml permissionFlows[].category values (see schema.json's permissionFlow $defs entry)
+// and for which runtime APIs below are recognized. camera/microphone share one Apple API
+// (AVCaptureDevice.requestAccess) distinguished only by its argument.
+export const PERMISSION_FLOW_CATEGORIES = ["camera", "microphone", "photo-library", "location", "notifications", "contacts", "calendar", "reminders", "media-library", "speech-recognition", "motion", "tracking"] as const;
+export type PermissionFlowCategory = (typeof PERMISSION_FLOW_CATEGORIES)[number];
+export interface PermissionRequestSite { category: PermissionFlowCategory; index: number; excerpt: string; label: string; }
+// Deliberately literal/heuristic API-shape matching, not a full Swift parse — consistent with
+// every other detector in this file. Each pattern must include a real anchor (a distinctive type
+// name, or an argument shape) rather than a bare generic method name alone, to keep false
+// positives low; some Apple APIs (requestAccess, requestAuthorization) are shared across several
+// unrelated frameworks, so those patterns require the owning type or a distinguishing argument.
+const PERMISSION_REQUEST_PATTERNS: Array<{ category: PermissionFlowCategory; label: string; pattern: RegExp }> = [
+  { category: "camera", label: "AVCaptureDevice.requestAccess(for: .video)", pattern: /\bAVCaptureDevice\.requestAccess\s*\(\s*for:\s*\.video\b/g },
+  { category: "microphone", label: "AVCaptureDevice.requestAccess(for: .audio)", pattern: /\bAVCaptureDevice\.requestAccess\s*\(\s*for:\s*\.audio\b/g },
+  { category: "microphone", label: "AVAudioApplication/AVAudioSession.requestRecordPermission", pattern: /\bAVAudioApplication\.requestRecordPermission\b|\.requestRecordPermission\s*[({]/g },
+  { category: "photo-library", label: "PHPhotoLibrary.requestAuthorization", pattern: /\bPHPhotoLibrary\.requestAuthorization\b/g },
+  { category: "location", label: "CLLocationManager requestWhenInUseAuthorization/requestAlwaysAuthorization", pattern: /\.requestWhenInUseAuthorization\s*\(\s*\)|\.requestAlwaysAuthorization\s*\(\s*\)/g },
+  { category: "notifications", label: "UNUserNotificationCenter.requestAuthorization", pattern: /\bUNUserNotificationCenter\b[\s\S]{0,120}?\.requestAuthorization\s*\(|\.requestAuthorization\s*\(\s*options:\s*\[[^\]]{0,120}?\.(?:alert|badge|sound)\b/g },
+  { category: "contacts", label: "CNContactStore.requestAccess", pattern: /\bCNContactStore\b[\s\S]{0,120}?\.requestAccess\s*\(|\.requestAccess\s*\(\s*for:\s*\.contacts\b/g },
+  { category: "calendar", label: "EKEventStore requestAccess(to: .event)/requestFullAccessToEvents", pattern: /\.requestAccess\s*\(\s*to:\s*\.event\b|\.requestFullAccessToEvents\s*\(/g },
+  { category: "reminders", label: "EKEventStore requestAccess(to: .reminder)/requestFullAccessToReminders", pattern: /\.requestAccess\s*\(\s*to:\s*\.reminder\b|\.requestFullAccessToReminders\s*\(/g },
+  { category: "media-library", label: "MPMediaLibrary.requestAuthorization", pattern: /\bMPMediaLibrary\.requestAuthorization\b/g },
+  { category: "speech-recognition", label: "SFSpeechRecognizer.requestAuthorization", pattern: /\bSFSpeechRecognizer\.requestAuthorization\b/g },
+  { category: "motion", label: "CMMotionActivityManager", pattern: /\bCMMotionActivityManager\s*\(\s*\)/g },
+  { category: "tracking", label: "ATTrackingManager.requestTrackingAuthorization", pattern: /\bATTrackingManager\.requestTrackingAuthorization\b/g },
+];
+/**
+ * Finds runtime permission-request API call sites in `content` (a caller-prepared string — pass
+ * raw source for a lightweight proposal, or comment/conditional-compilation-stripped source for a
+ * gate that must not trust dead code). Exported so src/preflight.ts's permission-flow gates can
+ * re-run the exact same detection against cleaned evidence text instead of keeping a second,
+ * potentially-drifting copy of this pattern table.
+ */
+export function findPermissionRequestSites(content: string): PermissionRequestSite[] {
+  const sites: PermissionRequestSite[] = [];
+  for (const { category, label, pattern } of PERMISSION_REQUEST_PATTERNS) for (const match of content.matchAll(pattern)) sites.push({ category, index: match.index ?? 0, excerpt: match[0].slice(0, 160), label });
+  return sites.sort((left, right) => left.index - right.index);
+}
 const PRIVACY_DATA_TYPE_MAP: Record<string, string> = { NSPrivacyCollectedDataTypeName: "Name", NSPrivacyCollectedDataTypeEmailAddress: "Email Address", NSPrivacyCollectedDataTypePhoneNumber: "Phone Number", NSPrivacyCollectedDataTypePhysicalAddress: "Physical Address", NSPrivacyCollectedDataTypeOtherUserContactInfo: "Other User Contact Info", NSPrivacyCollectedDataTypePhotosorVideos: "Photos or Videos", NSPrivacyCollectedDataTypeDeviceID: "Device ID", NSPrivacyCollectedDataTypeUserID: "User ID", NSPrivacyCollectedDataTypeOtherFinancialInfo: "Other Financial Info", NSPrivacyCollectedDataTypePurchases: "Purchases", NSPrivacyCollectedDataTypeProductInteraction: "Product Interaction", NSPrivacyCollectedDataTypeCrashData: "Crash Data", NSPrivacyCollectedDataTypePerformanceData: "Performance Data" };
 const PRIVACY_PURPOSE_MAP: Record<string, string> = { NSPrivacyCollectedDataTypePurposeThirdPartyAdvertising: "Third-Party Advertising", NSPrivacyCollectedDataTypePurposeDeveloperAdvertising: "Developer’s Advertising or Marketing", NSPrivacyCollectedDataTypePurposeAnalytics: "Analytics", NSPrivacyCollectedDataTypePurposeProductPersonalization: "Product Personalization", NSPrivacyCollectedDataTypePurposeAppFunctionality: "App Functionality", NSPrivacyCollectedDataTypePurposeOther: "Other Purposes" };
 
@@ -70,6 +111,11 @@ export async function analyzeRepository(repository: string): Promise<AnalysisRep
         if (/\.displayPrice\b|\bProductView\s*\(/.test(content)) push("storekitLocalizedPrice", "StoreKit localized price display", { source, excerpt: content.match(/.{0,80}(?:\.displayPrice\b|\bProductView\s*\().{0,80}/s)?.[0].slice(0, 220), confidence: "high", kind: "source-heuristic" });
         if (/\.purchase\s*\(/.test(content)) push("storekitPurchaseCall", "StoreKit purchase call", { source, excerpt: content.match(/.{0,80}\.purchase\s*\(.{0,80}/s)?.[0].slice(0, 220), confidence: "high", kind: "source-heuristic" });
         if (/\bSKPaymentQueue\b|\bSKPaymentTransactionObserver\b/.test(content)) push("storekitLegacyPaymentQueue", "StoreKit 1 payment queue", { source, excerpt: content.match(/.{0,80}(?:SKPaymentQueue|SKPaymentTransactionObserver).{0,80}/s)?.[0].slice(0, 220), confidence: "high", kind: "source-heuristic" });
+        // Comment-stripped so a commented-out permission-request call cannot propose (and, via
+        // preflight.ts's permission-flow gates re-reading this same evidence file, cannot satisfy)
+        // a permission-flow declaration for dead code. Each detected category becomes exactly one
+        // aggregated finding (via `push`'s existing key-grouping), just like `permission:` above.
+        for (const site of findPermissionRequestSites(stripCodeComments(content))) push(`permissionFlow:${site.category}`, site.label, { source, excerpt: site.excerpt, confidence: "medium", kind: "source-heuristic" });
       }
       for (const sdk of THIRD_PARTY_SDK_CANDIDATES) {
         const pattern = nativeSource ? new RegExp(`\\bimport\\s+${sdk}\\b|\\b${sdk}\\s*\\.`) : new RegExp(`(?:\\bimport\\s+(?:[^;\\n]*?\\s+from\\s+)?|\\brequire\\s*\\()?["']${sdk}["']|\\bfrom\\s+["']${sdk}["']`);
@@ -119,7 +165,8 @@ export async function analyzeRepository(repository: string): Promise<AnalysisRep
     }
     const processorCandidate = key.startsWith("thirdPartySdkCandidate:") || key.startsWith("endpoint:");
     const appleFramework = key.startsWith("framework:");
-    findings.push({ key, value: values.length === 1 ? primary : values, evidence: entries.map((entry) => entry.evidence), confidence: entries.some((entry) => entry.evidence.confidence === "confirmed") ? "confirmed" : entries.some((entry) => entry.evidence.confidence === "high") ? "high" : "medium", proposal: processorCandidate, message: processorCandidate ? "Heuristic finding only; confirm whether this is an external processor or declared data use." : appleFramework ? "Apple framework usage detected; this is not by itself an external processor or privacy declaration." : undefined });
+    const permissionFlowCandidate = key.startsWith("permissionFlow:");
+    findings.push({ key, value: values.length === 1 ? primary : values, evidence: entries.map((entry) => entry.evidence), confidence: entries.some((entry) => entry.evidence.confidence === "confirmed") ? "confirmed" : entries.some((entry) => entry.evidence.confidence === "high") ? "high" : "medium", proposal: processorCandidate || permissionFlowCandidate, message: processorCandidate ? "Heuristic finding only; confirm whether this is an external processor or declared data use." : appleFramework ? "Apple framework usage detected; this is not by itself an external processor or privacy declaration." : permissionFlowCandidate ? "Heuristic finding only; confirms a runtime permission-request API call was detected, not that the app truly reaches the system prompt this way." : undefined });
   }
   if (!settings.bundleId) questions.add("Confirm the production bundle ID; no unambiguous product bundle ID was detected.");
   if (!settings.encryption) questions.add("Confirm export-compliance/encryption status.");

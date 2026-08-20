@@ -2,13 +2,13 @@ import path from "node:path";
 import { lstat, readFile, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import type { AnalysisReport, CheckResult, PreflightReport, ShipLayerManifest } from "./types.js";
-import { analyzeRepository, findValue } from "./scanner.js";
-import { resolveContained, walkRepository } from "./fs.js";
+import { analyzeRepository, findPermissionRequestSites, findValue } from "./scanner.js";
+import { readText, relative, resolveContained, walkRepository } from "./fs.js";
 import { inspectImage } from "./image.js";
 import { validateAscPrivateKey } from "./asc.js";
 import { appReviewNotes } from "./generator.js";
 import { DEFAULT_MARKETING_FINAL_DIR } from "./marketing.js";
-import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, isNonProductionSourcePath, MONETIZATION_CONTRADICTION_FINDING, resolveContradictionOverride, storekitPurchaseEvidence } from "./evidence.js";
+import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, isNonProductionSourcePath, MONETIZATION_CONTRADICTION_FINDING, productionEvidenceOnly, resolveContradictionOverride, storekitPurchaseEvidence, stripCodeComments } from "./evidence.js";
 
 // Apple requires ONE uniform size per required display class, and the classes are not
 // interchangeable: a 6.5-inch capture does not satisfy the 6.9-inch slot. Each display class is
@@ -83,6 +83,7 @@ export async function preflight(repository: string, manifest: ShipLayerManifest,
 
   metadataChecks(manifest, add);
   permissionChecks(manifest, add);
+  await permissionFlowChecks(repository, manifest, scan, add);
   exportComplianceCheck(manifest, add);
   confirmationChecks(manifest, add);
   await monetizationChecks(repository, manifest, scan, add);
@@ -161,6 +162,370 @@ function permissionChecks(manifest: ShipLayerManifest, add: Add): void {
     else if (permission.confirmation !== "confirmed") add(`permission.${permission.key}`, "block", `${permission.key} is not human-confirmed.`, "Confirm the permission and purpose before submission.");
     else add(`permission.${permission.key}`, "pass", `${permission.key} has a confirmed purpose string.`);
   }
+}
+
+// --- permission-flow gates (App Review 5.1.1(iv)) --------------------------------------------
+// BackYet was rejected because a dismissible custom sheet sat in front of the one-time system
+// camera prompt, and its denied-access fallback offered alternatives but no Settings link.
+//
+// Design: DECLARATIONS BLOCK, HEURISTICS WARN AND CORROBORATE — the same shape as aiDataSharing
+// and sourceContradictionOverrides elsewhere in this file. An earlier version of this section
+// inverted that: a weak same-file static heuristic was the blocker, and the human declaration was
+// only ever checked for "did you answer", never "is the answer acceptable". That let a written
+// admission of the exact rejected shape (`dismissibleScreenBeforePrompt: true, confirmation:
+// confirmed`) pass with zero blocks, and let a same-file text heuristic both false-pass (two
+// unrelated tokens anywhere in one file) and false-block (the ordinary SwiftUI MVVM/ObservableObject
+// split — a manager owns the request and publishes status, a view renders the denied UI and the
+// Settings link in a DIFFERENT file — which is BackYet's own real architecture for its notifications
+// permission, not an edge case). Fixed shape:
+//   - permission-flow.<category>.confirmation — always required. Blocks unless permissionFlows has
+//     a `confirmed` declaration for the category. Never satisfiable by absence, an unconfirmed
+//     entry, or a default value.
+//   - permission-flow.<category>.dismissible-screen — blocks whenever a CONFIRMED declaration
+//     itself says `dismissibleScreenBeforePrompt: true` — a written admission of the 5.1.1(iv)
+//     violation — independent of whether any heuristic below can detect it.
+//   - permission-flow.<category>.denied-path-settings-link — blocks unless a CONFIRMED declaration
+//     says `deniedPathOffersSettingsLink: true`. This, not a text heuristic, is the authoritative
+//     answer to "does the denied path reach Settings" — Apple named this in the rejection text, but
+//     no static heuristic can safely PROVE it across real architectures (see settingsLinkCorroborated
+//     below), so the human/agent answer is what gates readiness.
+//   - permission-flow.<category>.settings-link-heuristic — advisory only (warn/pass, never block).
+//     Corroborates the denied-path-settings-link declaration: same-file (or, one hop, a production
+//     file that references a type declared in the request-site file — the MVVM manager/view split)
+//     correlation of a `.denied`/`.restricted` marker with `UIApplication.openSettingsURLString`,
+//     scoped to one enclosing brace region (not "anywhere in the file"), including the common
+//     SwiftUI idiom of a denied-branch setting an `@State` flag that a separate `.sheet`/
+//     `.confirmationDialog`/`.alert`/`.popover(isPresented: $flag)` reads to present the Settings
+//     button (BackYet's own a3e72fd camera shape). A failed corroboration never blocks by itself —
+//     it only tells a human/agent the declaration could not be independently verified.
+//   - permission-flow.<category>.sheet-gated — the owner's chosen heuristic, independently verified
+//     sound by review and unchanged here: blocks only when the permission-request call is
+//     reachable, in a given production file, exclusively through a `.sheet`/`.confirmationDialog`/
+//     `.alert`/`.popover` presentation (including a function invoked only as that presentation's
+//     onDismiss callback) — BackYet's exact rejected shape. Clearable only by a confirmed
+//     permissionFlows declaration stating `dismissibleScreenBeforePrompt: false`.
+const SETTINGS_LINK_PATTERN = /\bopenSettingsURLString\b/;
+const DENIED_MARKER_PATTERN = /\.denied\b|\.restricted\b/g;
+// A denied-marker's correlated region must be roughly "one switch/if/function body", not "the rest
+// of the type" — bounding this is what keeps the heuristic from degrading back into "anywhere in
+// the file" once brace-region matching is in play.
+const DENIED_CORRELATION_MAX_SPAN = 4_000;
+// `if status == .denied {` puts the marker in the condition, lexically BEFORE the block it really
+// belongs to; a small header window lets that shape still count as "inside" the following block.
+const DENIED_HEADER_WINDOW = 200;
+
+interface SwiftFunctionRegion { name: string; nameStart: number; bodyStart: number; bodyEnd: number; }
+interface TextRegion { start: number; end: number; }
+
+/** Every `func name(...) { ... }` region in `content`, using the same quote-aware balanced-
+ * delimiter scan as the rest of this file (matchingDelimiter). A signature ShipLayer cannot find a
+ * body brace for within a bounded window (a protocol requirement, or an unusually long generic/
+ * where clause) is simply omitted — call sites inside an unrecognized function then have no
+ * enclosing function, which fails a gating check open (not gated), never closed. */
+function permissionFlowFunctionRegions(content: string): SwiftFunctionRegion[] {
+  const regions: SwiftFunctionRegion[] = [];
+  for (const match of content.matchAll(/\bfunc\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>{]*>)?\s*\(/g)) {
+    const name = match[1]; const declStart = match.index ?? 0;
+    // The name's own position, not "func"'s — permissionFlowCallSiteIndices matches on the NAME,
+    // so excluding the declaration itself must compare against the same position.
+    const nameStart = declStart + match[0].indexOf(name, 4);
+    const parenOpen = declStart + match[0].length - 1;
+    const parenClose = matchingDelimiter(content, parenOpen, "(", ")", 20_000);
+    if (parenClose < 0) continue;
+    const between = content.slice(parenClose + 1, Math.min(content.length, parenClose + 1 + 300));
+    const braceOffset = between.search(/\{/);
+    const boundaryOffset = between.search(/[;}]/);
+    if (braceOffset < 0 || (boundaryOffset >= 0 && boundaryOffset < braceOffset)) continue;
+    const braceOpen = parenClose + 1 + braceOffset;
+    const braceClose = matchingDelimiter(content, braceOpen, "{", "}", 200_000);
+    if (braceClose < 0) continue;
+    regions.push({ name, nameStart, bodyStart: braceOpen, bodyEnd: braceClose });
+  }
+  return regions;
+}
+
+/** Every `.sheet(`/`.confirmationDialog(`/`.alert(`/`.popover(` modifier's dismissible region(s):
+ * its primary trailing content closure, a second labeled trailing closure (SwiftUI's
+ * `} message: { ... }` shape), and an inline `onDismiss: { ... }` closure literal. Also collects
+ * the names of any function referenced as a bare `onDismiss: someFunction` value — SwiftUI always
+ * runs onDismiss strictly after that presentation is dismissed (Cancel, swipe, or a selection that
+ * calls dismiss()), so a function reachable only that way is exactly as gated as one called
+ * directly inside the presented screen. */
+function permissionFlowDismissibleRegions(content: string): { regions: TextRegion[]; onDismissNames: Set<string> } {
+  const regions: TextRegion[] = []; const onDismissNames = new Set<string>();
+  for (const match of content.matchAll(/\.(?:sheet|confirmationDialog|alert|popover)\s*\(/g)) {
+    const argsOpen = (match.index ?? 0) + match[0].length - 1;
+    const argsClose = matchingDelimiter(content, argsOpen, "(", ")", 20_000);
+    if (argsClose < 0) continue;
+    const argsText = content.slice(argsOpen + 1, argsClose);
+    // No trailing `[,)]` requirement: argsText is sliced to EXCLUDE the call's own closing paren
+    // (matchingDelimiter returns that index, not a substring including it), so `onDismiss:` as the
+    // last/only argument would never be followed by a `,` or `)` inside argsText itself. A bare
+    // trailing word boundary is sufficient and correct regardless of what (if anything) follows.
+    const namedDismiss = argsText.match(/\bonDismiss\s*:\s*([A-Za-z_][A-Za-z0-9_]*)\b/);
+    if (namedDismiss && namedDismiss[1] !== "nil") onDismissNames.add(namedDismiss[1]);
+    const inlineDismiss = argsText.match(/\bonDismiss\s*:\s*\{/);
+    if (inlineDismiss) {
+      const braceIndex = argsOpen + 1 + (inlineDismiss.index ?? 0) + inlineDismiss[0].length - 1;
+      const braceClose = matchingDelimiter(content, braceIndex, "{", "}", 50_000);
+      if (braceClose >= 0) regions.push({ start: braceIndex, end: braceClose });
+    }
+    const gap = content.slice(argsClose + 1, argsClose + 1 + 40).match(/^\s*/);
+    const afterSpace = argsClose + 1 + (gap ? gap[0].length : 0);
+    if (content[afterSpace] !== "{") continue;
+    const firstClose = matchingDelimiter(content, afterSpace, "{", "}", 50_000);
+    if (firstClose < 0) continue;
+    regions.push({ start: afterSpace, end: firstClose });
+    const labelWindow = content.slice(firstClose + 1, firstClose + 1 + 60);
+    const labelMatch = labelWindow.match(/^\s*[A-Za-z_][A-Za-z0-9_]*\s*:\s*\{/);
+    if (!labelMatch) continue;
+    const secondBrace = firstClose + 1 + labelMatch[0].lastIndexOf("{");
+    const secondClose = matchingDelimiter(content, secondBrace, "{", "}", 50_000);
+    if (secondClose >= 0) regions.push({ start: secondBrace, end: secondClose });
+  }
+  return { regions, onDismissNames };
+}
+
+function withinAnyRegion(index: number, regions: TextRegion[]): boolean { return regions.some((region) => index >= region.start && index <= region.end); }
+function permissionFlowEnclosingFunction(index: number, functions: SwiftFunctionRegion[]): SwiftFunctionRegion | undefined {
+  let best: SwiftFunctionRegion | undefined;
+  for (const region of functions) if (index > region.bodyStart && index < region.bodyEnd && (!best || region.bodyEnd - region.bodyStart < best.bodyEnd - best.bodyStart)) best = region;
+  return best;
+}
+function permissionFlowCallSiteIndices(content: string, name: string, functions: SwiftFunctionRegion[]): number[] {
+  const declStarts = new Set(functions.filter((item) => item.name === name).map((item) => item.nameStart));
+  const pattern = new RegExp(`\\b${escapePermissionFlowRegex(name)}\\s*\\(`, "g");
+  const indices: number[] = [];
+  for (const match of content.matchAll(pattern)) { const index = match.index ?? 0; if (!declStarts.has(index)) indices.push(index); }
+  return indices;
+}
+/** True when EVERY call site of `name` is itself gated: lexically inside a dismissible-
+ * presentation region, or inside a function that is (recursively) exclusively gated the same way.
+ * A function with zero found call sites is treated as an entry point, not gated (fail open) — this
+ * is deliberately the same direction as an unrecognized/unclassifiable call site below: this
+ * heuristic must never manufacture a block it cannot actually support with a located call chain. */
+function isFunctionExclusivelyGated(name: string, content: string, functions: SwiftFunctionRegion[], regions: TextRegion[], onDismissNames: Set<string>, memo: Map<string, boolean>, stack: Set<string>, depth: number): boolean {
+  if (memo.has(name)) return memo.get(name) as boolean;
+  if (stack.has(name) || depth > 12) return false;
+  stack.add(name);
+  let result: boolean;
+  if (onDismissNames.has(name)) result = true;
+  else {
+    const sites = permissionFlowCallSiteIndices(content, name, functions);
+    result = sites.length > 0 && sites.every((index) => {
+      if (withinAnyRegion(index, regions)) return true;
+      const enclosing = permissionFlowEnclosingFunction(index, functions);
+      return enclosing ? isFunctionExclusivelyGated(enclosing.name, content, functions, regions, onDismissNames, memo, stack, depth + 1) : false;
+    });
+  }
+  stack.delete(name); memo.set(name, result);
+  return result;
+}
+function isRequestSiteGated(index: number, content: string, functions: SwiftFunctionRegion[], regions: TextRegion[], onDismissNames: Set<string>): boolean {
+  if (withinAnyRegion(index, regions)) return true;
+  const enclosing = permissionFlowEnclosingFunction(index, functions);
+  return enclosing ? isFunctionExclusivelyGated(enclosing.name, content, functions, regions, onDismissNames, new Map(), new Set(), 0) : false;
+}
+
+// --- settings-link corroboration (advisory only — see the module comment above) ---------------
+
+/** Every `{ ... }` region in `content` in ONE pass (a stack of open-brace indices, popped on each
+ * matching close), quote-aware. Reused for both the direct denied/settings-link correlation below
+ * and, structurally, mirrors matchingDelimiter's own quote handling. Independent of
+ * permissionFlowFunctionRegions because a correlated region is very often NOT a whole function body
+ * (a `switch`/`if` block, or a `.sheet`/`.confirmationDialog` trailing closure). */
+function swiftBraceRegions(content: string): TextRegion[] {
+  const regions: TextRegion[] = []; const stack: number[] = []; let quote = false;
+  for (let index = 0; index < content.length; index++) {
+    const character = content[index];
+    if (quote) { if (character === "\\" && index + 1 < content.length) { index++; continue; } if (character === "\"") quote = false; continue; }
+    if (character === "\"") { quote = true; continue; }
+    if (character === "{") { stack.push(index); continue; }
+    if (character === "}") { const open = stack.pop(); if (open !== undefined) regions.push({ start: open, end: index }); }
+  }
+  return regions;
+}
+/** Regions containing `index`, extended backward by DENIED_HEADER_WINDOW so a marker in an `if`/
+ * `switch` CONDITION (lexically before that statement's own `{`) still counts as "inside" it,
+ * sorted innermost (smallest) first so a bounded local check tries the tightest scope first. */
+function enclosingRegionsNear(index: number, regions: TextRegion[]): TextRegion[] {
+  return regions.filter((region) => index >= region.start - DENIED_HEADER_WINDOW && index < region.end).sort((left, right) => (left.end - left.start) - (right.end - right.start));
+}
+/** Every `.sheet`/`.confirmationDialog`/`.alert`/`.popover(isPresented: $name, ...)` binding whose
+ * OWN primary content closure reaches `openSettingsURLString` — directly, or through exactly one
+ * function-call hop to a function (found via permissionFlowFunctionRegions) whose body contains it.
+ * Models SwiftUI's common declarative idiom: a denied-branch sets `name = true`, and a SEPARATE
+ * modifier bound to `$name` presents the actual Settings button — BackYet's own a3e72fd camera
+ * shape (`isShowingCameraPermissionDenied` set in `beginCameraCapture()`'s `.denied` case, read by
+ * a `.confirmationDialog` whose button calls `openSystemSettings()`). */
+function settingsPresentingFlags(content: string, functions: SwiftFunctionRegion[]): Set<string> {
+  const flags = new Set<string>();
+  for (const match of content.matchAll(/\.(?:sheet|confirmationDialog|alert|popover)\s*\(/g)) {
+    const argsOpen = (match.index ?? 0) + match[0].length - 1;
+    const argsClose = matchingDelimiter(content, argsOpen, "(", ")", 20_000);
+    if (argsClose < 0) continue;
+    const isPresented = content.slice(argsOpen + 1, argsClose).match(/\bisPresented\s*:\s*\$([A-Za-z_][A-Za-z0-9_]*)/);
+    if (!isPresented) continue;
+    const gap = content.slice(argsClose + 1, argsClose + 1 + 40).match(/^\s*/);
+    const afterSpace = argsClose + 1 + (gap ? gap[0].length : 0);
+    if (content[afterSpace] !== "{") continue;
+    const firstClose = matchingDelimiter(content, afterSpace, "{", "}", 50_000);
+    if (firstClose < 0) continue;
+    const region = content.slice(afterSpace, firstClose);
+    const reachesSettings = SETTINGS_LINK_PATTERN.test(region) || functions.some((fn) => new RegExp(`\\b${escapePermissionFlowRegex(fn.name)}\\s*\\(`).test(region) && SETTINGS_LINK_PATTERN.test(content.slice(fn.bodyStart, fn.bodyEnd)));
+    if (reachesSettings) flags.add(isPresented[1]);
+  }
+  return flags;
+}
+/**
+ * True when a `.denied`/`.restricted` marker's own local, bounded enclosing region either (a)
+ * directly contains `openSettingsURLString`, or (b) sets one of `settingsPresentingFlags` to
+ * `true`. Deliberately scoped (not "anywhere in the file") — see the module comment.
+ *
+ * `categorySiteIndices`, when given, additionally requires that SAME region to contain a genuine
+ * request-site index for the category under test — this is what stops a file that happens to
+ * handle TWO permissions (e.g. a shared PermissionCoordinator) from letting one category's real
+ * denied+Settings-link handling "corroborate" an unrelated category that has no such handling of
+ * its own at all. Omitted for the one-hop joined-file check in settingsLinkCorroborated below,
+ * where the type-name join itself already provides the category scoping — the whole point of that
+ * join is to find a file that renders the denied UI WITHOUT itself calling the request API.
+ */
+function hasLocalDeniedSettingsCorrelation(content: string, categorySiteIndices?: number[]): boolean {
+  const regions = swiftBraceRegions(content);
+  const functions = permissionFlowFunctionRegions(content);
+  const flags = settingsPresentingFlags(content, functions);
+  const flagAssignment = flags.size ? new RegExp(`\\b(?:${[...flags].map(escapePermissionFlowRegex).join("|")})\\s*=\\s*true\\b`) : undefined;
+  for (const match of content.matchAll(DENIED_MARKER_PATTERN)) {
+    const deniedIndex = match.index ?? 0;
+    if (categorySiteIndices) {
+      // Category scoping uses the enclosing FUNCTION boundary specifically, not the generic
+      // brace-region walk below: a brace region wide enough to satisfy the size cap can span
+      // multiple unrelated functions in the same type (e.g. a PermissionCoordinator handling both
+      // camera and notifications), which would otherwise let one category's real denied+Settings-
+      // link handling "corroborate" a completely different category that has no such handling at
+      // all — the exact cross-category leak this parameter exists to prevent. A denied marker with
+      // no enclosing function (e.g. written directly in a computed `var body`) cannot be scoped
+      // this way and is skipped for the category check — a corroboration this heuristic cannot
+      // actually support must never be manufactured; it only ever costs a "warn", not a false pass.
+      const enclosingFn = permissionFlowEnclosingFunction(deniedIndex, functions);
+      if (!enclosingFn || !categorySiteIndices.some((index) => index > enclosingFn.bodyStart && index < enclosingFn.bodyEnd)) continue;
+    }
+    for (const region of enclosingRegionsNear(deniedIndex, regions)) {
+      if (region.end - region.start > DENIED_CORRELATION_MAX_SPAN) break;
+      const text = content.slice(region.start, region.end);
+      if (SETTINGS_LINK_PATTERN.test(text)) return true;
+      if (flagAssignment && flagAssignment.test(text)) return true;
+    }
+  }
+  return false;
+}
+/** Top-level type names `content` DECLARES (class/struct/enum/actor at any indentation — nested
+ * types included, extensions excluded since they don't introduce a new type identity). Used only
+ * for the one-hop join below. */
+function declaredTypeNames(content: string): string[] {
+  const names: string[] = [];
+  for (const match of content.matchAll(/^[ \t]*(?:(?:public|private|internal|fileprivate|open|final)\s+)*(?:class|struct|enum|actor)\s+([A-Za-z_][A-Za-z0-9_]*)/gm)) names.push(match[1]);
+  return names;
+}
+function escapePermissionFlowRegex(value: string): string { return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+
+/**
+ * Whether ShipLayer's static heuristic can corroborate a denied-state Settings link for one
+ * category: same-file first, then — because the request/authorization-check file and the file that
+ * actually renders the denied-state Settings UI are routinely different files under ordinary
+ * SwiftUI MVVM/ObservableObject architecture (a manager owns the request, a view renders the denied
+ * UI) — a ONE-HOP join through a type name the request-site file declares, referenced by another
+ * production file that itself has a local correlation. Deliberately NOT "openSettingsURLString
+ * exists anywhere in the app": that widening would also corroborate a Settings link that has
+ * nothing to do with this permission (see the module comment). Advisory only — see above.
+ */
+async function settingsLinkCorroborated(repository: string, category: string, evidenceEntries: Array<{ path: string; text: string }>): Promise<{ corroborated: boolean; source?: string }> {
+  const cleanedEntries = evidenceEntries.map((entry) => ({ path: entry.path, cleaned: stripNonReleaseConditionalCompilation(stripCodeComments(entry.text)) }));
+  for (const entry of cleanedEntries) {
+    const categorySites = findPermissionRequestSites(entry.cleaned).filter((site) => site.category === category).map((site) => site.index);
+    if (hasLocalDeniedSettingsCorrelation(entry.cleaned, categorySites)) return { corroborated: true, source: entry.path };
+  }
+
+  const joinTypes = new Set<string>();
+  for (const entry of cleanedEntries) for (const name of declaredTypeNames(entry.cleaned)) joinTypes.add(name);
+  if (!joinTypes.size) return { corroborated: false };
+  const joinPattern = new RegExp(`\\b(?:${[...joinTypes].map(escapePermissionFlowRegex).join("|")})\\b`);
+  const evidencePaths = new Set(evidenceEntries.map((entry) => entry.path));
+
+  const root = path.resolve(repository);
+  let walked: Awaited<ReturnType<typeof walkRepository>>;
+  try { walked = await walkRepository(root); } catch { return { corroborated: false }; }
+  for (const file of walked.files) {
+    if (!/\.(?:swift|m|mm)$/i.test(file)) continue;
+    const relativePath = relative(root, file);
+    if (evidencePaths.has(relativePath) || !isProductionSourceEvidencePath(relativePath)) continue;
+    let text: string;
+    try { text = await readText(file); } catch { continue; }
+    const commentStripped = stripCodeComments(text);
+    if (!joinPattern.test(commentStripped)) continue;
+    // No category-site requirement here: this file was found BECAUSE it references a type the
+    // request-site file declares, which is already the category-scoping signal — requiring a
+    // request-site match here too would defeat the entire point of the join (the ordinary SwiftUI
+    // MVVM split has the denied UI in a view file that never calls the request API itself).
+    if (hasLocalDeniedSettingsCorrelation(stripNonReleaseConditionalCompilation(commentStripped))) return { corroborated: true, source: relativePath };
+  }
+  return { corroborated: false };
+}
+
+async function permissionFlowChecks(repository: string, manifest: ShipLayerManifest, analysis: AnalysisReport, add: Add): Promise<void> {
+  const findings = productionEvidenceOnly(analysis.findings.filter((item) => item.key.startsWith("permissionFlow:")));
+  for (const finding of findings) {
+    const category = finding.key.slice("permissionFlow:".length);
+    const evidenceSourcesForCategory = [...new Set(finding.evidence.map((item) => item.source))].sort();
+    const declaration = manifest.permissionFlows.find((item) => item.category === category);
+    const confirmed = declaration?.confirmation === "confirmed";
+
+    if (!confirmed) add(`permission-flow.${category}.confirmation`, "block", `ShipLayer detected a runtime ${category} permission request in ${evidenceSourcesForCategory.join(", ")}, but permissionFlows has no human-confirmed declaration for '${category}' answering whether a dismissible custom screen can appear before the system permission prompt, and whether the denied-state path offers a link to Settings (App Review guideline 5.1.1(iv)).`, "Add a permissionFlows entry for this category, and set confirmation: confirmed only after verifying the real on-device flow.");
+    else add(`permission-flow.${category}.confirmation`, "pass", `permissionFlows has a human-confirmed flow declaration for '${category}'.`);
+
+    // These two only fire once a human has actually committed to an answer — while unconfirmed,
+    // the confirmation block above already covers it; a written but unconfirmed guess must not
+    // itself carry any weight in either direction.
+    if (confirmed && declaration) {
+      if (declaration.dismissibleScreenBeforePrompt === true) add(`permission-flow.${category}.dismissible-screen`, "block", `permissionFlows for '${category}' confirms the user CAN dismiss a custom screen before the system permission prompt — a written admission of the exact shape Apple rejected under 5.1.1(iv) (a dismissible screen in front of the one-time system prompt). This blocks independent of any heuristic.`, `Restructure the flow so the request is reachable directly, or so the custom screen always proceeds to the prompt with no Cancel/dismiss, then set dismissibleScreenBeforePrompt: false only after verifying the real on-device flow.`);
+      else add(`permission-flow.${category}.dismissible-screen`, "pass", `permissionFlows confirms '${category}' has no dismissible screen before the system prompt.`);
+
+      if (declaration.deniedPathOffersSettingsLink !== true) add(`permission-flow.${category}.denied-path-settings-link`, "block", `permissionFlows for '${category}' does not confirm that the denied-access path offers a link to Settings (App Review guideline 5.1.1(iv): "it may be helpful to include a notification to inform the user and provide a link to the Settings app").`, `Add a denied-state UI with a link to Settings (UIApplication.openSettingsURLString), then set deniedPathOffersSettingsLink: true only after verifying the real on-device flow.`);
+      else add(`permission-flow.${category}.denied-path-settings-link`, "pass", `permissionFlows confirms '${category}''s denied-access path offers a link to Settings.`);
+    }
+
+    // Advisory only, from here down — see the module comment. Neither of the following two checks
+    // can ever produce "block": a heuristic this weak must never gate readiness, only corroborate
+    // or fail to corroborate what the declaration above already says.
+    const evidence = await evidenceText(repository, evidenceSourcesForCategory);
+    if (!evidence.complete) add(`permission-flow.${category}.settings-link-heuristic`, "warn", `ShipLayer could not re-read production evidence for '${category}' to attempt static corroboration of a denied-path Settings link; this is informational only and does not block — permissionFlows.deniedPathOffersSettingsLink is the authoritative declaration.`, "Verify the denied-path Settings link manually.");
+    else {
+      const { corroborated, source } = await settingsLinkCorroborated(repository, category, evidence.entries);
+      if (corroborated) add(`permission-flow.${category}.settings-link-heuristic`, "pass", `ShipLayer's static heuristic corroborates a denied-path Settings link for '${category}' in ${source}.`);
+      else add(`permission-flow.${category}.settings-link-heuristic`, "warn", `ShipLayer's static heuristic could not corroborate a denied-path Settings link for '${category}' (same-file, or one-hop through a referenced type, correlation of a denied/restricted marker with UIApplication.openSettingsURLString). This is informational only and does not block — permissionFlows.deniedPathOffersSettingsLink is the authoritative declaration; verify it is accurate.`, "Verify the denied-path Settings link manually, or add one so this can be corroborated.");
+    }
+
+    let gatedFile: string | undefined; let gatedExcerpt: string | undefined;
+    if (evidence.complete) {
+      for (const entry of evidence.entries) {
+        if (gatedFile) break;
+        const cleaned = stripNonReleaseConditionalCompilation(stripCodeComments(entry.text));
+        const sites = findPermissionRequestSites(cleaned).filter((site) => site.category === category);
+        if (!sites.length) continue;
+        const functions = permissionFlowFunctionRegions(cleaned);
+        const { regions, onDismissNames } = permissionFlowDismissibleRegions(cleaned);
+        const gatedSite = sites.find((site) => isRequestSiteGated(site.index, cleaned, functions, regions, onDismissNames));
+        if (gatedSite) { gatedFile = entry.path; gatedExcerpt = gatedSite.excerpt; }
+      }
+    }
+
+    if (gatedFile) {
+      const cleared = confirmed && declaration?.dismissibleScreenBeforePrompt === false;
+      if (!cleared) add(`permission-flow.${category}.sheet-gated`, "block", `${gatedFile} only reaches the ${category} permission request (${gatedExcerpt}) from inside a dismissible sheet/confirmationDialog/alert/popover. This is the exact shape Apple rejected under 5.1.1(iv): a dismissible custom screen in front of the one-time system prompt.`, `Either restructure ${gatedFile} so the request is reachable directly, or so the custom screen always proceeds to the prompt with no Cancel/dismiss; or, only after verifying the screen truly cannot be dismissed, set permissionFlows['${category}'].dismissibleScreenBeforePrompt: false and confirmation: confirmed.`);
+      else add(`permission-flow.${category}.sheet-gated`, "pass", `permissionFlows confirms '${category}' has no dismissible screen before the system prompt.`);
+    }
+  }
+  for (const declaration of manifest.permissionFlows) if (!findings.some((finding) => finding.key === `permissionFlow:${declaration.category}`)) add(`permission-flow.${declaration.category}`, "warn", `permissionFlows declares '${declaration.category}' but ShipLayer found no matching runtime permission-request source evidence.`, "Verify this declaration is still accurate, or remove it if the app no longer requests this permission this way.");
 }
 
 function exportComplianceCheck(manifest: ShipLayerManifest, add: Add): void {
@@ -825,44 +1190,6 @@ function isPolicyEvidencePath(file: string): boolean {
   return !isNonProductionSourcePath(normalized)
     && !parts.some((component) => /^(?:fixtures?|samples?|testdata|shiplayer-release|release|dist|build|deriveddata|node_modules|scripts?|tools?)$/i.test(component))
     && /\.(?:md|markdown|html?|txt)$/i.test(normalized);
-}
-function stripCodeComments(source: string): string {
-  let output = "";
-  let index = 0;
-  let state: "normal" | "string" | "multiline-string" | "line-comment" | "block-comment" = "normal";
-  let blockDepth = 0;
-  while (index < source.length) {
-    if (state === "normal") {
-      if (source.startsWith("//", index)) { state = "line-comment"; index += 2; continue; }
-      if (source.startsWith("/*", index)) { state = "block-comment"; blockDepth = 1; index += 2; continue; }
-      if (source.startsWith('"""', index)) { output += '"""'; state = "multiline-string"; index += 3; continue; }
-      if (source[index] === '"') { output += source[index]; state = "string"; index++; continue; }
-      output += source[index++];
-      continue;
-    }
-    if (state === "line-comment") {
-      if (source[index] === "\n") { output += "\n"; state = "normal"; }
-      index++;
-      continue;
-    }
-    if (state === "block-comment") {
-      if (source.startsWith("/*", index)) { blockDepth++; index += 2; continue; }
-      if (source.startsWith("*/", index)) { blockDepth--; index += 2; if (blockDepth === 0) state = "normal"; continue; }
-      if (source[index] === "\n") output += "\n";
-      index++;
-      continue;
-    }
-    if (state === "multiline-string") {
-      if (source.startsWith('"""', index)) { output += '"""'; state = "normal"; index += 3; continue; }
-      output += source[index++];
-      continue;
-    }
-    output += source[index];
-    if (source[index] === "\\" && index + 1 < source.length) output += source[++index];
-    else if (source[index] === '"') state = "normal";
-    index++;
-  }
-  return output;
 }
 function stripNonReleaseConditionalCompilation(source: string): string {
   type ConditionalFrame = { parentActive: boolean; selected: boolean; uncertainPrior: boolean };

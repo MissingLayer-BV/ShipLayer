@@ -72,6 +72,52 @@ export function isXCUITestSourcePath(file: string): boolean {
   return parts.some((component) => /UITests$/.test(component)) || /UITests?\.(?:swift|m|mm)$/.test(basename);
 }
 
+// --- comment stripping ------------------------------------------------------------------------
+// Shared by preflight.ts (AI consent, purchase, and permission-flow evidence text must not let a
+// commented-out disclosure/link satisfy a gate) and scanner.ts (permission-request-site detection
+// should not propose a permission from dead, commented-out code). One implementation only: this
+// used to live in preflight.ts alone, but the permission-flow gates need the identical Swift/ObjC
+// comment-and-string-aware stripping from scanner.ts too, and scanner.ts cannot import from
+// preflight.ts (preflight.ts already imports scanner.ts; that would be a cycle).
+export function stripCodeComments(source: string): string {
+  let output = "";
+  let index = 0;
+  let state: "normal" | "string" | "multiline-string" | "line-comment" | "block-comment" = "normal";
+  let blockDepth = 0;
+  while (index < source.length) {
+    if (state === "normal") {
+      if (source.startsWith("//", index)) { state = "line-comment"; index += 2; continue; }
+      if (source.startsWith("/*", index)) { state = "block-comment"; blockDepth = 1; index += 2; continue; }
+      if (source.startsWith('"""', index)) { output += '"""'; state = "multiline-string"; index += 3; continue; }
+      if (source[index] === '"') { output += source[index]; state = "string"; index++; continue; }
+      output += source[index++];
+      continue;
+    }
+    if (state === "line-comment") {
+      if (source[index] === "\n") { output += "\n"; state = "normal"; }
+      index++;
+      continue;
+    }
+    if (state === "block-comment") {
+      if (source.startsWith("/*", index)) { blockDepth++; index += 2; continue; }
+      if (source.startsWith("*/", index)) { blockDepth--; index += 2; if (blockDepth === 0) state = "normal"; continue; }
+      if (source[index] === "\n") output += "\n";
+      index++;
+      continue;
+    }
+    if (state === "multiline-string") {
+      if (source.startsWith('"""', index)) { output += '"""'; state = "normal"; index += 3; continue; }
+      output += source[index++];
+      continue;
+    }
+    output += source[index];
+    if (source[index] === "\\" && index + 1 < source.length) output += source[++index];
+    else if (source[index] === '"') state = "normal";
+    index++;
+  }
+  return output;
+}
+
 /** Drops fixture/sample/example/docs/test-only evidence entries; drops a finding entirely if nothing production-relevant is left. */
 export function productionEvidenceOnly(findings: Finding[]): Finding[] {
   return findings
