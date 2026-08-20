@@ -655,6 +655,12 @@
         },
         "confirmation": {
           "$ref": "#/$defs/confirmation"
+        },
+        "caption": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[^\\r\\n]+$"
         }
       }
     },
@@ -795,6 +801,9 @@
           "$ref": "#/$defs/repoPath"
         },
         "marketingProjectPath": {
+          "$ref": "#/$defs/repoPath"
+        },
+        "finalOutputDir": {
           "$ref": "#/$defs/repoPath"
         }
       }

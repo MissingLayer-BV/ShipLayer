@@ -18,9 +18,11 @@ test("preflight and generated release package are deterministic", async () => {
   validateManifest(manifest);
   const report = await preflight(root, manifest);
   assert.ok(report.summary.block > 0, "fixture intentionally lacks final submission assets");
+  manifest.screenshots.finalOutputDir = "release-one/screenshots/final";
   const generated = await generateReleasePackage(root, manifest, await analyzeRepository(root), report, "release-one");
   const first = await readFile(path.join(generated.directory, "review/app-review-notes.md"), "utf8");
   const firstAnalysis = await readFile(path.join(generated.directory, "reports/analysis.json"), "utf8");
+  manifest.screenshots.finalOutputDir = "release-two/screenshots/final";
   await generateReleasePackage(root, manifest, await analyzeRepository(root), report, "release-two");
   const second = await readFile(path.join(root, "release-two/review/app-review-notes.md"), "utf8");
   const secondAnalysis = await readFile(path.join(root, "release-two/reports/analysis.json"), "utf8");

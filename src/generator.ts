@@ -1,15 +1,22 @@
 import path from "node:path";
-import { lstat, mkdir, readFile, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, rename, rm } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { stringify } from "yaml";
-import { ensureDirectory, resolveContained, safeRelativePath, stableJson, writeText } from "./fs.js";
+import { copyFileTree, ensureDirectory, resolveContained, safeRelativePath, stableJson, writeBinary, writeText } from "./fs.js";
 import type { AnalysisReport, PreflightReport, ShipLayerManifest } from "./types.js";
 import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, externalServiceFindings, MONETIZATION_CONTRADICTION_FINDING, resolveContradictionOverride, storekitPurchaseEvidence } from "./evidence.js";
 import { detectScreenshotHarness } from "./scanner.js";
+import { buildMarketingSlideEntries, DEFAULT_MARKETING_FINAL_DIR, DEFAULT_OUTPUT_DIRECTORY, EXPORT_MJS, frameForFamily, renderPackageJson, renderReadme, renderSlideHtml, renderSlidesManifestJson, STRIP_ALPHA_MJS } from "./marketing.js";
 
 export interface PreparedPackage { directory: string; files: string[] }
 const RESERVED_OUTPUT_ROOTS = new Set([".git", ".github", ".shiplayer-staging", "node_modules", "pods", "carthage", "deriveddata", "build", ".build", "dist", ".swiftpm", "vendor", "release", "shiplayer.yml"]);
 export async function generateReleasePackage(repository: string, manifest: ShipLayerManifest, analysis: AnalysisReport, preflight: PreflightReport, outputDirectory: string): Promise<PreparedPackage> {
-  assertManifestPaths(manifest); const outputRelative = safeRelativePath(outputDirectory, "--out"); assertOutputPath(outputRelative); assertOutputDoesNotCollide(manifest, outputRelative); const out = await resolveContained(repository, outputRelative, "--out"); await ensureOutputParent(repository, outputRelative); await assertManagedDestination(out); const stage = await createStage(repository); const files: string[] = []; const emit = async (relativePath: string, contents: string): Promise<void> => { assertNoSecretOutput(contents, relativePath); await writeText(path.join(stage, relativePath), contents); files.push(relativePath); };
+  assertManifestPaths(manifest); const outputRelative = safeRelativePath(outputDirectory, "--out"); assertOutputPath(outputRelative); assertOutputDoesNotCollide(manifest, outputRelative); assertFinalOutputDirMatchesOut(manifest, outputRelative); const out = await resolveContained(repository, outputRelative, "--out"); await ensureOutputParent(repository, outputRelative); await assertManagedDestination(out); const stage = await createStage(repository); const files: string[] = []; const emit = async (relativePath: string, contents: string): Promise<void> => { assertNoSecretOutput(contents, relativePath); await writeText(path.join(stage, relativePath), contents); files.push(relativePath); }; // Deliberately narrow: this can ONLY read from ShipLayer's own bundled assets/device-frames/
+  // directory (never an arbitrary Buffer a caller could pass in), which is why it skips the
+  // secret-text scan emit() applies to every generated string -- there is no future binary-emit
+  // call site that could smuggle untrusted content through it, unlike a general emitBinary(path,
+  // Buffer) would allow.
+  const emitDeviceFrameAsset = async (relativePath: string, assetFileName: string): Promise<void> => { const asset = await readFile(path.join(MODULE_DIR, "assets", "device-frames", assetFileName)); await writeBinary(path.join(stage, relativePath), asset); files.push(relativePath); };
   try {
   await emit("manifest.normalized.yml", stringify(manifest, { sortMapEntries: true }));
   // Entry counts include ignored/generated directory entries, which can legitimately
@@ -25,20 +32,48 @@ export async function generateReleasePackage(repository: string, manifest: ShipL
   await emit("legal/privacy-policy-draft.html", await privacyPage(repository, manifest, analysis)); await emit("legal/support-page-draft.html", await supportPage(repository, manifest, analysis)); await emit("legal/terms-of-use-draft.md", await termsOfUseDraft(repository, manifest, analysis));
   await emit("review/app-review-notes.md", await appReviewNotes(repository, manifest, analysis)); await emit("review/physical-device-recording-script.md", recordingScript(manifest, analysis));
   const screenshotHarness = await detectScreenshotHarness(repository);
-  await emit("screenshots/capture-plan.json", stableJson(capturePlan(manifest))); await emit("screenshots/marketing-composition-plan.json", stableJson(marketingProject(manifest))); await emit("storekit/checklist.md", await storeKitChecklist(repository, manifest, analysis));
+  await emit("screenshots/capture-plan.json", stableJson(capturePlan(manifest))); await emitMarketingProject(manifest, outputRelative, emit, emitDeviceFrameAsset); await emit("storekit/checklist.md", await storeKitChecklist(repository, manifest, analysis));
   await emit("screenshots/ui-test-harness-template.swift", screenshotHarnessTemplate(manifest, screenshotHarness.sourceFiles.length > 0)); await emit("screenshots/ui-test-harness-contract.md", screenshotHarnessContract(manifest, screenshotHarness)); await emit("screenshots/capture-workflow.yml", screenshotCaptureWorkflow(manifest, screenshotHarness));
   await emit("app-store-connect/dry-run-plan.md", dryRunPlan(manifest)); await emit("remaining-human-actions.md", humanActions(packagePreflight));
-    await writeText(path.join(stage, ".shiplayer-managed"), "ShipLayer managed release package v1\n"); files.push(".shiplayer-managed"); await installStage(stage, out); return { directory: out, files: files.sort() };
+    await writeText(path.join(stage, ".shiplayer-managed"), "ShipLayer managed release package v1\n"); files.push(".shiplayer-managed");
+  await preserveNonDeterministicMarketingArtifacts(repository, out, stage, manifest.screenshots.finalOutputDir || `${outputRelative}/screenshots/final`, files);
+  await installStage(stage, out); return { directory: out, files: files.sort() };
   } catch (error) {
     await rm(stage, { recursive: true, force: true }).catch(() => undefined);
     throw error;
   }
 }
-function assertOutputPath(outputRelative: string): void { const components = outputRelative.split("/"); const reserved = components.find((component) => RESERVED_OUTPUT_ROOTS.has(component.toLowerCase()) || component.toLowerCase() === "shiplayer-release"); if (reserved && !(components.length === 1 && reserved === "shiplayer-release")) throw new Error(`--out cannot use reserved or source-control path '${reserved}'. Use a separate managed release directory.`); }
+function assertOutputPath(outputRelative: string): void { const components = outputRelative.split("/"); const reserved = components.find((component) => RESERVED_OUTPUT_ROOTS.has(component.toLowerCase()) || component.toLowerCase() === DEFAULT_OUTPUT_DIRECTORY); if (reserved && !(components.length === 1 && reserved === DEFAULT_OUTPUT_DIRECTORY)) throw new Error(`--out cannot use reserved or source-control path '${reserved}'. Use a separate managed release directory.`); }
 function assertOutputDoesNotCollide(manifest: ShipLayerManifest, outputRelative: string): void {
   const inputs = ["shiplayer.yml", manifest.screenshots.rawOutputDir, manifest.screenshots.marketingProjectPath, ...(manifest.monetization.type === "subscriptions" || manifest.monetization.type === "non-consumables" ? manifest.monetization.products.map((product) => product.reviewScreenshot) : [])].filter((item): item is string => Boolean(item)).map((item) => safeRelativePath(item, "manifest input"));
   const normalizedOutput = outputRelative.toLocaleLowerCase("en-US");
   if (inputs.map((input) => input.toLocaleLowerCase("en-US")).some((input) => normalizedOutput === input || normalizedOutput.startsWith(`${input}/`) || input.startsWith(`${normalizedOutput}/`))) throw new Error("--out collides with a manifest source input. Choose a separate managed release directory.");
+}
+/**
+ * screenshots.finalOutputDir, when unset, resolves relative to THIS RUN's actual --out (see
+ * emitMarketingProject) -- correct for generation, but `check` (preflight.ts) never receives
+ * --out and can only fall back to the static DEFAULT_MARKETING_FINAL_DIR literal. Those two only
+ * agree when --out is left at its own default; under a customized --out with finalOutputDir still
+ * unset, `check` would silently look in the wrong place and pass (or reject) nothing, no
+ * different from "validated and fine" -- verbatim PR review finding F4, reopened as NEW-1 when an
+ * earlier version of this exact guard was written about in three places (this comment's own
+ * ancestors) but never actually implemented. Refusing this combination outright, loudly, at
+ * generation time, is what makes "screenshots.finalOutputDir ... deliberately independent of
+ * whatever --out was used" and "check reads the same field, so it always looks in the same place
+ * export.mjs actually wrote to, even after a custom --out" (the generated README) true statements
+ * rather than aspirational ones: whenever generateReleasePackage succeeds, either --out is the
+ * default (both sides agree on DEFAULT_MARKETING_FINAL_DIR) or finalOutputDir is explicitly set
+ * (both sides agree on that explicit value) -- there is no third, silently-wrong state left.
+ */
+function assertFinalOutputDirMatchesOut(manifest: ShipLayerManifest, outputRelative: string): void {
+  if (manifest.screenshots.finalOutputDir) return;
+  if (outputRelative === DEFAULT_OUTPUT_DIRECTORY) return;
+  // Nothing for `check` to ever look for if the marketing project itself would never render any
+  // slide (no declared scenario, or no configuration for it to pair with) -- scoping the guard to
+  // only the case that can actually go silently wrong avoids false-blocking every unrelated use
+  // of a non-default --out that has nothing to do with screenshots at all.
+  if (!manifest.screenshots.scenarios.length || !manifest.screenshots.configurations.length) return;
+  throw new Error(`--out '${outputRelative}' differs from ShipLayer's default ('${DEFAULT_OUTPUT_DIRECTORY}'), but screenshots.finalOutputDir is not set. shiplayer check never receives --out, so it would silently look for rendered marketing screenshots in the wrong place (the default '${DEFAULT_MARKETING_FINAL_DIR}') and report nothing, indistinguishable from "validated and fine". Set screenshots.finalOutputDir explicitly (e.g. '${outputRelative}/screenshots/final') before using a non-default --out, or omit --out to use the default.`);
 }
 async function createStage(repository: string): Promise<string> {
   const root = await resolveContained(repository, ".shiplayer-staging", "staging directory");
@@ -54,6 +89,66 @@ async function ensureOutputParent(repository: string, outputRelative: string): P
   if ((await lstat(parent)).isSymbolicLink()) throw new Error("--out parent directory cannot be a symlink.");
 }
 async function assertManagedDestination(destination: string): Promise<void> { let details; try { details = await lstat(destination); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; } if (details.isSymbolicLink()) throw new Error("--out cannot be a symlink."); if (!details.isDirectory()) throw new Error("--out exists but is not a directory."); const marker = path.join(destination, ".shiplayer-managed"); let markerInfo; try { markerInfo = await lstat(marker); } catch { throw new Error("--out is not a ShipLayer-managed package; refusing to overwrite unrelated files."); } if (markerInfo.isSymbolicLink()) throw new Error("Managed output marker cannot be a symlink."); if (!(await readFile(marker, "utf8")).startsWith("ShipLayer managed release package v1")) throw new Error("--out is not a ShipLayer-managed package; refusing to overwrite unrelated files."); }
+/**
+ * `installStage` below replaces the whole --out directory atomically (rename-away + rm -rf) —
+ * correct for every deterministically GENERATED file (they all come from `emit`/`emitDeviceFrameAsset`
+ * above), but screenshots/marketing/node_modules/ (a human/agent's own `npm install`) and
+ * whatever screenshots.finalOutputDir points at (a human/agent's own rendered PNGs, when that
+ * path happens to live inside --out, which it does by default) are NOT generated by this
+ * function at all — without this step, re-running `prepare` after e.g. confirming a scenario
+ * silently destroys both, exactly as this project's own generated README instructs the user to
+ * do ("set confirmation: confirmed, then re-run shiplayer prepare and re-export"). Best-effort by
+ * design: a missing/unreadable previous copy (first-ever prepare, nothing rendered yet, a
+ * corrupted node_modules) is not an error — there is nothing to carry forward.
+ */
+/**
+ * Throws when `candidateRelative` (a path relative to --out that preservation is about to copy
+ * forward from the PREVIOUS package) equals or contains any path this run's own emit()/
+ * emitDeviceFrameAsset() calls just wrote into `files`. Without this, a hand-set
+ * screenshots.finalOutputDir that overlaps the generated tree (e.g. equal to --out itself, or an
+ * ancestor like "screenshots") makes copyFileTree silently overwrite freshly-regenerated content
+ * (slides, capture-plan.json, the harness contract, ...) with the STALE previous copy — the
+ * normalized manifest in the package would then describe values (e.g. a caption) that disagree
+ * with what the actually-surviving slide/HTML says. See PR review round-3 finding N1.
+ */
+function assertNoCollisionWithGeneratedFiles(candidateRelative: string, files: string[], label: string): void {
+  const collision = candidateRelative === "" || files.some((file) => file === candidateRelative || file.startsWith(`${candidateRelative}/`) || candidateRelative.startsWith(`${file}/`));
+  if (collision) throw new Error(`${label} ('${candidateRelative || "."}') overlaps a deterministically generated release-package path. Choose a screenshots.finalOutputDir that does not overlap any file/directory --out generates (e.g. keep it under a dedicated subdirectory like screenshots/final, never --out itself or an ancestor such as "screenshots").`);
+}
+async function preserveNonDeterministicMarketingArtifacts(repository: string, previousDestination: string, stage: string, finalOutputDir: string, files: string[]): Promise<void> {
+  const candidates = ["screenshots/marketing/node_modules", "screenshots/marketing/package-lock.json"];
+  // previousDestination was resolved through realpath() (see resolveContained); repository may not
+  // have been (e.g. macOS's /var -> /private/var), so resolve it the same way before comparing
+  // prefixes, or a symlinked temp/parent directory silently defeats the containment check below.
+  const realRepository = await realpath(repository).catch(() => repository);
+  const finalOutputAbsolute = path.resolve(realRepository, finalOutputDir);
+  const previousDestinationWithSep = `${previousDestination}${path.sep}`;
+  if (finalOutputAbsolute === previousDestination || finalOutputAbsolute.startsWith(previousDestinationWithSep)) {
+    const relative = path.relative(previousDestination, finalOutputAbsolute).split(path.sep).join("/");
+    assertNoCollisionWithGeneratedFiles(relative, files, "screenshots.finalOutputDir");
+    candidates.push(relative);
+  }
+  for (const relative of candidates) {
+    // Component-wise, matching resolveContained's own walk exactly (fs.ts): checks EVERY path
+    // segment from previousDestination down through the candidate itself for a symlink, not only
+    // the final leaf. A symlink at an INTERMEDIATE component (e.g. screenshots/ itself pointing
+    // outside the repository) previously slipped through undetected -- fs.cp/copyFileTree would
+    // follow it, landing outside content inside the managed package, and bypassing
+    // assertNoSecretOutput in the process since it arrives via a raw copy, not emit(). See PR
+    // review round-3 finding N4. A THROW (not a silent skip) matches resolveContained's own
+    // behavior: a symlink where one should not be is treated as an anomaly worth failing loudly
+    // on, not tolerated best-effort like a merely-absent prior artifact.
+    let cursor = previousDestination; let missing = false;
+    for (const part of relative.split("/")) {
+      cursor = path.join(cursor, part);
+      let info;
+      try { info = await lstat(cursor); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") { missing = true; break; } throw error; }
+      if (info.isSymbolicLink()) throw new Error(`Refusing to preserve '${relative}' from the previous release package: '${path.relative(previousDestination, cursor)}' is a symlink.`);
+    }
+    if (missing) continue; // nothing to preserve; not an error
+    try { await copyFileTree(cursor, path.join(stage, relative)); } catch { /* best-effort; never fail prepare over a prior render/install that could not be carried forward */ }
+  }
+}
 async function installStage(stage: string, destination: string): Promise<void> {
   let exists = true; try { await lstat(destination); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") exists = false; else throw error; }
   if (!exists) { await rename(stage, destination); return; }
@@ -65,7 +160,21 @@ async function installStage(stage: string, destination: string): Promise<void> {
     await rm(backup, { recursive: true, force: true, maxRetries: 2 });
   } catch (error) { throw error; }
 }
-function assertManifestPaths(manifest: ShipLayerManifest): void { safeRelativePath(manifest.screenshots.rawOutputDir, "screenshots.rawOutputDir"); if (manifest.screenshots.marketingProjectPath) safeRelativePath(manifest.screenshots.marketingProjectPath, "screenshots.marketingProjectPath"); if (manifest.monetization.type === "non-consumables" || manifest.monetization.type === "subscriptions") for (const product of manifest.monetization.products) safeRelativePath(product.reviewScreenshot, `review screenshot for ${product.productId}`); }
+// finalOutputDir gets its own reserved-component scan (not assertOutputPath's, which special-cases
+// a BARE "shiplayer-release" as --out's own conventional value -- finalOutputDir's documented
+// default legitimately STARTS WITH "shiplayer-release/" as a multi-component path, so reusing
+// assertOutputPath unmodified would reject that default outright). Reuses RESERVED_OUTPUT_ROOTS
+// itself (never a second, hand-duplicated list) so ".github", ".git", "node_modules", etc. are
+// rejected anywhere in the path -- without this, a manifest could set finalOutputDir to e.g.
+// ".github/screenshots" and generateReleasePackage would happily emit a slides.json instructing
+// export.mjs to write PNGs into the app repository's own .github/, the exact boundary
+// docs/automation-boundaries.md states ShipLayer itself never writes into, and the same value
+// --out already explicitly refuses. See PR review round-3 finding N3.
+function assertFinalOutputDirNotReserved(finalOutputDir: string): void {
+  const reserved = finalOutputDir.split("/").find((component) => RESERVED_OUTPUT_ROOTS.has(component.toLowerCase()));
+  if (reserved) throw new Error(`screenshots.finalOutputDir cannot use reserved or source-control path '${reserved}'. Choose a location that does not overlap a VCS/build/dependency directory.`);
+}
+function assertManifestPaths(manifest: ShipLayerManifest): void { safeRelativePath(manifest.screenshots.rawOutputDir, "screenshots.rawOutputDir"); if (manifest.screenshots.marketingProjectPath) safeRelativePath(manifest.screenshots.marketingProjectPath, "screenshots.marketingProjectPath"); if (manifest.screenshots.finalOutputDir) { safeRelativePath(manifest.screenshots.finalOutputDir, "screenshots.finalOutputDir"); assertFinalOutputDirNotReserved(manifest.screenshots.finalOutputDir); } if (manifest.monetization.type === "non-consumables" || manifest.monetization.type === "subscriptions") for (const product of manifest.monetization.products) safeRelativePath(product.reviewScreenshot, `review screenshot for ${product.productId}`); }
 function assertNoSecretOutput(contents: string, label: string): void { if (/-----BEGIN(?: [A-Z]+)? PRIVATE KEY-----/i.test(contents) || /\b(?:api[ _-]?key|access[ _-]?token|auth[ _-]?token|secret|password|private[ _-]?key)\s*[:=]\s*\S+/i.test(contents) || /\bsk-[A-Za-z0-9_-]{16,}\b/.test(contents)) throw new Error(`Refusing to generate ${label} because it appears to contain credential material.`); }
 
 // --- shared "did the scan contradict this declaration" helpers, used by every generated ------
@@ -175,7 +284,50 @@ function recordingScript(manifest: ShipLayerManifest, analysis: AnalysisReport):
 // a scenario the gate itself refuses to pass — defaulting absence to "confirmed" here would let a
 // generated artifact claim something stronger than `check` allows.
 function capturePlan(manifest: ShipLayerManifest): object { return { command: "shiplayer capture <repo>", prerequisites: ["macOS with Xcode for direct simulator capture", "Configured scheme and launch arguments", "No paid CI is used automatically"], configurations: manifest.screenshots.configurations.map((configuration) => ({ ...configuration, outputDirectory: `${manifest.screenshots.rawOutputDir}/${configuration.family}/${configuration.locale}`, scenarios: manifest.screenshots.scenarios.map((scenario) => ({ id: scenario.id, outputFile: `${scenario.id}.png`, title: scenario.title, launchArguments: scenario.launchArguments || [], steps: scenario.steps, confirmation: scenario.confirmation ?? "needs-human-confirmation" })) })), note: "This is a neutral hand-off. Create or use a separate app-store-screenshots scaffold/template; this JSON is not directly importable by that editor. Raw device screenshots must show the actual app and use each scenario ID as the filename. A scenario whose confirmation is not \"confirmed\" is an unverified proposal, not a fact." }; }
-function marketingProject(manifest: ShipLayerManifest): object { return { version: 1, purpose: "Neutral hand-off plan for a separately installed app-store-screenshots editor; not an editor project file.", rawScreenshotRoot: manifest.screenshots.rawOutputDir, decks: manifest.screenshots.configurations.map((configuration) => ({ family: configuration.family, device: configuration.device, locale: configuration.locale, outputPath: `${manifest.screenshots.rawOutputDir}/${configuration.family}/${configuration.locale}/{scenario-id}.png`, slides: manifest.screenshots.scenarios.map((scenario, index) => ({ id: scenario.id, order: index, headline: scenario.title, body: scenario.steps[0] || "Describe this feature", confirmation: scenario.confirmation ?? "needs-human-confirmation" })) })) }; }
+// Repository-root-relative "assets/device-frames/" sits next to both src/ (dev, run via tsx) and
+// dist/ (built) — one level up from this compiled/source module's own directory either way — so
+// this resolves the same way whether ShipLayer is run from a checkout or installed as a package
+// ("assets" is listed in package.json's "files"). Never reads from the reference design skill
+// under ~/.codex/ at runtime; the frame images it needs are copied into this repo's own
+// assets/device-frames/ (see src/marketing.ts's FrameGeometry constants).
+const MODULE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+/**
+ * Emits the self-contained, headless-renderable marketing screenshot composition project at
+ * screenshots/marketing/ inside the release package: one sized HTML slide per (configuration x
+ * scenario) pair, the device frame image(s) it references, and the small Playwright export
+ * project (package.json/export.mjs/README.md) a human runs afterward. ShipLayer itself never
+ * installs a dependency, downloads a browser, or executes this project — see export.mjs and the
+ * generated README for the two commands a human/agent runs to turn it into final PNGs.
+ */
+async function emitMarketingProject(manifest: ShipLayerManifest, outputRelative: string, emit: (relativePath: string, contents: string) => Promise<void>, emitDeviceFrameAsset: (relativePath: string, assetFileName: string) => Promise<void>): Promise<void> {
+  // Unset finalOutputDir derives from THIS RUN's actual --out (outputRelative), never the static
+  // DEFAULT_MARKETING_FINAL_DIR literal -- the render must always land inside the package that
+  // was actually requested. Falling back to a location outside --out (as a hardcoded default
+  // would, whenever --out is customized) is exactly how `prepare --out custom-release` used to
+  // create an unmanaged "shiplayer-release/" decoy the moment export.mjs ran, permanently
+  // blocking every later default-`--out` prepare with "not a ShipLayer-managed package". See PR
+  // review round-3 finding N2. assertFinalOutputDirMatchesOut (above) has already refused the one
+  // combination where this would disagree with `check`'s own fallback (an unset finalOutputDir
+  // under a non-default --out), so by the time this line runs, either --out is the default (this
+  // expression and DEFAULT_MARKETING_FINAL_DIR are equal) or finalOutputDir is explicitly set
+  // (the `||` never triggers) -- `check`, which never receives --out, always ends up looking in
+  // the same place this line just resolved. See PR review finding NEW-1.
+  const finalOutputDir = manifest.screenshots.finalOutputDir || `${outputRelative}/screenshots/final`;
+  const entries = buildMarketingSlideEntries({ outputDirectory: outputRelative, rawOutputDir: manifest.screenshots.rawOutputDir, finalOutputDir, configurations: manifest.screenshots.configurations, scenarios: manifest.screenshots.scenarios });
+  const root = "screenshots/marketing";
+  for (const entry of entries) await emit(`${root}/${entry.htmlRelativePath}`, renderSlideHtml(entry));
+  await emit(`${root}/slides.json`, renderSlidesManifestJson(entries));
+  await emit(`${root}/package.json`, renderPackageJson());
+  await emit(`${root}/strip-alpha.mjs`, STRIP_ALPHA_MJS);
+  await emit(`${root}/export.mjs`, EXPORT_MJS);
+  await emit(`${root}/README.md`, renderReadme(entries, finalOutputDir));
+  const families = [...new Set(manifest.screenshots.configurations.map((configuration) => configuration.family))].sort();
+  for (const family of families) {
+    const geometry = frameForFamily(family);
+    await emitDeviceFrameAsset(`${root}/assets/${family}-frame.png`, geometry.assetFile);
+  }
+}
 // --- screenshot UI-test harness template / contract / manual-dispatch capture workflow --------
 // Three artifacts, all written only into shiplayer-release/screenshots/ (never into the target
 // app repository's own source tree or .github/): a fillable Swift template, its written contract,

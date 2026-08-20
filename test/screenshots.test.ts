@@ -180,8 +180,12 @@ test("init proposes needs-human-confirmation scenarios from a detected harness a
   let manifest = await readManifest(withHarness);
   assert.equal(manifest.screenshots.scenarios.length, 2);
   assert.ok(manifest.screenshots.scenarios.every((scenario) => scenario.confirmation === "needs-human-confirmation"));
+  // ShipLayer never invents marketing captions: init leaves them entirely absent...
+  assert.ok(manifest.screenshots.scenarios.every((scenario) => scenario.caption === undefined));
   const parsed = JSON.parse(run.stdout);
   assert.equal(parsed.detectedScreenshotScenarios, 2);
+  // ...and records an unresolved question so the agent knows captions still need drafting.
+  assert.ok(parsed.unresolvedQuestions.some((item: string) => item.includes("caption") && item.includes("does not invent")));
 
   const withoutHarness = await mkdtemp(path.join(tmpdir(), "shiplayer-init-no-harness-"));
   await writeFile(path.join(withoutHarness, "project.yml"), "name: Sample\nsettings:\n  base:\n    PRODUCT_BUNDLE_IDENTIFIER: com.example.sample\n");
@@ -307,7 +311,7 @@ test("preflight rejects an alpha-channel screenshot", async () => {
   assert.ok(report.results.some((item) => item.id === "screenshots.iphone.en-US.home.png.alpha" && item.severity === "block"));
 });
 
-test("capturePlan and marketingProject carry each scenario's confirmation status instead of laundering a proposal into a fact", async () => {
+test("capturePlan and marketing slides carry each scenario's confirmation status instead of laundering a proposal into a fact", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-confirmation-carry-"));
   const manifest = readyManifest(); manifest.screenshots.scenarios = [{ id: "home", title: "Home", steps: ["Launch"], confirmation: "needs-human-confirmation" }]; await writeReadyAssets(root, manifest);
   const analysis = await analyzeRepository(root);
@@ -316,9 +320,11 @@ test("capturePlan and marketingProject carry each scenario's confirmation status
   const capturePlanJson = JSON.parse(await readFile(path.join(pkg.directory, "screenshots/capture-plan.json"), "utf8"));
   const planScenario = (capturePlanJson.configurations[0].scenarios as Array<{ id: string; confirmation: string }>).find((item) => item.id === "home");
   assert.equal(planScenario?.confirmation, "needs-human-confirmation");
-  const marketingJson = JSON.parse(await readFile(path.join(pkg.directory, "screenshots/marketing-composition-plan.json"), "utf8"));
-  const slide = (marketingJson.decks[0].slides as Array<{ id: string; confirmation: string }>).find((item) => item.id === "home");
-  assert.equal(slide?.confirmation, "needs-human-confirmation");
+  const slidesJson = JSON.parse(await readFile(path.join(pkg.directory, "screenshots/marketing/slides.json"), "utf8"));
+  const slide = (slidesJson.slides as Array<{ id: string; confirmed: boolean; html: string }>).find((item) => item.id === "home");
+  assert.equal(slide?.confirmed, false);
+  const slideHtml = await readFile(path.join(pkg.directory, "screenshots/marketing", slide!.html), "utf8");
+  assert.ok(slideHtml.includes("Draft") && slideHtml.includes("needs confirmation"));
 });
 
 // Round-2 review Moderate-2: preflight blocks a scenario with an ABSENT confirmation field
@@ -336,9 +342,11 @@ test("generated artifacts never assert \"confirmed\" for a scenario whose confir
   const capturePlanJson = JSON.parse(await readFile(path.join(pkg.directory, "screenshots/capture-plan.json"), "utf8"));
   const planScenario = (capturePlanJson.configurations[0].scenarios as Array<{ id: string; confirmation: string }>).find((item) => item.id === "home");
   assert.equal(planScenario?.confirmation, "needs-human-confirmation");
-  const marketingJson = JSON.parse(await readFile(path.join(pkg.directory, "screenshots/marketing-composition-plan.json"), "utf8"));
-  const slide = (marketingJson.decks[0].slides as Array<{ id: string; confirmation: string }>).find((item) => item.id === "home");
-  assert.equal(slide?.confirmation, "needs-human-confirmation");
+  const slidesJson = JSON.parse(await readFile(path.join(pkg.directory, "screenshots/marketing/slides.json"), "utf8"));
+  const slide = (slidesJson.slides as Array<{ id: string; confirmed: boolean; html: string }>).find((item) => item.id === "home");
+  assert.equal(slide?.confirmed, false);
+  const slideHtml = await readFile(path.join(pkg.directory, "screenshots/marketing", slide!.html), "utf8");
+  assert.ok(slideHtml.includes("Draft") && slideHtml.includes("needs confirmation"));
   const recordingScript = await readFile(path.join(pkg.directory, "review/physical-device-recording-script.md"), "utf8");
   assert.ok(recordingScript.includes("UNVERIFIED"));
 });

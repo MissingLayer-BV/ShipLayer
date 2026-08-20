@@ -8,6 +8,7 @@
 | Gate release readiness | `shiplayer check <repo>` (including AI consent/privacy evidence, StoreKit-localized price evidence, and source-vs-manifest contradiction blockers for monetization and AI data sharing) | None |
 | Compare with Apple | `shiplayer plan <repo> --remote` | Read-only API |
 | Produce screenshot harness hand-off | `shiplayer capture <repo>` | None |
+| Render marketing screenshots | `npm install && npx playwright install chromium && npm run export` inside the generated `shiplayer-release/screenshots/marketing/` | Local files only, outside the repository's own dependency tree — but `npx playwright install chromium` is a real network download (a full browser binary, often 100+ MB) and the only row in this table that fetches anything; if it is blocked or unsupported, set `SHIPLAYER_PW_CHANNEL` to an already-installed browser instead |
 | Direct local capture | Repository-owned UI-test harness only | Local simulator only |
 | Preview application | `shiplayer apply <repo>` | None by default |
 | Final review gate | `shiplayer submit <repo>` | None by default |

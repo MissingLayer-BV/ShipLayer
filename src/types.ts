@@ -152,6 +152,18 @@ export interface ScreenshotScenario {
    * detected or templated UI-test harness is always written with "needs-human-confirmation" and
    * must never be silently promoted to "confirmed" by ShipLayer itself. */
   confirmation?: Confirmation;
+  /** Marketing screenshot headline: one idea per slide (sell an outcome, not a feature list). Max
+   * 100 characters, no line breaks (schema-enforced). ShipLayer never invents this — `init` always
+   * leaves it absent and records an unresolved question instead. Absent renders the slide legibly
+   * with the scenario title as a visibly-marked placeholder. Like every other proposed field on
+   * this type, a caption's trustworthiness rides on the scenario's own `confirmation`: a scenario
+   * that is not "confirmed" always renders its marketing slide with a visible draft marker,
+   * whether or not it has a caption yet — see src/marketing.ts's renderSlideHtml. The rendered
+   * font auto-shrinks toward the character limit, but only by an ESTIMATE (Node has no real
+   * text-shaping engine): reliable for Latin-script text at or under 100 characters, but a caption
+   * entirely in a wide script (CJK ideographs, kana, hangul, fullwidth forms) can still visibly
+   * clip even under that limit — keep those noticeably shorter and check the rendered PNG. */
+  caption?: string;
 }
 
 export interface ShipLayerManifest {
@@ -187,7 +199,9 @@ export interface ShipLayerManifest {
   sourceContradictionOverrides: SourceContradictionOverride[];
   secondaryTargetConfirmations: SecondaryTargetConfirmation[];
   review: { contact?: { firstName?: string; lastName?: string; email?: string; phone?: string }; demoAccount?: { required: boolean; usernameEnv?: string; passwordEnv?: string; setupInstructions?: string; credentialsEnteredConfirmation?: Confirmation }; notes?: string; recordingScenarios: ScreenshotScenario[]; sampleData?: string[] };
-  screenshots: { scenarios: ScreenshotScenario[]; configurations: Array<{ device: string; family: "iphone" | "ipad"; locale: string; requiredDimensions: { width: number; height: number } }>; rawOutputDir: string; marketingProjectPath?: string };
+  screenshots: { scenarios: ScreenshotScenario[]; configurations: Array<{ device: string; family: "iphone" | "ipad"; locale: string; requiredDimensions: { width: number; height: number } }>; rawOutputDir: string; marketingProjectPath?: string;
+    /** Repo-root-relative directory the marketing composition project (screenshots/marketing/) renders final PNGs into, independent of whatever --out was used at generation time — see DEFAULT_MARKETING_FINAL_DIR in src/marketing.ts. Absent falls back to that default for manifests written before this field existed. */
+    finalOutputDir?: string; };
   monetization: Monetization;
   build: { signing: "automatic" | "manual" | "unknown"; exportCompliance?: "exempt" | "documentation-required" | "unknown"; testFlightUpload?: boolean };
   sync: { mode: "dry-run" | "apply"; appStoreConnectKeyIdEnv?: string; issuerIdEnv?: string; privateKeyPathEnv?: string };

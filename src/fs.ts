@@ -10,6 +10,7 @@ export async function pathExists(filePath: string): Promise<boolean> { return ex
 export async function ensureDirectory(directory: string): Promise<void> { await mkdir(directory, { recursive: true }); }
 export async function readText(filePath: string): Promise<string> { return readFile(filePath, "utf8"); }
 export async function writeText(filePath: string, content: string): Promise<void> { await ensureDirectory(path.dirname(filePath)); await writeFile(filePath, content, "utf8"); }
+export async function writeBinary(filePath: string, content: Buffer): Promise<void> { await ensureDirectory(path.dirname(filePath)); await writeFile(filePath, content); }
 export async function copyFileTree(from: string, to: string): Promise<void> { await cp(from, to, { recursive: true }); }
 
 export interface WalkResult { files: string[]; assetFiles: string[]; ignoredDirectories: string[]; filesOverLimit: number; filesOverLimitPaths: string[]; unreadable: string[]; symlinksIgnored: string[]; symlinkDirectoriesIgnored: string[]; symlinkFilesIgnored: string[]; entriesVisited: number; truncated: boolean }

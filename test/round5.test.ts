@@ -16,8 +16,10 @@ test("round-5 rejects reserved nested output and keeps a custom package determin
   const report = await preflight(root, manifest); const firstAnalysis = await analyzeRepository(root);
   await assert.rejects(() => generateReleasePackage(root, manifest, firstAnalysis, report, "safe/.git/evil"), /reserved/); await assert.rejects(() => generateReleasePackage(root, manifest, firstAnalysis, report, "safe/.GIT/evil"), /reserved/); await assert.rejects(() => generateReleasePackage(root, manifest, firstAnalysis, report, "Shiplayer-Release"), /reserved/);
   await assert.rejects(() => generateReleasePackage(root, manifest, firstAnalysis, report, "RELEASE"), /reserved|collides/);
+  manifest.screenshots.finalOutputDir = "safe output/screenshots/final";
   await generateReleasePackage(root, manifest, firstAnalysis, report, "safe output");
   const secondAnalysis = await analyzeRepository(root); const secondReport = await preflight(root, manifest);
+  manifest.screenshots.finalOutputDir = "safe output/screenshots/final";
   await generateReleasePackage(root, manifest, secondAnalysis, secondReport, "safe output");
   const packageReport = await readFile(path.join(root, "safe output/reports/analysis.json"), "utf8");
   assert.ok(!packageReport.includes("filesScanned")); assert.ok(!packageReport.includes("entriesVisited"));
@@ -102,6 +104,7 @@ test("round-8 redacts URL credentials and handles static and dynamic template en
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-endpoint-redaction-round8-")); const manifest = readyManifest(); await writeReadyAssets(root, manifest);
   const sentinel = "SUPERSECRET123456789";
   await writeFile(path.join(root, "worker.ts"), `fetch(\"https://user:${sentinel}@api.example.test/webhook/${sentinel}?api_key=${sentinel}&user=can#private\"); fetch(\"https://[invalid]/${sentinel}?token=${sentinel}\"); const a = \`https://static.example.test/v1\`; const b = \`https://dynamic.example.test/v1/\${42}\`;`);
+  manifest.screenshots.finalOutputDir = "release-redaction/screenshots/final";
   const analysis = await analyzeRepository(root); const report = await preflight(root, manifest); const generated = await generateReleasePackage(root, manifest, analysis, report, "release-redaction");
   const renderedPackage = await Promise.all(generated.files.map((file) => readFile(path.join(generated.directory, file), "utf8")));
   const rendered = [JSON.stringify(analysis), JSON.stringify(report), ...renderedPackage].join("\n");

@@ -7,6 +7,7 @@ import { resolveContained, walkRepository } from "./fs.js";
 import { inspectImage } from "./image.js";
 import { validateAscPrivateKey } from "./asc.js";
 import { appReviewNotes } from "./generator.js";
+import { DEFAULT_MARKETING_FINAL_DIR } from "./marketing.js";
 import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, isNonProductionSourcePath, MONETIZATION_CONTRADICTION_FINDING, resolveContradictionOverride, storekitPurchaseEvidence } from "./evidence.js";
 
 // Apple requires ONE uniform size per required display class, and the classes are not
@@ -89,6 +90,7 @@ export async function preflight(repository: string, manifest: ShipLayerManifest,
   await purchasePresentationChecks(repository, manifest, add);
   screenshotConfigurationChecks(manifest, add);
   await screenshotChecks(repository, manifest, add);
+  await marketingScreenshotChecks(repository, manifest, add);
   await purchaseAssetChecks(repository, manifest, add);
   await iconChecks(repository, manifest, add);
   await sourceConsistencyChecks(repository, manifest, scan, add);
@@ -455,6 +457,13 @@ function screenshotConfigurationChecks(manifest: ShipLayerManifest, add: Add): v
   }
   if (!manifest.screenshots.scenarios.length) add("screenshots.scenarios", "block", "No screenshot/recording scenarios exist.", "Define real app-state scenarios and launch arguments.");
   else add("screenshots.scenarios", "pass", `${manifest.screenshots.scenarios.length} screenshot scenarios are defined.`);
+  // App Store allows at most 10 screenshots per family/locale set, and the marketing composition
+  // project (see src/marketing.ts) renders exactly one slide per scenario for EVERY configured
+  // family/locale — so more than 10 scenarios is already known, at prepare time, to over-produce
+  // every set it renders. Warn here instead of only discovering it after a full render (the
+  // post-hoc marketingScreenshotChecks/screenshotChecks file-count block below still catches it,
+  // but only after `npm install && npm run export` has already done the (wasted) work).
+  if (manifest.screenshots.scenarios.length > 10) add("screenshots.scenarios.count", "warn", `${manifest.screenshots.scenarios.length} screenshot scenarios are declared; App Store allows at most 10 screenshots per family/locale set. The marketing composition project will render one slide per scenario for every configured family/locale, over-producing each set.`, "Reduce to 10 or fewer scenarios, or accept that check will block the resulting set(s) after rendering.");
   // A scenario detected from an existing UI-test harness, or copied from the generated template,
   // is never silently promoted to confirmed — a human must verify the real on-screen navigation.
   // An absent confirmation field also blocks (rather than being treated as implicitly confirmed):
@@ -463,6 +472,13 @@ function screenshotConfigurationChecks(manifest: ShipLayerManifest, add: Add): v
   // make deletion a silent, undetectable bypass of this exact gate.
   for (const scenario of manifest.screenshots.scenarios) {
     if (scenario.confirmation !== "confirmed") add(`screenshots.scenarios.${scenario.id}.confirmation`, "block", `Screenshot scenario '${scenario.id}' is not human-confirmed.`, "Verify the real on-screen navigation, then set confirmation: confirmed.");
+    // A caption is optional (the slide still renders legibly with a placeholder), so this is a
+    // warn, never a block. `init`'s unresolved question only fires for scenarios it detects from
+    // an existing harness at init time; a scenario hand-added afterward gets no other reminder
+    // from the CLI at all, only the rendered slide's own italic placeholder styling. Surfacing it
+    // here too means `check` -- the one command actually re-run before every submission -- says
+    // so as well, not just a one-time init message an agent may not still have in context.
+    if (!scenario.caption) add(`screenshots.scenarios.${scenario.id}.caption`, "warn", `Screenshot scenario '${scenario.id}' has no drafted caption yet; its marketing slide falls back to the scenario title as a placeholder.`, "Draft a concise, human-reviewed caption (one idea per slide, max 100 characters, no line breaks) in screenshots.scenarios[].caption.");
   }
 }
 
@@ -517,6 +533,65 @@ async function screenshotChecks(repository: string, manifest: ShipLayerManifest,
         return mostSpecific === scenario;
       });
       if (!covered) add(`${id}.${scenario}`, "block", `No screenshot file corresponds to scenario '${scenario}'.`, `Capture ${scenario}.png (or ${scenario}-*.png) for this declared scenario.`);
+    }
+  }
+}
+
+// The rendered marketing PNGs (shiplayer prepare's screenshots/marketing/ project, exported by a
+// human/agent running its own README-documented commands — see src/marketing.ts) get the SAME
+// exact-dimension/uniform-size/count/no-alpha validation as raw captures above, because they are
+// candidates for what actually gets uploaded and Apple applies the identical rules to them. This
+// intentionally uses the real decoded pixel dimensions and a real alpha-channel inspection of each
+// file on disk (inspectImage), never a self-declared value from slides.json or shiplayer.yml, so a
+// broken/stale export cannot pass by merely claiming to be correct.
+//
+// The output location is manifest.screenshots.finalOutputDir — an explicit, persisted field
+// (defaulting to DEFAULT_MARKETING_FINAL_DIR for a manifest that predates this field), the SAME
+// field emitMarketingProject() uses to compute where export.mjs actually writes. This is
+// deliberate: it must never be a hardcoded convention independent of what generateReleasePackage
+// actually used, or a custom `--out`/finalOutputDir would make this check silently look at the
+// wrong (or a stale) directory and report nothing — indistinguishable from "validated and fine"
+// (see PR review finding F4).
+//
+// Unlike the raw-capture gate, an absent/empty final directory is never a blocker: rendering the
+// marketing project is an optional, additional step in v0.1 (nothing in `apply`/`submit` consumes
+// it yet), so a repository that has not run the export project must not be blocked by this check.
+async function marketingScreenshotChecks(repository: string, manifest: ShipLayerManifest, add: Add): Promise<void> {
+  const finalOutputDir = manifest.screenshots.finalOutputDir || DEFAULT_MARKETING_FINAL_DIR;
+  // export.mjs always writes exactly `${scenario.id}.png` (no wildcard/suffix convention, unlike
+  // raw captures) -- so a rendered file whose stem matches no CURRENT scenario id is orphaned: a
+  // leftover from a scenario that has since been removed or renamed. preserveNonDeterministicMarketingArtifacts
+  // in generator.ts carries the final/ directory forward across `prepare` reruns (see PR review
+  // finding F3) precisely so a real render survives; nothing else ever prunes it when a scenario
+  // disappears. Without this check, that orphaned PNG sits in the set `check` approves and a human
+  // uploads it as if it still represented a current scenario. See PR review finding N5.
+  const currentScenarioIds = new Set(manifest.screenshots.scenarios.map((scenario) => scenario.id));
+  for (const config of manifest.screenshots.configurations) {
+    const id = `marketing.${config.family}.${config.locale}`;
+    const relativeDirectory = `${finalOutputDir}/${config.family}/${config.locale}`;
+    let directory: string;
+    try { directory = await resolveContained(repository, relativeDirectory, `marketing screenshots for ${config.family}`); }
+    catch { continue; }
+    if (!existsSync(directory)) continue;
+    let imageFiles: string[];
+    try { imageFiles = (await readdir(directory)).filter((file) => /\.(png|jpe?g)$/i.test(file)).sort(); }
+    catch { add(id, "block", `Marketing screenshot directory is unreadable: ${relativeDirectory}.`); continue; }
+    if (!imageFiles.length) { add(id, "block", `${relativeDirectory} exists but contains no rendered PNG/JPEG marketing screenshots.`, "Run npm install && npm run export inside screenshots/marketing, or remove the empty directory."); continue; }
+    if (imageFiles.length > 10) add(`${id}.count`, "block", `${imageFiles.length} rendered marketing screenshots found; App Store allows at most 10.`);
+    else add(`${id}.count`, "pass", `${imageFiles.length} rendered marketing screenshot(s) found.`);
+    const acceptedForConfig = acceptedDimensionsForConfig(config);
+    let reference: { width: number; height: number; image: string } | undefined;
+    for (const image of imageFiles) {
+      const details = await inspectImage(path.join(directory, image));
+      const imageId = `${id}.${image}`;
+      if (!details) { add(imageId, "block", `Could not inspect rendered marketing screenshot ${image}; it must be a readable PNG/JPEG without alpha.`); continue; }
+      const stem = path.basename(image, path.extname(image));
+      if (!currentScenarioIds.has(stem)) { add(`${imageId}.orphaned`, "block", `Rendered marketing screenshot ${image} does not correspond to any current screenshot scenario; it is left over from a removed or renamed scenario.`, "Delete this file (or the whole stale set) from the finalOutputDir and re-run npm run export, or restore the matching scenario in shiplayer.yml."); continue; }
+      if (details.alpha) add(`${imageId}.alpha`, "block", `Rendered marketing screenshot ${image} has an alpha channel; Apple rejects screenshots with transparency.`, "export.mjs must emit alpha-free PNGs; re-run the export.");
+      if (!acceptedForConfig.has(`${details.width}x${details.height}`) && !acceptedForConfig.has(`${details.height}x${details.width}`)) { add(`${imageId}.accepted-dimensions`, "block", `Rendered marketing screenshot ${image} is ${details.width}×${details.height}, which is not an accepted dimension for this ${config.family} ${dimensionClassLabel(config)} configuration.`, "Fix the slide's target width/height and re-render."); continue; }
+      if (!reference) { reference = { width: details.width, height: details.height, image }; add(`${imageId}.dimensions`, "pass", `${image} is an accepted ${config.family} dimension (${details.width}×${details.height}).`); }
+      else if (details.width !== reference.width || details.height !== reference.height) add(`${imageId}.dimensions`, "block", `Rendered marketing screenshot ${image} is ${details.width}×${details.height}, which differs from ${reference.image} (${reference.width}×${reference.height}) already in this set; App Store Connect requires one uniform size per screenshot set.`);
+      else add(`${imageId}.dimensions`, "pass", `${image} matches ${reference.image}'s dimensions.`);
     }
   }
 }
