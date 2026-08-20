@@ -658,3 +658,23 @@ test("N4: a symlinked intermediate path component (screenshots/ pointing outside
   } catch { /* ignore */ }
   assert.equal(leaked, false, "outside content reached via a symlinked component must never be staged");
 });
+
+// --- N3: finalOutputDir must be checked against reserved roots, same as --out -------------------
+
+test("N3: generateReleasePackage rejects a finalOutputDir under .github, .git, or node_modules", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-marketing-n3-"));
+  const manifest = readyManifest(); await writeReadyAssets(root, manifest);
+  const analysis = await analyzeRepository(root);
+  const report = await preflight(root, manifest, false, analysis);
+  for (const bad of [".github/screenshots", ".git/x", "node_modules/x"]) {
+    manifest.screenshots.finalOutputDir = bad;
+    await assert.rejects(generateReleasePackage(root, manifest, analysis, report, "shiplayer-release"), /reserved or source-control path/, `finalOutputDir '${bad}' must be rejected`);
+  }
+});
+
+test("N3: the documented default finalOutputDir (which starts with shiplayer-release/) is not itself flagged reserved", () => {
+  assert.doesNotThrow(() => {
+    const reserved = DEFAULT_MARKETING_FINAL_DIR.split("/").find((component) => ["git", ".git", ".github", "node_modules"].includes(component.toLowerCase()));
+    assert.equal(reserved, undefined);
+  });
+});

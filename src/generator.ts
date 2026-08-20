@@ -134,7 +134,21 @@ async function installStage(stage: string, destination: string): Promise<void> {
     await rm(backup, { recursive: true, force: true, maxRetries: 2 });
   } catch (error) { throw error; }
 }
-function assertManifestPaths(manifest: ShipLayerManifest): void { safeRelativePath(manifest.screenshots.rawOutputDir, "screenshots.rawOutputDir"); if (manifest.screenshots.marketingProjectPath) safeRelativePath(manifest.screenshots.marketingProjectPath, "screenshots.marketingProjectPath"); if (manifest.screenshots.finalOutputDir) safeRelativePath(manifest.screenshots.finalOutputDir, "screenshots.finalOutputDir"); if (manifest.monetization.type === "non-consumables" || manifest.monetization.type === "subscriptions") for (const product of manifest.monetization.products) safeRelativePath(product.reviewScreenshot, `review screenshot for ${product.productId}`); }
+// finalOutputDir gets its own reserved-component scan (not assertOutputPath's, which special-cases
+// a BARE "shiplayer-release" as --out's own conventional value -- finalOutputDir's documented
+// default legitimately STARTS WITH "shiplayer-release/" as a multi-component path, so reusing
+// assertOutputPath unmodified would reject that default outright). Reuses RESERVED_OUTPUT_ROOTS
+// itself (never a second, hand-duplicated list) so ".github", ".git", "node_modules", etc. are
+// rejected anywhere in the path -- without this, a manifest could set finalOutputDir to e.g.
+// ".github/screenshots" and generateReleasePackage would happily emit a slides.json instructing
+// export.mjs to write PNGs into the app repository's own .github/, the exact boundary
+// docs/automation-boundaries.md states ShipLayer itself never writes into, and the same value
+// --out already explicitly refuses. See PR review round-3 finding N3.
+function assertFinalOutputDirNotReserved(finalOutputDir: string): void {
+  const reserved = finalOutputDir.split("/").find((component) => RESERVED_OUTPUT_ROOTS.has(component.toLowerCase()));
+  if (reserved) throw new Error(`screenshots.finalOutputDir cannot use reserved or source-control path '${reserved}'. Choose a location that does not overlap a VCS/build/dependency directory.`);
+}
+function assertManifestPaths(manifest: ShipLayerManifest): void { safeRelativePath(manifest.screenshots.rawOutputDir, "screenshots.rawOutputDir"); if (manifest.screenshots.marketingProjectPath) safeRelativePath(manifest.screenshots.marketingProjectPath, "screenshots.marketingProjectPath"); if (manifest.screenshots.finalOutputDir) { safeRelativePath(manifest.screenshots.finalOutputDir, "screenshots.finalOutputDir"); assertFinalOutputDirNotReserved(manifest.screenshots.finalOutputDir); } if (manifest.monetization.type === "non-consumables" || manifest.monetization.type === "subscriptions") for (const product of manifest.monetization.products) safeRelativePath(product.reviewScreenshot, `review screenshot for ${product.productId}`); }
 function assertNoSecretOutput(contents: string, label: string): void { if (/-----BEGIN(?: [A-Z]+)? PRIVATE KEY-----/i.test(contents) || /\b(?:api[ _-]?key|access[ _-]?token|auth[ _-]?token|secret|password|private[ _-]?key)\s*[:=]\s*\S+/i.test(contents) || /\bsk-[A-Za-z0-9_-]{16,}\b/.test(contents)) throw new Error(`Refusing to generate ${label} because it appears to contain credential material.`); }
 
 // --- shared "did the scan contradict this declaration" helpers, used by every generated ------
