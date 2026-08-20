@@ -36,7 +36,7 @@ export async function generateReleasePackage(repository: string, manifest: ShipL
   await emit("screenshots/ui-test-harness-template.swift", screenshotHarnessTemplate(manifest, screenshotHarness.sourceFiles.length > 0)); await emit("screenshots/ui-test-harness-contract.md", screenshotHarnessContract(manifest, screenshotHarness)); await emit("screenshots/capture-workflow.yml", screenshotCaptureWorkflow(manifest, screenshotHarness));
   await emit("app-store-connect/dry-run-plan.md", dryRunPlan(manifest)); await emit("remaining-human-actions.md", humanActions(packagePreflight));
     await writeText(path.join(stage, ".shiplayer-managed"), "ShipLayer managed release package v1\n"); files.push(".shiplayer-managed");
-  await preserveNonDeterministicMarketingArtifacts(repository, out, stage, manifest.screenshots.finalOutputDir || DEFAULT_MARKETING_FINAL_DIR);
+  await preserveNonDeterministicMarketingArtifacts(repository, out, stage, manifest.screenshots.finalOutputDir || DEFAULT_MARKETING_FINAL_DIR, files);
   await installStage(stage, out); return { directory: out, files: files.sort() };
   } catch (error) {
     await rm(stage, { recursive: true, force: true }).catch(() => undefined);
@@ -75,7 +75,21 @@ async function assertManagedDestination(destination: string): Promise<void> { le
  * design: a missing/unreadable previous copy (first-ever prepare, nothing rendered yet, a
  * corrupted node_modules) is not an error — there is nothing to carry forward.
  */
-async function preserveNonDeterministicMarketingArtifacts(repository: string, previousDestination: string, stage: string, finalOutputDir: string): Promise<void> {
+/**
+ * Throws when `candidateRelative` (a path relative to --out that preservation is about to copy
+ * forward from the PREVIOUS package) equals or contains any path this run's own emit()/
+ * emitDeviceFrameAsset() calls just wrote into `files`. Without this, a hand-set
+ * screenshots.finalOutputDir that overlaps the generated tree (e.g. equal to --out itself, or an
+ * ancestor like "screenshots") makes copyFileTree silently overwrite freshly-regenerated content
+ * (slides, capture-plan.json, the harness contract, ...) with the STALE previous copy — the
+ * normalized manifest in the package would then describe values (e.g. a caption) that disagree
+ * with what the actually-surviving slide/HTML says. See PR review round-3 finding N1.
+ */
+function assertNoCollisionWithGeneratedFiles(candidateRelative: string, files: string[], label: string): void {
+  const collision = candidateRelative === "" || files.some((file) => file === candidateRelative || file.startsWith(`${candidateRelative}/`) || candidateRelative.startsWith(`${file}/`));
+  if (collision) throw new Error(`${label} ('${candidateRelative || "."}') overlaps a deterministically generated release-package path. Choose a screenshots.finalOutputDir that does not overlap any file/directory --out generates (e.g. keep it under a dedicated subdirectory like screenshots/final, never --out itself or an ancestor such as "screenshots").`);
+}
+async function preserveNonDeterministicMarketingArtifacts(repository: string, previousDestination: string, stage: string, finalOutputDir: string, files: string[]): Promise<void> {
   const candidates = ["screenshots/marketing/node_modules", "screenshots/marketing/package-lock.json"];
   // previousDestination was resolved through realpath() (see resolveContained); repository may not
   // have been (e.g. macOS's /var -> /private/var), so resolve it the same way before comparing
@@ -83,7 +97,11 @@ async function preserveNonDeterministicMarketingArtifacts(repository: string, pr
   const realRepository = await realpath(repository).catch(() => repository);
   const finalOutputAbsolute = path.resolve(realRepository, finalOutputDir);
   const previousDestinationWithSep = `${previousDestination}${path.sep}`;
-  if (finalOutputAbsolute === previousDestination || finalOutputAbsolute.startsWith(previousDestinationWithSep)) candidates.push(path.relative(previousDestination, finalOutputAbsolute));
+  if (finalOutputAbsolute === previousDestination || finalOutputAbsolute.startsWith(previousDestinationWithSep)) {
+    const relative = path.relative(previousDestination, finalOutputAbsolute).split(path.sep).join("/");
+    assertNoCollisionWithGeneratedFiles(relative, files, "screenshots.finalOutputDir");
+    candidates.push(relative);
+  }
   for (const relative of candidates) {
     const source = path.join(previousDestination, relative);
     let details;

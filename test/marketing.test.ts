@@ -556,3 +556,39 @@ test("N5: preflight is unaffected when every rendered file matches a current sce
   assert.equal(report.results.some((item) => item.id.includes(".orphaned")), false);
   assert.equal(report.summary.block, 0);
 });
+
+// --- N1: an overlapping finalOutputDir must never let a stale copy silently re-emit the previous package ---
+
+test("N1: generateReleasePackage rejects a finalOutputDir equal to --out itself", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-marketing-n1-equal-"));
+  const manifest = readyManifest(); manifest.screenshots.finalOutputDir = "shiplayer-release"; await writeReadyAssets(root, manifest);
+  const analysis = await analyzeRepository(root);
+  const report = await preflight(root, manifest, false, analysis);
+  await assert.rejects(generateReleasePackage(root, manifest, analysis, report, "shiplayer-release"), /overlaps a deterministically generated release-package path/);
+});
+
+test("N1: generateReleasePackage rejects a finalOutputDir that is an ancestor of generated content (screenshots/)", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-marketing-n1-ancestor-"));
+  const manifest = readyManifest(); manifest.screenshots.finalOutputDir = "shiplayer-release/screenshots"; await writeReadyAssets(root, manifest);
+  const analysis = await analyzeRepository(root);
+  const report = await preflight(root, manifest, false, analysis);
+  await assert.rejects(generateReleasePackage(root, manifest, analysis, report, "shiplayer-release"), /overlaps a deterministically generated release-package path/);
+});
+
+test("N1: a safe finalOutputDir (the documented default) never collides and a real second prepare does not resurrect a stale caption", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-marketing-n1-safe-"));
+  const manifest = readyManifest();
+  manifest.screenshots.scenarios[0].caption = "Original caption"; manifest.screenshots.scenarios[0].confirmation = "confirmed";
+  await writeReadyAssets(root, manifest);
+  const analysis = await analyzeRepository(root);
+  const report = await preflight(root, manifest, false, analysis);
+  const first = await generateReleasePackage(root, manifest, analysis, report, "shiplayer-release");
+  const firstSlide = await readFile(path.join(first.directory, "screenshots/marketing/slides/iphone/en-US/home.html"), "utf8");
+  assert.ok(firstSlide.includes("Original caption"));
+
+  manifest.screenshots.scenarios[0].caption = "Updated caption";
+  const second = await generateReleasePackage(root, manifest, analysis, report, "shiplayer-release");
+  const secondSlide = await readFile(path.join(second.directory, "screenshots/marketing/slides/iphone/en-US/home.html"), "utf8");
+  assert.ok(secondSlide.includes("Updated caption"), "the regenerated slide must reflect the NEW caption, not a stale copy of the old one");
+  assert.ok(!secondSlide.includes("Original caption"));
+});
