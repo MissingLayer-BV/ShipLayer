@@ -271,19 +271,41 @@ function copyContentChecks(locale: string, values: LocaleCopy, add: Add): void {
 // named in review ("hassle-free", "free up space", "distraction-free app") — see
 // hasUnguardedMatch. Where the guard cannot rule out a false read, this stays a warn, never a
 // block (the AI-mention check below is warn-only for exactly this reason).
+// Both guards below scan EVERY match in the text (a fresh global-flagged copy of the caller's
+// pattern), not just the first — an early "guarded" match (e.g. "ad-free" hyphen-compounded, or a
+// "no in-app purchase" negation) must never short-circuit a LATER, genuinely unguarded claim
+// later in the same field. claimingIpadSupport below already does this correctly; these two did
+// not, which was a real false-pass (a paid app could write "An ad-free app you will love. Also:
+// this is a free app with no cost at all." and the free claim in the second sentence was never
+// even examined). Mirrors claimingIpadSupport's /g-loop shape exactly.
 function hasUnguardedMatch(text: string, pattern: RegExp): boolean {
-  const match = pattern.exec(text);
-  if (!match) return false;
-  // Reject a match immediately preceded by a hyphen: "ad-free", "hassle-free", "worry-free", and
-  // "distraction-free app" (which would otherwise satisfy a bare "free app" phrase) are English's
-  // standard "without X" compounding, not a price claim.
-  return !/-\s*$/.test(text.slice(0, match.index));
+  const global = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`);
+  let match: RegExpExecArray | null;
+  while ((match = global.exec(text))) {
+    // Reject a match immediately preceded by a hyphen: "ad-free", "hassle-free", "worry-free", and
+    // "distraction-free app" (which would otherwise satisfy a bare "free app" phrase) are English's
+    // standard "without X" compounding, not a price claim.
+    if (!/-\s*$/.test(text.slice(0, match.index))) return true;
+    if (match[0].length === 0) global.lastIndex++;
+  }
+  return false;
 }
 function hasMatchNotNegatedByNo(text: string, pattern: RegExp): boolean {
-  const match = pattern.exec(text);
-  if (!match) return false;
-  return !/\bno\s*$/i.test(text.slice(Math.max(0, match.index - 6), match.index));
+  const global = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`);
+  let match: RegExpExecArray | null;
+  while ((match = global.exec(text))) {
+    if (!/\bno\s*$/i.test(text.slice(Math.max(0, match.index - 6), match.index))) return true;
+    if (match[0].length === 0) global.lastIndex++;
+  }
+  return false;
 }
+// FREE_CLAIM_PATTERNS claims the app costs NOTHING — false for every monetization type except
+// "free", including "paid-app" (a paid-app IS a purchase, just not an in-app one). "free to try"
+// is split out on its own: a subscription's genuine, declared free-trial introductory offer makes
+// that specific phrase TRUE, so it is suppressed (never checked) only when such an offer is
+// actually declared — see hasDeclaredFreeTrialOffer below. "free to download"/"free to use" stay
+// in this list unconditionally: a subscription/non-consumable app is never free to download or
+// free to use in the way those phrases claim (a free trial does not make the app itself free).
 const FREE_CLAIM_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
   { pattern: /completely free/i, label: "'completely free'" },
   { pattern: /100%\s*free/i, label: "'100% free'" },
@@ -293,16 +315,24 @@ const FREE_CLAIM_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
   { pattern: /entirely free/i, label: "'entirely free'" },
   { pattern: /free of charge/i, label: "'free of charge'" },
   { pattern: /free app\b/i, label: "'free app'" },
-  { pattern: /free to (?:download|use|try)\b/i, label: "'free to download/use/try'" },
+  { pattern: /free to (?:download|use)\b/i, label: "'free to download/use'" },
   { pattern: /download(?:ed)? for free\b/i, label: "'download for free'" },
   { pattern: /get it (?:for )?free\b/i, label: "'get it free'" }
 ];
+const FREE_TRIAL_CLAIM_PATTERN = { pattern: /free to try\b/i, label: "'free to try'" };
+// NO_PURCHASE_CLAIM_PATTERNS claims the app has no IN-APP purchase — true for "free" AND
+// "paid-app" alike (paying once for the app itself is not an in-app purchase), so this must only
+// fire for a monetization type that actually models one (non-consumables/subscriptions). "no
+// hidden fees/costs" was deliberately dropped: it is a transparency claim ("nothing beyond the
+// stated price is sprung on you"), not a claim that no purchase exists at all, and is honestly
+// sayable by a paid app, a non-consumable, or a subscription alike — see PR review B1.
 const NO_PURCHASE_CLAIM_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
   { pattern: /no in-app purchases?\b/i, label: "'no in-app purchases'" },
   { pattern: /no iaps?\b/i, label: "'no IAP'" },
-  { pattern: /no purchases? necessary\b/i, label: "'no purchase necessary'" },
-  { pattern: /no hidden (?:fees|costs)\b/i, label: "'no hidden fees'" }
+  { pattern: /no purchases? necessary\b/i, label: "'no purchase necessary'" }
 ];
+function hasIapCapability(money: ShipLayerManifest["monetization"]): boolean { return money.type === "non-consumables" || money.type === "subscriptions"; }
+function hasDeclaredFreeTrialOffer(money: ShipLayerManifest["monetization"]): boolean { return money.type === "subscriptions" && money.products.some((product) => product.introductoryOffer?.type === "free-trial"); }
 const NO_SUBSCRIPTION_PATTERN = { pattern: /no subscriptions?\b/i, label: "'no subscription'" };
 const ONE_TIME_PURCHASE_PATTERN = { pattern: /one-time purchase\b/i, label: "'one-time purchase'" };
 const PAID_CLAIM_PATTERNS: Array<{ pattern: RegExp; label: string; guardNo?: boolean }> = [
@@ -314,12 +344,29 @@ const PAID_CLAIM_PATTERNS: Array<{ pattern: RegExp; label: string; guardNo?: boo
 ];
 const IPAD_NEGATION_PATTERN = /\b(?:not|no|isn'?t|is not|doesn'?t|does not|without|excludes?|iphone[\s-]only)\b/i;
 const IPAD_TRAILING_NEGATION_PATTERN = /\b(?:not supported|not available|coming soon|unsupported)\b/i;
+// A negation word anywhere within a flat character window (the original implementation) is too
+// coarse: "There are no ads at all, and it looks stunning on iPad." has "no" ~30 characters before
+// "iPad" but they are in different CLAUSES — the negation has nothing to do with iPad support. Stop
+// the lookback/lookahead at the nearest clause boundary (sentence-ending punctuation or a comma)
+// instead of a fixed distance, so only a negation genuinely modifying the SAME clause as "iPad"
+// can clear it. Bounded to 400 characters as a defensive cap for punctuation-free text.
+const CLAUSE_BOUNDARY_PATTERN = /[.!?;,\n]/;
+function clauseBefore(text: string, index: number): string {
+  let boundary = -1;
+  for (let cursor = index - 1; cursor >= 0 && index - cursor <= 400; cursor--) { if (CLAUSE_BOUNDARY_PATTERN.test(text[cursor])) { boundary = cursor; break; } }
+  return text.slice(boundary + 1, index);
+}
+function clauseAfter(text: string, index: number): string {
+  let boundary = text.length;
+  for (let cursor = index; cursor < text.length && cursor - index <= 400; cursor++) { if (CLAUSE_BOUNDARY_PATTERN.test(text[cursor])) { boundary = cursor; break; } }
+  return text.slice(index, boundary);
+}
 function claimingIpadSupport(text: string): boolean {
   const pattern = /\bipad\b/gi;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(text))) {
-    const before = text.slice(Math.max(0, match.index - 40), match.index);
-    const after = text.slice(match.index, match.index + match[0].length + 40);
+    const before = clauseBefore(text, match.index);
+    const after = clauseAfter(text, match.index);
     if (!IPAD_NEGATION_PATTERN.test(before) && !IPAD_TRAILING_NEGATION_PATTERN.test(after)) return true;
   }
   return false;
@@ -335,8 +382,11 @@ function metadataContradictionChecks(manifest: ShipLayerManifest, add: Add): voi
   for (const [locale, values] of Object.entries(manifest.metadata.localizations)) {
     for (const [field, text] of copyFields(values)) {
       if (field === "keywords") continue; // a keyword list is not prose; monetization/platform claims only meaningfully appear in written copy
-      const freeClaim = FREE_CLAIM_PATTERNS.find(({ pattern }) => hasUnguardedMatch(text, pattern)) || NO_PURCHASE_CLAIM_PATTERNS.find(({ pattern }) => pattern.test(text));
-      if (freeClaim && money.type !== "free") add(`metadata.${locale}.${field}.monetization-contradiction`, "block", `${locale} ${field} claims ${freeClaim.label}, but monetization.type is declared '${money.type}', which has purchases.`, "Rewrite the copy to accurately describe the real IAP/subscription model, or correct monetization.type if this app is genuinely free.");
+      const zeroCostClaim = FREE_CLAIM_PATTERNS.find(({ pattern }) => hasUnguardedMatch(text, pattern));
+      if (zeroCostClaim && money.type !== "free") add(`metadata.${locale}.${field}.monetization-contradiction`, "block", `${locale} ${field} claims ${zeroCostClaim.label}, but monetization.type is declared '${money.type}', not 'free'.`, "Rewrite the copy to accurately describe the real IAP/subscription model, or correct monetization.type if this app is genuinely free.");
+      if (!hasDeclaredFreeTrialOffer(money) && hasUnguardedMatch(text, FREE_TRIAL_CLAIM_PATTERN.pattern) && money.type !== "free") add(`metadata.${locale}.${field}.monetization-contradiction`, "block", `${locale} ${field} claims ${FREE_TRIAL_CLAIM_PATTERN.label}, but monetization.type is declared '${money.type}' with no declared free-trial introductoryOffer.`, "Declare a free-trial introductoryOffer on the subscription product if one genuinely exists, or remove this claim.");
+      const noPurchaseClaim = NO_PURCHASE_CLAIM_PATTERNS.find(({ pattern }) => hasUnguardedMatch(text, pattern));
+      if (noPurchaseClaim && hasIapCapability(money)) add(`metadata.${locale}.${field}.monetization-contradiction`, "block", `${locale} ${field} claims ${noPurchaseClaim.label}, but monetization.type is declared '${money.type}', which has an in-app purchase.`, "Rewrite the copy to accurately describe the real IAP/subscription model, or correct monetization.type if this app genuinely has no in-app purchase.");
       if (hasUnguardedMatch(text, NO_SUBSCRIPTION_PATTERN.pattern) && money.type === "subscriptions") add(`metadata.${locale}.${field}.monetization-contradiction`, "block", `${locale} ${field} claims ${NO_SUBSCRIPTION_PATTERN.label}, but monetization.type is 'subscriptions'.`, "Rewrite the copy to accurately describe the subscription, or correct monetization.type.");
       if (hasUnguardedMatch(text, ONE_TIME_PURCHASE_PATTERN.pattern) && (money.type === "subscriptions" || money.type === "free")) add(`metadata.${locale}.${field}.monetization-contradiction`, "block", `${locale} ${field} claims ${ONE_TIME_PURCHASE_PATTERN.label}, which contradicts monetization.type '${money.type}' (${money.type === "free" ? "no purchase exists" : "a subscription renews, it is not one-time"}).`, "Rewrite the copy to accurately describe the real monetization model, or correct monetization.type.");
       if (money.type === "free") {
