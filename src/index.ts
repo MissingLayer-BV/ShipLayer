@@ -99,6 +99,15 @@ function manifestFromAnalysis(report: AnalysisReport, harness: DetectedScreensho
   // guardrail: it fires loudly on `check` whenever this default disagrees with StoreKit evidence.
   const storekitEvidence = storekitPurchaseEvidence(report);
   if (storekitEvidence.length) report.unresolvedQuestions.push(`StoreKit purchase evidence was found (${[...new Set(storekitEvidence.flatMap((finding) => finding.evidence.map((item) => item.source)))].sort().join(", ")}) but monetization.type defaults to 'free' here. Declare the real IAP/subscription model in shiplayer.yml; \`check\` blocks on this contradiction until it is resolved.`);
+  // ShipLayer never drafts App Store copy — see metadata.localizations in src/types.ts and
+  // metadataChecks/metadataContradictionChecks in src/preflight.ts. `init` always leaves every
+  // locale's name/subtitle/description/keywords/promotionalText/whatsNew absent and records this
+  // question instead, naming exactly what an agent/human must write: read the app's real source
+  // and screenshots, describe only what it actually does, and never state pricing, never
+  // reference another platform, never leave placeholder text. `shiplayer check` blocks until the
+  // drafted copy is filled in AND metadata.localizations[locale].confirmation is explicitly
+  // "confirmed" by a human — see skills/ship-app-store/SKILL.md for the full drafting guidance.
+  for (const locale of manifest.app.locales) report.unresolvedQuestions.push(`No App Store copy has been drafted for locale ${locale}. Draft metadata.localizations.${locale}.name (max 30 chars), subtitle (max 30), description (max 4000), keywords (max 100 chars total incl. commas), promotionalText (max 170), and whatsNew (max 4000) from the app's real source/screenshots, then set metadata.localizations.${locale}.confirmation: confirmed after human review. ShipLayer never writes this copy itself.`);
   return manifest; }
 /** Endpoint/SDK findings become needs-human-confirmation externalProcessors proposals, never a confirmed disposition. */
 function externalProcessorProposals(report: AnalysisReport): ShipLayerManifest["externalProcessors"] {

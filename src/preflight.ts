@@ -1,7 +1,7 @@
 import path from "node:path";
 import { lstat, readFile, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import type { AnalysisReport, CheckResult, PreflightReport, ShipLayerManifest } from "./types.js";
+import type { AnalysisReport, CheckResult, LocaleCopy, PreflightReport, ShipLayerManifest } from "./types.js";
 import { analyzeRepository, findPermissionRequestSites, findValue } from "./scanner.js";
 import { readText, relative, resolveContained, walkRepository } from "./fs.js";
 import { inspectImage } from "./image.js";
@@ -143,6 +143,11 @@ function metadataChecks(manifest: ShipLayerManifest, add: Add): void {
       const value = field === "keywords" ? localized.keywords?.join(",") : localized[field];
       if (!value) add(`metadata.${locale}.${field}`, "block", `${locale} metadata has no ${field}.`, "Provide complete metadata for every configured locale, or remove that locale.");
     }
+    // Copy is a human-reviewable proposal (an agent drafts it; ShipLayer only validates it), not a
+    // fact — the same trust rule every other proposal in this manifest follows (monetization,
+    // permissions, external processors, ...). Absent is never read as approved: only a literal
+    // "confirmed" passes.
+    if (localized.confirmation !== "confirmed") add(`metadata.${locale}.confirmation`, "block", `${locale} App Store copy is not human-confirmed.`, "Review every drafted field (name, subtitle, description, keywords, promotionalText, whatsNew) against what the app actually does, then set metadata.localizations[locale].confirmation: confirmed.");
   }
   for (const [locale, values] of Object.entries(manifest.metadata.localizations)) {
     for (const [field, limit] of Object.entries(limits)) {
@@ -153,7 +158,196 @@ function metadataChecks(manifest: ShipLayerManifest, add: Add): void {
     for (const keyword of values.keywords || []) if (keyword.length < 3) add(`metadata.${locale}.keyword.minimum`, "block", `${locale} keyword '${keyword}' must have more than 2 characters.`, "Remove short keywords.");
     const keywords = values.keywords?.join(",") || ""; const keywordBytes = Buffer.byteLength(keywords, "utf8");
     if (keywordBytes > 100) add(`metadata.${locale}.keywords`, "block", `${locale} keywords use ${keywordBytes} UTF-8 bytes; Apple limit is 100 bytes.`, "Shorten keywords.");
+    keywordHygieneChecks(locale, values, add);
+    copyContentChecks(locale, values, add);
   }
+  metadataContradictionChecks(manifest, add);
+}
+
+// --- keyword hygiene (2.3.7: keywords must be relevant; wasted budget is a real submission cost,
+// not just a style nit) -----------------------------------------------------------------------
+// Multiple CANDIDATE stems per word, not a single guessed one: a naive single-stem guess gets the
+// common case of one word wrong. E.g. "expenses" ends in "-ses", which looks like the sibilant
+// "-es" plural (box -> boxes, watch -> watches, whose stem drops "es") but is actually the simple
+// "-s" plural of "expense" (whose stem should drop only "s"). Trying both candidates and matching
+// on ANY shared candidate (see keywordHygieneChecks below) gets both shapes right without having
+// to decide up front which rule applies to a given word.
+function keywordStemCandidates(word: string): Set<string> {
+  const lower = word.toLowerCase();
+  const candidates = new Set<string>([lower]);
+  if (lower.length > 4 && lower.endsWith("ies")) candidates.add(`${lower.slice(0, -3)}y`);
+  if (lower.length > 3 && lower.endsWith("es")) candidates.add(lower.slice(0, -2));
+  if (lower.length > 3 && lower.endsWith("s") && !lower.endsWith("ss")) candidates.add(lower.slice(0, -1));
+  return candidates;
+}
+function keywordHygieneChecks(locale: string, values: LocaleCopy, add: Add): void {
+  const keywords = values.keywords || [];
+  if (!keywords.length) return;
+  const untrimmed = keywords.filter((keyword) => keyword !== keyword.trim());
+  if (untrimmed.length) add(`metadata.${locale}.keywords.whitespace`, "warn", `${locale} keywords contain leading/trailing whitespace (${untrimmed.map((keyword) => `'${keyword}'`).join(", ")}), which wastes the 100-character keyword budget when joined with commas.`, "Trim whitespace from every keyword; do not add a space after the comma separator.");
+  const nameSubtitleWords = new Set(tokenizeWords([values.name, values.subtitle].filter((value): value is string => Boolean(value)).join(" ")));
+  const overlapping = keywords.filter((keyword) => tokenizeWords(keyword).some((word) => nameSubtitleWords.has(word)));
+  if (overlapping.length) add(`metadata.${locale}.keywords.redundant`, "warn", `${locale} keywords repeat word(s) already in name/subtitle (${overlapping.map((keyword) => `'${keyword}'`).join(", ")}); Apple indexes name/subtitle separately, so repeating them wastes keyword budget.`, "Replace repeated words with new search terms not already covered by name/subtitle.");
+  const singleWordKeywords = keywords.filter((keyword) => !/\s/.test(keyword.trim()));
+  const byCandidate = new Map<string, string[]>();
+  for (const keyword of singleWordKeywords) for (const candidate of keywordStemCandidates(keyword.trim())) byCandidate.set(candidate, [...(byCandidate.get(candidate) || []), keyword]);
+  const reportedGroups = new Set<string>();
+  for (const group of byCandidate.values()) {
+    const distinct = [...new Set(group)];
+    if (distinct.length < 2) continue;
+    const key = distinct.slice().sort().join(" ");
+    if (reportedGroups.has(key)) continue;
+    reportedGroups.add(key);
+    add(`metadata.${locale}.keywords.plural-duplicate`, "warn", `${locale} keywords contain likely plural/singular duplicates of the same word: ${distinct.map((keyword) => `'${keyword}'`).join(", ")}.`, "Apple treats keywords as a bag of words already; keep only one form and use the freed budget for a new term.");
+  }
+}
+function tokenizeWords(text: string): string[] { return text.toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length >= 3); }
+
+// --- placeholder / other-platform / judgment-call content checks (App Review 2.3) -------------
+// Every pattern below is a heuristic over natural-language copy, not a proof: a regex can only
+// ever approximate "this text makes claim X". Where a common, legitimate phrase would collide
+// with a literal claim (e.g. "hassle-free", "distraction-free app", "free up storage" must never
+// be confused with a price claim), the pattern is deliberately narrowed or guarded rather than
+// left to false-block honest copy — see hasUnguardedMatch below. Placeholder text and explicit
+// other-platform references are the two categories precise enough to block outright; pricing,
+// beta/trial/test language, and unsubstantiated superlatives are judgment calls Apple's own review
+// team makes contextually, so those stay warn-only.
+const PLACEHOLDER_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
+  { pattern: /lorem ipsum/i, label: "'Lorem ipsum' placeholder text" },
+  { pattern: /\bTODO\b/, label: "'TODO' placeholder text" },
+  { pattern: /\bXXX\b/, label: "'XXX' placeholder text" },
+  { pattern: /<\s*your\s+app(?:\s+name)?\s*>/i, label: "'<your app>' placeholder text" },
+  { pattern: /\[\s*your\s+app(?:\s+name)?\s*\]/i, label: "'[your app]' placeholder text" },
+  { pattern: /<\s*app\s+name\s*>/i, label: "'<app name>' placeholder text" },
+  { pattern: /\[\s*app\s+name\s*\]/i, label: "'[app name]' placeholder text" }
+];
+// 2.3.10: no references to another platform/storefront. "Windows" is matched case-sensitively
+// only (not /i) — the lowercase common noun ("multiple windows", "window treatments") is far more
+// likely in honest copy than the capitalized OS reference, and this check has no negation guard.
+const OTHER_PLATFORM_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
+  { pattern: /\bandroid\b/i, label: "Android" },
+  { pattern: /\bgoogle play\b/i, label: "Google Play" },
+  { pattern: /\bplay store\b/i, label: "Play Store" },
+  { pattern: /\bWindows\b/, label: "Windows" },
+  { pattern: /\bweb version\b/i, label: "Web version" },
+  { pattern: /\bdesktop version\b/i, label: "Desktop version" }
+];
+const PRICING_PATTERNS: RegExp[] = [/[$€£¥]\s?\d/, /\bonly\s+[$€£¥]/i, /\b\d+(?:\.\d{2})?\s?(?:usd|dollars?|eur|euros?|gbp|pounds?)\b/i];
+const BETA_TRIAL_TEST_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
+  { pattern: /\bbeta\b/i, label: "'beta'" },
+  { pattern: /\btrial version\b/i, label: "'trial version'" },
+  { pattern: /\btest version\b/i, label: "'test version'" },
+  { pattern: /\bwork[\s-]in[\s-]progress\b/i, label: "'work in progress'" },
+  { pattern: /\bstill in development\b/i, label: "'still in development'" }
+];
+const SUPERLATIVE_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
+  { pattern: /#\s?1\b/, label: "'#1'" },
+  { pattern: /\bnumber one\b/i, label: "'number one'" },
+  { pattern: /\bbest app\b/i, label: "'best app'" },
+  { pattern: /\bworld'?s best\b/i, label: "'world's best'" },
+  { pattern: /\btop[\s-]rated\b/i, label: "'top-rated'" },
+  { pattern: /\bbest[\s-]in[\s-]class\b/i, label: "'best-in-class'" }
+];
+function copyFields(values: LocaleCopy): Array<[string, string]> {
+  const fields: Array<[string, string | undefined]> = [["name", values.name], ["subtitle", values.subtitle], ["description", values.description], ["promotionalText", values.promotionalText], ["whatsNew", values.whatsNew], ["keywords", values.keywords?.join(", ")]];
+  return fields.filter((entry): entry is [string, string] => Boolean(entry[1]));
+}
+function copyContentChecks(locale: string, values: LocaleCopy, add: Add): void {
+  for (const [field, text] of copyFields(values)) {
+    for (const { pattern, label } of PLACEHOLDER_PATTERNS) if (pattern.test(text)) add(`metadata.${locale}.${field}.placeholder`, "block", `${locale} ${field} still contains ${label}.`, "Replace every placeholder with real, reviewed copy describing what the app actually does.");
+    for (const { pattern, label } of OTHER_PLATFORM_PATTERNS) if (pattern.test(text)) add(`metadata.${locale}.${field}.other-platform`, "block", `${locale} ${field} references another platform (${label}); App Review 2.3.10 forbids this in App Store metadata.`, "Remove the other-platform reference; describe only the iOS/iPadOS app.");
+    if (PRICING_PATTERNS.some((pattern) => pattern.test(text))) add(`metadata.${locale}.${field}.pricing`, "warn", `${locale} ${field} appears to state a specific price; Apple review (2.3.12) generally rejects pricing claims in metadata since prices vary by storefront.`, "Describe value/features instead of a specific price; pricing is shown by StoreKit itself.");
+    for (const { pattern, label } of BETA_TRIAL_TEST_PATTERNS) if (pattern.test(text)) add(`metadata.${locale}.${field}.beta-trial-test`, "warn", `${locale} ${field} contains ${label}, which can read as an unfinished/non-production release.`, "Confirm this is intentional (e.g. a legitimate free-trial offer description); otherwise remove it before a production listing.");
+    for (const { pattern, label } of SUPERLATIVE_PATTERNS) if (pattern.test(text)) add(`metadata.${locale}.${field}.superlative`, "warn", `${locale} ${field} contains the unsubstantiated superlative ${label}.`, "Remove or substantiate the claim (e.g. with an award/ranking source) before submission.");
+  }
+}
+
+// --- cross-check: copy must not contradict what the manifest declares the app actually does ---
+// This is the "understanding layer": copy is compared against manifest.monetization,
+// manifest.app.deviceFamilies, and manifest.aiDataSharing — the same declarations preflight's own
+// monetization/AI gates already cross-check against source evidence elsewhere in this file. A
+// regex over natural language can never prove a negative, so every pattern here is deliberately
+// narrow (multi-word phrases, not a bare "free") and guarded against the specific false positives
+// named in review ("hassle-free", "free up space", "distraction-free app") — see
+// hasUnguardedMatch. Where the guard cannot rule out a false read, this stays a warn, never a
+// block (the AI-mention check below is warn-only for exactly this reason).
+function hasUnguardedMatch(text: string, pattern: RegExp): boolean {
+  const match = pattern.exec(text);
+  if (!match) return false;
+  // Reject a match immediately preceded by a hyphen: "ad-free", "hassle-free", "worry-free", and
+  // "distraction-free app" (which would otherwise satisfy a bare "free app" phrase) are English's
+  // standard "without X" compounding, not a price claim.
+  return !/-\s*$/.test(text.slice(0, match.index));
+}
+function hasMatchNotNegatedByNo(text: string, pattern: RegExp): boolean {
+  const match = pattern.exec(text);
+  if (!match) return false;
+  return !/\bno\s*$/i.test(text.slice(Math.max(0, match.index - 6), match.index));
+}
+const FREE_CLAIM_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
+  { pattern: /completely free/i, label: "'completely free'" },
+  { pattern: /100%\s*free/i, label: "'100% free'" },
+  { pattern: /totally free/i, label: "'totally free'" },
+  { pattern: /always free/i, label: "'always free'" },
+  { pattern: /free forever/i, label: "'free forever'" },
+  { pattern: /entirely free/i, label: "'entirely free'" },
+  { pattern: /free of charge/i, label: "'free of charge'" },
+  { pattern: /free app\b/i, label: "'free app'" },
+  { pattern: /free to (?:download|use|try)\b/i, label: "'free to download/use/try'" },
+  { pattern: /download(?:ed)? for free\b/i, label: "'download for free'" },
+  { pattern: /get it (?:for )?free\b/i, label: "'get it free'" }
+];
+const NO_PURCHASE_CLAIM_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
+  { pattern: /no in-app purchases?\b/i, label: "'no in-app purchases'" },
+  { pattern: /no iaps?\b/i, label: "'no IAP'" },
+  { pattern: /no purchases? necessary\b/i, label: "'no purchase necessary'" },
+  { pattern: /no hidden (?:fees|costs)\b/i, label: "'no hidden fees'" }
+];
+const NO_SUBSCRIPTION_PATTERN = { pattern: /no subscriptions?\b/i, label: "'no subscription'" };
+const ONE_TIME_PURCHASE_PATTERN = { pattern: /one-time purchase\b/i, label: "'one-time purchase'" };
+const PAID_CLAIM_PATTERNS: Array<{ pattern: RegExp; label: string; guardNo?: boolean }> = [
+  { pattern: /in-app purchase/i, label: "'in-app purchase'", guardNo: true },
+  { pattern: /premium subscription/i, label: "'premium subscription'" },
+  { pattern: /requires? (?:a )?subscription/i, label: "'requires a subscription'" },
+  { pattern: /\$\d+(?:\.\d{2})?\s*\/\s*(?:month|mo|year|yr|week)\b/i, label: "a subscription price" },
+  { pattern: /unlock (?:the )?full version/i, label: "'unlock the full version'" }
+];
+const IPAD_NEGATION_PATTERN = /\b(?:not|no|isn'?t|is not|doesn'?t|does not|without|excludes?|iphone[\s-]only)\b/i;
+const IPAD_TRAILING_NEGATION_PATTERN = /\b(?:not supported|not available|coming soon|unsupported)\b/i;
+function claimingIpadSupport(text: string): boolean {
+  const pattern = /\bipad\b/gi;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text))) {
+    const before = text.slice(Math.max(0, match.index - 40), match.index);
+    const after = text.slice(match.index, match.index + match[0].length + 40);
+    if (!IPAD_NEGATION_PATTERN.test(before) && !IPAD_TRAILING_NEGATION_PATTERN.test(after)) return true;
+  }
+  return false;
+}
+function mentionsAi(text: string, processorNames: string[]): boolean {
+  if (/\bAI\b/.test(text) || /artificial intelligence/i.test(text) || /machine learning/i.test(text)) return true;
+  return processorNames.some((name) => name && text.toLocaleLowerCase("en-US").includes(name.toLocaleLowerCase("en-US")));
+}
+function metadataContradictionChecks(manifest: ShipLayerManifest, add: Add): void {
+  const money = manifest.monetization;
+  let anyMentionsAi = false;
+  const processorNames = manifest.aiDataSharing.enabled ? manifest.aiDataSharing.processorNames : [];
+  for (const [locale, values] of Object.entries(manifest.metadata.localizations)) {
+    for (const [field, text] of copyFields(values)) {
+      if (field === "keywords") continue; // a keyword list is not prose; monetization/platform claims only meaningfully appear in written copy
+      const freeClaim = FREE_CLAIM_PATTERNS.find(({ pattern }) => hasUnguardedMatch(text, pattern)) || NO_PURCHASE_CLAIM_PATTERNS.find(({ pattern }) => pattern.test(text));
+      if (freeClaim && money.type !== "free") add(`metadata.${locale}.${field}.monetization-contradiction`, "block", `${locale} ${field} claims ${freeClaim.label}, but monetization.type is declared '${money.type}', which has purchases.`, "Rewrite the copy to accurately describe the real IAP/subscription model, or correct monetization.type if this app is genuinely free.");
+      if (hasUnguardedMatch(text, NO_SUBSCRIPTION_PATTERN.pattern) && money.type === "subscriptions") add(`metadata.${locale}.${field}.monetization-contradiction`, "block", `${locale} ${field} claims ${NO_SUBSCRIPTION_PATTERN.label}, but monetization.type is 'subscriptions'.`, "Rewrite the copy to accurately describe the subscription, or correct monetization.type.");
+      if (hasUnguardedMatch(text, ONE_TIME_PURCHASE_PATTERN.pattern) && (money.type === "subscriptions" || money.type === "free")) add(`metadata.${locale}.${field}.monetization-contradiction`, "block", `${locale} ${field} claims ${ONE_TIME_PURCHASE_PATTERN.label}, which contradicts monetization.type '${money.type}' (${money.type === "free" ? "no purchase exists" : "a subscription renews, it is not one-time"}).`, "Rewrite the copy to accurately describe the real monetization model, or correct monetization.type.");
+      if (money.type === "free") {
+        const paidClaim = PAID_CLAIM_PATTERNS.find(({ pattern, guardNo }) => guardNo ? hasMatchNotNegatedByNo(text, pattern) : pattern.test(text));
+        if (paidClaim) add(`metadata.${locale}.${field}.monetization-contradiction`, "block", `${locale} ${field} claims ${paidClaim.label}, but monetization.type is 'free' with no declared purchase.`, "Rewrite the copy to match the real free monetization model, or declare the actual IAP/subscription in monetization.");
+      }
+      if (!manifest.app.deviceFamilies.includes("ipad") && claimingIpadSupport(text)) add(`metadata.${locale}.${field}.device-family-contradiction`, "block", `${locale} ${field} appears to claim iPad support, but app.deviceFamilies is ${JSON.stringify(manifest.app.deviceFamilies)}.`, "Remove the iPad claim, or add 'ipad' to app.deviceFamilies only after verifying real iPad support.");
+      if (mentionsAi(text, processorNames)) anyMentionsAi = true;
+    }
+  }
+  if (manifest.aiDataSharing.enabled && !anyMentionsAi) add("metadata.ai-mention", "warn", "aiDataSharing.enabled is true, but no configured locale's App Store copy mentions AI or names an AI processor.", "Disclose the AI-powered feature in the listing (subtitle/description/whatsNew) so users form accurate expectations before downloading — this app has previously been rejected for undisclosed AI processing.");
 }
 
 function permissionChecks(manifest: ShipLayerManifest, add: Add): void {
