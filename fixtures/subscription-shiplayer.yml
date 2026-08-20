@@ -32,6 +32,7 @@ permissions:
     purpose: Capture a receipt to create a record.
     confirmation: confirmed
     evidence: [ReceiptLoop/Info.plist]
+permissionFlows: []
 dataProcessing:
   - category: Other Financial Info
     purpose: [App Functionality]

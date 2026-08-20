@@ -96,6 +96,26 @@ export interface SourceContradictionOverride {
   evidence: string[];
   confirmation: Confirmation;
 }
+/**
+ * Answers one question per detected runtime permission-request category (App Review 5.1.1(iv)):
+ * "can the user dismiss a custom screen (sheet/confirmationDialog/alert/popover) between
+ * requesting this feature and the system permission prompt?" No scanner can prove a runtime flow
+ * property, so this is always a human declaration, never inferred. `confirmation` must be exactly
+ * "confirmed" before either preflight.ts's `permission-flow.<category>.confirmation` gate or the
+ * `permission-flow.<category>.sheet-gated` heuristic-clearance gate trusts
+ * `dismissibleScreenBeforePrompt` at all — absence of a declaration, an unconfirmed one, or an
+ * empty/default value must never be read as "no dismissible screen" (see the App Review
+ * app-review-and-price-gates PR history: an earlier review found this exact "absence means
+ * confirmed" shape twice). `init` always proposes `dismissibleScreenBeforePrompt: false` with
+ * confirmation `needs-human-confirmation` — the boolean's proposed value carries no trust until a
+ * human sets confirmation to "confirmed" themselves.
+ */
+export interface PermissionFlowDeclaration {
+  category: string;
+  dismissibleScreenBeforePrompt: boolean;
+  confirmation: Confirmation;
+  evidence?: string[];
+}
 export interface SecondaryTargetConfirmation {
   bundleId: string;
   classification: "extension" | "widget" | "other-app";
@@ -192,6 +212,7 @@ export interface ShipLayerManifest {
   contacts: { supportEmail?: string; supportUrl?: string; marketingUrl?: string; privacyUrl?: string; copyright?: string };
   metadata: { localizations: Record<string, LocaleCopy> };
   permissions: Array<{ key: string; purpose?: string; confirmation: Confirmation; evidence?: string[] }>;
+  permissionFlows: PermissionFlowDeclaration[];
   dataProcessing: DataProcessing[];
   externalProcessors: ExternalProcessor[];
   aiDataSharing: AIDataSharing;
