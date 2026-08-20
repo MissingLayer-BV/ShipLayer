@@ -1,8 +1,11 @@
 // Permission-flow gates (App Review 5.1.1(iv)): BackYet's real rejection — a dismissible custom
 // sheet in front of the one-time system camera prompt, and a denied-state fallback with no
-// Settings link. See src/preflight.ts's permission-flow section for the three gates this file
-// exercises: permission-flow.<category>.settings-link (Gate 1, static), .confirmation (Gate 2,
-// human-confirmed), and .sheet-gated (Gate 3, the owner's heuristic, clearable by Gate 2).
+// Settings link. Design (see src/preflight.ts's module comment): DECLARATIONS BLOCK, HEURISTICS
+// WARN AND CORROBORATE. permission-flow.<category>.confirmation/.dismissible-screen/.denied-path-
+// settings-link are the blocking gates, driven entirely by a human-confirmed permissionFlows
+// declaration; permission-flow.<category>.settings-link-heuristic is advisory only (warn/pass,
+// never block); permission-flow.<category>.sheet-gated is the owner's heuristic block, clearable
+// by the declaration.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
@@ -13,6 +16,7 @@ import { analyzeRepository } from "../src/scanner.js";
 import { generateReleasePackage } from "../src/generator.js";
 import { preflight } from "../src/preflight.js";
 import { readManifest } from "../src/manifest.js";
+import type { PermissionFlowDeclaration } from "../src/types.js";
 import { readyManifest, writeReadyAssets } from "./helpers.js";
 
 const CAMERA_NO_SETTINGS_LINK = `import AVFoundation
@@ -53,6 +57,10 @@ async function writeCameraSwift(root: string, contents: string, relativePath = "
   await writeFile(target, contents);
 }
 
+function declaration(overrides: Partial<PermissionFlowDeclaration> & { category: string }): PermissionFlowDeclaration {
+  return { dismissibleScreenBeforePrompt: false, deniedPathOffersSettingsLink: true, confirmation: "needs-human-confirmation", evidence: ["Sources/CameraFlow.swift"], ...overrides };
+}
+
 test("an app with no permissions at all is unaffected by the permission-flow gates", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-permflow-none-"));
   const manifest = readyManifest();
@@ -62,20 +70,72 @@ test("an app with no permissions at all is unaffected by the permission-flow gat
   assert.equal(report.summary.block, 0);
 });
 
-test("the settings-link gate blocks a denied-state path with no Settings link, and passes once the same file reaches it", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-permflow-settings-"));
+test("the confirmation gate blocks by default and is not satisfiable by absence, an unconfirmed entry, or a default value; a fully confirmed, compliant declaration passes everything", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-permflow-declaration-"));
   const manifest = readyManifest();
   await writeReadyAssets(root, manifest);
+  await writeCameraSwift(root, CAMERA_WITH_SETTINGS_LINK);
+
+  let report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "permission-flow.camera.confirmation" && item.severity === "block"));
+  assert.equal(report.results.some((item) => item.id === "permission-flow.camera.dismissible-screen"), false);
+  assert.equal(report.results.some((item) => item.id === "permission-flow.camera.denied-path-settings-link"), false);
+
+  manifest.permissionFlows = [declaration({ category: "camera", confirmation: "needs-human-confirmation" })];
+  report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "permission-flow.camera.confirmation" && item.severity === "block"));
+
+  manifest.permissionFlows[0].confirmation = "confirmed";
+  report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "permission-flow.camera.confirmation" && item.severity === "pass"));
+  assert.ok(report.results.some((item) => item.id === "permission-flow.camera.dismissible-screen" && item.severity === "pass"));
+  assert.ok(report.results.some((item) => item.id === "permission-flow.camera.denied-path-settings-link" && item.severity === "pass"));
+  assert.equal(report.results.some((item) => item.id.startsWith("permission-flow.") && item.severity === "block"), false);
+});
+
+test("F2: a confirmed admission that the screen IS dismissible blocks on its own, independent of any heuristic", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-permflow-f2-dismissible-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  // Manager/view split (see the F3 test below): sheet-gated CANNOT fire here because the request
+  // is a plain, directly-reachable function with no sheet/dialog anywhere in this file.
+  await writeCameraSwift(root, CAMERA_WITH_SETTINGS_LINK);
+  manifest.permissionFlows = [declaration({ category: "camera", confirmation: "confirmed", dismissibleScreenBeforePrompt: true })];
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "permission-flow.camera.dismissible-screen" && item.severity === "block"));
+  assert.equal(report.results.some((item) => item.id === "permission-flow.camera.sheet-gated"), false, "sheet-gated heuristic should not have fired for this direct-call fixture");
+});
+
+test("F2: a confirmed admission that the denied path offers NO Settings link blocks on its own", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-permflow-f2-settingslink-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  await writeCameraSwift(root, CAMERA_WITH_SETTINGS_LINK);
+  manifest.permissionFlows = [declaration({ category: "camera", confirmation: "confirmed", deniedPathOffersSettingsLink: false })];
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "permission-flow.camera.denied-path-settings-link" && item.severity === "block"));
+});
+
+test("the settings-link-heuristic is advisory only: it corroborates same-file correlation and never blocks either way", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-permflow-heuristic-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+
   await writeCameraSwift(root, CAMERA_NO_SETTINGS_LINK);
   let report = await preflight(root, manifest);
-  assert.ok(report.results.some((item) => item.id === "permission-flow.camera.settings-link" && item.severity === "block"));
+  let result = report.results.find((item) => item.id === "permission-flow.camera.settings-link-heuristic");
+  assert.ok(result);
+  assert.equal(result?.severity, "warn");
 
   await writeCameraSwift(root, CAMERA_WITH_SETTINGS_LINK);
   report = await preflight(root, manifest);
-  assert.ok(report.results.some((item) => item.id === "permission-flow.camera.settings-link" && item.severity === "pass"));
+  result = report.results.find((item) => item.id === "permission-flow.camera.settings-link-heuristic");
+  assert.ok(result);
+  assert.equal(result?.severity, "pass");
+  assert.equal(report.results.some((item) => item.id.startsWith("permission-flow.") && item.severity === "block" && item.id.includes("settings-link")), false);
 });
 
-test("a Settings link that exists only in a test file does not satisfy the static settings-link gate", async () => {
+test("a Settings link that exists only in a test file does not corroborate the heuristic", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-permflow-testfile-"));
   const manifest = readyManifest();
   await writeReadyAssets(root, manifest);
@@ -91,10 +151,11 @@ final class CameraFlowTests: XCTestCase {
 }
 `, "Tests/CameraFlowTests.swift");
   const report = await preflight(root, manifest);
-  assert.ok(report.results.some((item) => item.id === "permission-flow.camera.settings-link" && item.severity === "block"));
+  const result = report.results.find((item) => item.id === "permission-flow.camera.settings-link-heuristic");
+  assert.equal(result?.severity, "warn");
 });
 
-test("a commented-out Settings link does not satisfy the static settings-link gate", async () => {
+test("a commented-out Settings link does not corroborate the heuristic", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-permflow-commented-"));
   const manifest = readyManifest();
   await writeReadyAssets(root, manifest);
@@ -117,28 +178,130 @@ struct CameraFlow {
 `;
   await writeCameraSwift(root, commentedOut);
   const report = await preflight(root, manifest);
-  assert.ok(report.results.some((item) => item.id === "permission-flow.camera.settings-link" && item.severity === "block"));
+  const result = report.results.find((item) => item.id === "permission-flow.camera.settings-link-heuristic");
+  assert.equal(result?.severity, "warn");
 });
 
-test("the flow-declaration gate blocks by default and is not satisfiable by absence, an unconfirmed entry, or a default value", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-permflow-declaration-"));
+test("F1(a): one file handling two permissions does not let one category's real denied+Settings-link handling corroborate an unrelated category with no handling of its own", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-permflow-f1a-"));
   const manifest = readyManifest();
   await writeReadyAssets(root, manifest);
-  await writeCameraSwift(root, CAMERA_WITH_SETTINGS_LINK);
+  const coordinator = `import AVFoundation
+import UserNotifications
+import UIKit
 
-  // Absent entirely.
-  let report = await preflight(root, manifest);
-  assert.ok(report.results.some((item) => item.id === "permission-flow.camera.confirmation" && item.severity === "block"));
+struct PermissionCoordinator {
+  func beginCamera() {
+    switch AVCaptureDevice.authorizationStatus(for: .video) {
+    case .denied, .restricted:
+      guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+      UIApplication.shared.open(url)
+    default:
+      AVCaptureDevice.requestAccess(for: .video) { _ in }
+    }
+  }
 
-  // Present but explicitly needs-human-confirmation (init's own proposed shape).
-  manifest.permissionFlows = [{ category: "camera", dismissibleScreenBeforePrompt: false, confirmation: "needs-human-confirmation", evidence: ["Sources/CameraFlow.swift"] }];
-  report = await preflight(root, manifest);
-  assert.ok(report.results.some((item) => item.id === "permission-flow.camera.confirmation" && item.severity === "block"));
+  func beginNotifications() {
+    UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
+      _ = granted
+    }
+  }
+}
+`;
+  await writeCameraSwift(root, coordinator, "Sources/Coordinator.swift");
+  const report = await preflight(root, manifest);
+  const camera = report.results.find((item) => item.id === "permission-flow.camera.settings-link-heuristic");
+  const notifications = report.results.find((item) => item.id === "permission-flow.notifications.settings-link-heuristic");
+  assert.equal(camera?.severity, "pass", "camera has real, local denied+Settings-link handling");
+  assert.equal(notifications?.severity, "warn", "notifications has no denied handling of its own and must not borrow camera's");
+});
 
-  // Only an explicit "confirmed" clears it.
-  manifest.permissionFlows[0].confirmation = "confirmed";
-  report = await preflight(root, manifest);
-  assert.ok(report.results.some((item) => item.id === "permission-flow.camera.confirmation" && item.severity === "pass"));
+test("F1(b): an unrelated domain enum's .denied case and a generic Settings link elsewhere in the same file do not corroborate a real permission request with no denied handling", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-permflow-f1b-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  const settingsScreen = `import UserNotifications
+import UIKit
+
+enum SyncState {
+  case pending
+  case denied
+  case synced
+}
+
+struct SettingsScreen {
+  var syncState: SyncState = .pending
+
+  func requestNotifications() {
+    UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
+      _ = granted
+    }
+  }
+
+  func openGeneralSettings() {
+    guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+    UIApplication.shared.open(url)
+  }
+
+  func describeSyncState() -> String {
+    switch syncState {
+    case .pending: return "Pending"
+    case .denied: return "Sync turned off"
+    case .synced: return "Synced"
+    }
+  }
+}
+`;
+  await writeCameraSwift(root, settingsScreen, "Sources/SettingsScreen.swift");
+  const report = await preflight(root, manifest);
+  const notifications = report.results.find((item) => item.id === "permission-flow.notifications.settings-link-heuristic");
+  assert.equal(notifications?.severity, "warn");
+});
+
+test("F3: the ordinary SwiftUI manager/view split corroborates via a one-hop type-name join, not a same-file requirement", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-permflow-f3-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  // The manager owns the request and publishes status; it has NO local Settings-link handling.
+  await writeCameraSwift(root, `import UserNotifications
+
+enum NotificationAuthorization {
+  case notDetermined
+  case denied
+  case authorized
+}
+
+final class NotificationManager: ObservableObject {
+  @Published var authorizationStatus: NotificationAuthorization = .notDetermined
+
+  func requestAuthorization() {
+    UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
+      _ = granted
+    }
+  }
+}
+`, "Sources/NotificationManager.swift");
+  // A SEPARATE view references the manager's type and renders the denied-state Settings link.
+  await writeCameraSwift(root, `import SwiftUI
+import UIKit
+
+struct SettingsRow: View {
+  @EnvironmentObject private var notifications: NotificationManager
+
+  var body: some View {
+    if notifications.authorizationStatus == .denied {
+      Button("Open Settings") {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
+      }
+    }
+  }
+}
+`, "Sources/SettingsRow.swift");
+  const report = await preflight(root, manifest);
+  const result = report.results.find((item) => item.id === "permission-flow.notifications.settings-link-heuristic");
+  assert.equal(result?.severity, "pass");
+  assert.match(result?.message ?? "", /SettingsRow\.swift/);
 });
 
 test("the sheet-gated heuristic blocks a permission request only reachable from a dismissible sheet, and is cleared only by a confirmed no-dismiss-path declaration", async () => {
@@ -182,8 +345,9 @@ struct CaptureHome: View {
   let report = await preflight(root, manifest);
   assert.ok(report.results.some((item) => item.id === "permission-flow.camera.sheet-gated" && item.severity === "block"));
 
-  // A confirmed declaration that the screen IS dismissible must not clear it.
-  manifest.permissionFlows = [{ category: "camera", dismissibleScreenBeforePrompt: true, confirmation: "confirmed", evidence: ["Sources/CameraFlow.swift"] }];
+  // A confirmed declaration that the screen IS dismissible must not clear it (and, per F2, blocks
+  // on its own too).
+  manifest.permissionFlows = [declaration({ category: "camera", confirmation: "confirmed", dismissibleScreenBeforePrompt: true })];
   report = await preflight(root, manifest);
   assert.ok(report.results.some((item) => item.id === "permission-flow.camera.sheet-gated" && item.severity === "block"));
 
@@ -229,7 +393,7 @@ struct CaptureHome: View {
   assert.equal(report.results.some((item) => item.id === "permission-flow.camera.sheet-gated"), false);
 });
 
-test("init proposes permissionFlows as needs-human-confirmation and never self-confirms", async () => {
+test("init proposes permissionFlows as needs-human-confirmation with inert default booleans and never self-confirms", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-permflow-init-"));
   await writeFile(path.join(root, "project.yml"), `name: Example
 settings:
@@ -248,6 +412,8 @@ settings:
   const flow = manifest.permissionFlows.find((item) => item.category === "camera");
   assert.ok(flow, "expected a proposed camera permissionFlows entry");
   assert.equal(flow?.confirmation, "needs-human-confirmation");
+  assert.equal(flow?.dismissibleScreenBeforePrompt, false);
+  assert.equal(flow?.deniedPathOffersSettingsLink, false);
 });
 
 test("the generated privacy questionnaire draft and evidence matrix carry the real permissionFlows confirmation status, never laundering it into 'confirmed'", async () => {
@@ -255,7 +421,7 @@ test("the generated privacy questionnaire draft and evidence matrix carry the re
   const manifest = readyManifest();
   await writeReadyAssets(root, manifest);
   await writeCameraSwift(root, CAMERA_WITH_SETTINGS_LINK);
-  manifest.permissionFlows = [{ category: "camera", dismissibleScreenBeforePrompt: false, confirmation: "needs-human-confirmation", evidence: ["Sources/CameraFlow.swift"] }];
+  manifest.permissionFlows = [declaration({ category: "camera", confirmation: "needs-human-confirmation" })];
   const analysis = await analyzeRepository(root);
   const report = await preflight(root, manifest, false, analysis);
   manifest.screenshots.finalOutputDir = "release-permflow/screenshots/final";
@@ -264,6 +430,80 @@ test("the generated privacy questionnaire draft and evidence matrix carry the re
   assert.ok(draft.includes("camera"));
   assert.ok(draft.includes("confirmation: needs-human-confirmation"));
   assert.equal(draft.includes("confirmation: confirmed"), false);
-  const matrix = JSON.parse(await readFile(path.join(generated.directory, "privacy/evidence-matrix.json"), "utf8")) as { permissionFlows: Array<{ category: string; confirmation: string }> };
+  const matrix = JSON.parse(await readFile(path.join(generated.directory, "privacy/evidence-matrix.json"), "utf8")) as { permissionFlows: PermissionFlowDeclaration[] };
   assert.deepEqual(matrix.permissionFlows, manifest.permissionFlows);
+});
+
+test("a permission request that exists only in a Tests/ source file produces zero permission-flow checks", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-permflow-testonly-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  await writeCameraSwift(root, CAMERA_WITH_SETTINGS_LINK, "Tests/CameraFlowTests.swift");
+  const report = await preflight(root, manifest);
+  assert.equal(report.results.some((item) => item.id.startsWith("permission-flow.")), false);
+});
+
+test("an Info.plist usage-description key with no matching runtime request produces zero permission-flow checks", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-permflow-plistonly-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  await writeFile(path.join(root, "Info.plist"), "<key>NSCameraUsageDescription</key><string>Capture proof</string>");
+  const report = await preflight(root, manifest);
+  assert.equal(report.results.some((item) => item.id.startsWith("permission-flow.")), false);
+});
+
+test("a request inside Task {} or behind if #available does not trigger the sheet-gated heuristic", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-permflow-task-available-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  const availableAndTask = `import SwiftUI
+import AVFoundation
+struct CaptureHome: View {
+  var body: some View {
+    Button("Take a photo") {
+      Task {
+        if #available(iOS 17, *) {
+          beginCamera()
+        } else {
+          beginCamera()
+        }
+      }
+    }
+  }
+
+  private func beginCamera() {
+    AVCaptureDevice.requestAccess(for: .video) { _ in }
+  }
+}
+`;
+  await writeCameraSwift(root, availableAndTask);
+  const report = await preflight(root, manifest);
+  assert.equal(report.results.some((item) => item.id === "permission-flow.camera.sheet-gated"), false);
+});
+
+test("a helper function called by a button, two indirection layers deep, does not trigger the sheet-gated heuristic", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-permflow-indirect-button-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  const indirect = `import SwiftUI
+import AVFoundation
+struct CaptureHome: View {
+  var body: some View {
+    Button("Take a photo") {
+      handleTap()
+    }
+  }
+
+  private func handleTap() {
+    beginCamera()
+  }
+
+  private func beginCamera() {
+    AVCaptureDevice.requestAccess(for: .video) { _ in }
+  }
+}
+`;
+  await writeCameraSwift(root, indirect);
+  const report = await preflight(root, manifest);
+  assert.equal(report.results.some((item) => item.id === "permission-flow.camera.sheet-gated"), false);
 });
