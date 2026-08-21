@@ -1034,11 +1034,21 @@ async function purchasePresentationChecks(repository: string, manifest: ShipLaye
     if (!testBodies) add("purchase.presentation-test-container", "block", "Purchase test evidence is not contained in a credible XCTest or Swift Testing test method.", "Reference compiling test source with import XCTest, an XCTestCase test method, or import Testing and an @Test function.");
     const assertions = assertionEvidence(testBodies);
     const positiveAssertions = assertions.filter(isPositiveVisibilityAssertion);
-    const visiblePriceTested = positiveAssertions.some((value) => /(?:displayPrice|paywall\.price|localized.{0,30}price|price.{0,30}(?:visible|exist|label))/is.test(value));
+    const priceNamedPattern = /(?:displayPrice|paywall\.price|localized.{0,30}price|price.{0,30}(?:visible|exist|label))/is;
+    const visiblePriceTested = positiveAssertions.some((value) => priceNamedPattern.test(value));
     const unavailableTested = assertions.some(isPurchaseUnavailableAssertion);
+    // Scoped narrowly on purpose: only an assertion that is BOTH about the price (same
+    // content filter as visiblePriceTested above) AND equality-shaped (XCTAssertEqual/#expect
+    // ==, the only shapes that can assert "equals this literal" at all) can taint the result —
+    // an unrelated existence assertion elsewhere in the same evidence file (routine when
+    // testEvidence references a whole *UITests.swift file) can never trigger this.
     const hardcodedPriceLiterals = hardcodedPriceLiteralsInSource(sourceCode);
     let hardcodedPriceLiteral: string | undefined;
-    for (const value of assertions) { const found = hardcodedPriceLiteralInAssertion(value, hardcodedPriceLiterals); if (found) { hardcodedPriceLiteral = found; break; } }
+    for (const value of assertions) {
+      if (!priceNamedPattern.test(value) || !isEqualityShapedAssertion(value)) continue;
+      const found = hardcodedPriceLiteralInAssertion(value, hardcodedPriceLiterals);
+      if (found) { hardcodedPriceLiteral = found; break; }
+    }
     if (!visiblePriceTested) add("purchase.presentation-tests", "block", "Test evidence does not assert that the localized price is visible before purchase.", "Add a focused UI/snapshot assertion for visible localized pricing.");
     else if (hardcodedPriceLiteral) add("purchase.presentation-tests", "block", `Test evidence compares the price to "${hardcodedPriceLiteral}", a literal also hard-coded in production source, instead of proving the displayed value originates from StoreKit's Product.displayPrice.`, "Assert only that the price element exists/is visible (e.g. `.exists`, `.waitForExistence`), not equality with a specific fixed string; if the value must be launched with a test flag, drive it from real StoreKit Testing configuration rather than an in-app constant.");
     if (!unavailableTested) add("purchase.unavailable-tests", "block", "Test evidence does not assert that purchase is disabled/unavailable before Product pricing loads.", "Add a focused assertion that the purchase action is disabled or absent in the loading/unavailable state.");
@@ -1652,8 +1662,11 @@ function visibleUICallArguments(source: string, names: Set<string>): string[] {
     const firstClosure = closureImmediatelyAfter(source, closing + 1);
     if (firstClosure) {
       const explicitLabel = labeledClosureImmediatelyAfter(source, firstClosure.end + 1, "label");
-      if (explicitLabel) visibleParts.push(explicitLabel.body);
-      else if (/\b(?:action|destination)\s*:/.test(rawArguments)) visibleParts.push(firstClosure.body);
+      // Only genuine Text(...)/Label(...) content inside the closure counts as visible — not the
+      // closure's raw source text, which can contain arbitrary non-rendered statements (e.g. a
+      // sibling log(...)/track(...) call) that must never be mistaken for on-screen copy.
+      if (explicitLabel) visibleParts.push(...visibleUICallArguments(explicitLabel.body, new Set(["Text", "Label"])));
+      else if (/\b(?:action|destination)\s*:/.test(rawArguments)) visibleParts.push(...visibleUICallArguments(firstClosure.body, new Set(["Text", "Label"])));
     }
     if (visibleParts.length) argumentsList.push(visibleParts.join("\n"));
   }
@@ -1689,8 +1702,10 @@ function visibleUICallArguments(source: string, names: Set<string>): string[] {
       const firstClosure = closureImmediatelyAfter(source, closing + 1);
       if (firstClosure) {
         const explicitLabel = labeledClosureImmediatelyAfter(source, firstClosure.end + 1, "label");
-        if (explicitLabel) visibleParts.push(explicitLabel.body);
-        else if (/\b(?:action|destination)\s*:/.test(rawArguments)) visibleParts.push(firstClosure.body);
+        // Same restriction as the literal-name loop above: only genuine Text(...)/Label(...)
+        // content inside the closure counts, never the closure's raw source text.
+        if (explicitLabel) visibleParts.push(...visibleUICallArguments(explicitLabel.body, new Set(["Text", "Label"])));
+        else if (/\b(?:action|destination)\s*:/.test(rawArguments)) visibleParts.push(...visibleUICallArguments(firstClosure.body, new Set(["Text", "Label"])));
       }
       if (visibleParts.length) argumentsList.push(visibleParts.join("\n"));
     }
@@ -1883,6 +1898,22 @@ function hardcodedPriceLiteralInAssertion(evidence: string, literals: Set<string
   }
   return undefined;
 }
+// XCTAssertEqual(a, b) or #expect(a == b) — the only shapes that can actually assert "this
+// value equals that specific literal", as opposed to an existence/visibility check
+// (.exists/.waitForExistence) that says nothing about a literal string at all. Restricting the
+// hard-coded-fixture scan to this shape (plus the price-named content filter at the call site)
+// keeps an unrelated existence assertion elsewhere in the same evidence file from ever being
+// examined for a coincidental literal match.
+function isEqualityShapedAssertion(evidence: string): boolean {
+  if (/^\s*XCTAssertEqual\s*\(/.test(evidence)) return callArguments(evidence).length >= 2;
+  if (/^\s*#expect\s*\(/.test(evidence)) {
+    const argumentsList = callArguments(evidence);
+    if (!argumentsList.length) return false;
+    const comparison = splitDirectBooleanComparison(stripOuterParentheses(argumentsList[0]));
+    return Boolean(comparison) && comparison![1] === "==";
+  }
+  return false;
+}
 function hasVisibleLocalizedPrice(source: string): boolean {
   const visibleArguments = visibleUICallArguments(source, new Set(["Text", "Button", "Label"]));
   if (visibleArguments.some((value) => /\.displayPrice\b/.test(value))) return true;
@@ -1890,10 +1921,16 @@ function hasVisibleLocalizedPrice(source: string): boolean {
   for (const match of source.matchAll(/\b(?:let|var)\s+([A-Za-z_]\w*)\s*=\s*[^\n;]*\.displayPrice\b/g)) tracedNames.add(match[1]);
   // A switch/if/guard `case` pattern can destructure an associated value straight into a local
   // named `displayPrice` (e.g. `case .available(_, let displayPrice):`) instead of an
-  // assignment; the bound name is the same StoreKit API surface the assignment form above
-  // already requires on its right-hand side, so this is an equally strong, equally narrow trace
-  // — not a generic "any pattern-bound price name" allowance.
-  for (const match of source.matchAll(/\bcase\b[^{;]{0,200}?\blet\s+(displayPrice)\b/g)) tracedNames.add(match[1]);
+  // assignment. The bound NAME alone proves nothing — an enum can just as easily carry a
+  // hard-coded fixture under a `displayPrice` label (e.g. `.ready(displayPrice: "$0.99")`) with
+  // no StoreKit involved at all. Only trust the binding when this SAME evidence also contains a
+  // genuine `.displayPrice` member read somewhere (a literal dot before the identifier, i.e. an
+  // actual property access such as `product.displayPrice`, not just the bare bound name) — the
+  // same real API surface the assignment form above already requires on its right-hand side.
+  const hasRealDisplayPriceMemberRead = /\.displayPrice\b/.test(source);
+  if (hasRealDisplayPriceMemberRead) {
+    for (const match of source.matchAll(/\bcase\b[^{;]{0,200}?\blet\s+(displayPrice)\b/g)) tracedNames.add(match[1]);
+  }
   for (const name of tracedNames) {
     const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     if (visibleArguments.some((value) => new RegExp(`\\\\\\(${escapedName}\\b`).test(value))) return true;

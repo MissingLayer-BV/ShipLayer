@@ -185,6 +185,26 @@ PolicyLink(title: "Privacy Policy", destination: privacyURL)
   assert.ok(report.results.some((item) => item.id === "ai-sharing.consent-evidence" && item.severity === "pass"));
 });
 
+test("a design-system wrapper's action/destination trailing closure cannot leak non-rendered text as a visible action, decline, or privacy link", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-ai-wrapped-hidden-copy-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  addCompleteAISharing(manifest);
+  await writeAISharingEvidence(root);
+  // The trailing closure after action:/destination: is real source text, but only a genuine
+  // Text(...)/Label(...) call inside it is actually rendered copy -- a sibling non-UI statement
+  // (log/track/etc.) sitting in the same closure must not count as visible.
+  await writeFile(path.join(root, "Sources/AIConsent.swift"), `Text("Cloudflare OpenRouter Alibaba Cloud International ${DATA_SENT} ${PURPOSE}")
+FancyButton(action: send) { log("Allow and send to AI") }
+FancyButton(action: manual) { log("Keep on device and enter manually") }
+PolicyLink(destination: privacyURL) { Text("Learn more"); track("Privacy Policy") }
+`);
+  const report = await preflight(root, manifest);
+  for (const id of ["ai-sharing.consent-action", "ai-sharing.consent-decline", "ai-sharing.consent-privacy-link"]) {
+    assert.ok(report.results.some((item) => item.id === id && item.severity === "block"), id);
+  }
+});
+
 test("AI consent ignores strings hidden in action and destination closures", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-ai-hidden-control-copy-"));
   const manifest = readyManifest();
@@ -536,10 +556,14 @@ test("purchase evidence accepts a localized displayPrice value that reaches visi
   assert.equal(report.results.some((item) => item.id === "purchase.localized-price-source" && item.severity === "block"), false);
 });
 
-test("purchase evidence accepts a case-pattern-bound displayPrice that reaches visible UI", async () => {
+test("purchase evidence accepts a case-pattern-bound displayPrice that reaches visible UI, corroborated by a real .displayPrice read", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-price-pattern-binding-"));
   const manifest = readyManifest("non-consumables");
   await writeReadyAssets(root, manifest);
+  // Mirrors BackYet's actual shape: the enum case is constructed elsewhere with a genuine
+  // `product.displayPrice` member read (LifetimePaywallManager.swift), and the view only ever
+  // sees the already-destructured local name (PaywallSheet.swift). Both are declared as source
+  // evidence, matching how a real app would have to reference them.
   await writeFile(path.join(root, "Sources/Paywall.swift"), `enum ProductState { case loading; case available(displayName: String, displayPrice: String); case unavailable }
 let state: ProductState
 switch state {
@@ -552,8 +576,35 @@ case .unavailable:
   Text("Price unavailable")
 }
 `);
+  await writeFile(path.join(root, "Sources/PaywallManager.swift"), `func load(product: Product) -> ProductState {
+  .available(displayName: product.displayName, displayPrice: product.displayPrice)
+}
+`);
+  if (manifest.monetization.type !== "non-consumables") throw new Error("fixture");
+  manifest.monetization.purchasePresentation.sourceEvidence = ["Sources/Paywall.swift", "Sources/PaywallManager.swift"];
   const report = await preflight(root, manifest);
   assert.equal(report.results.some((item) => item.id === "purchase.localized-price-source" && item.severity === "block"), false);
+});
+
+test("a case-pattern-bound displayPrice with no real .displayPrice member read anywhere in evidence still blocks", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-price-pattern-binding-unproven-"));
+  const manifest = readyManifest("non-consumables");
+  await writeReadyAssets(root, manifest);
+  // The associated-value LABEL is named displayPrice, but it is never actually read from
+  // StoreKit anywhere in the declared evidence -- an enum can carry a hard-coded fixture under
+  // that label just as easily as a real price. The bound name alone must not be enough.
+  await writeFile(path.join(root, "Sources/Paywall.swift"), `enum PriceCache { case ready(id: String, displayPrice: String); case empty }
+let state: PriceCache = .ready(id: "lifetime", displayPrice: "$0.99")
+switch state {
+case .ready(_, let displayPrice):
+  Text("One-time purchase · \\(displayPrice)")
+  Button("Unlock for \\(displayPrice)") { Task { try await product.purchase() } }
+case .empty:
+  Text("Price unavailable")
+}
+`);
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "purchase.localized-price-source" && item.severity === "block"));
 });
 
 test("purchase evidence accepts a design-system Button wrapper rendering displayPrice", async () => {
@@ -606,6 +657,39 @@ final class PaywallUITests: XCTestCase {
   const report = await preflight(root, manifest);
   assert.ok(report.results.some((item) => item.id === "purchase.presentation-tests" && item.severity === "block" && item.message.includes("$9.99")));
   assert.equal(report.results.some((item) => item.id === "purchase.presentation-tests" && item.severity === "pass"), false);
+});
+
+test("an unrelated equality assertion elsewhere in the same test evidence does not block a correct paywall", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-price-unrelated-assertion-"));
+  const manifest = readyManifest("non-consumables");
+  await writeReadyAssets(root, manifest);
+  // The real price genuinely comes from StoreKit; a completely separate marketing element (a
+  // strikethrough "was" price) happens to be a hard-coded literal that also appears in source.
+  // testEvidence routinely references a whole *UITests.swift file (BackYet's own manifest does
+  // exactly this), so an unrelated equality assertion in the same file is the normal case, not
+  // an edge case, and must not veto an honest, separate price-visibility assertion.
+  await writeFile(path.join(root, "Sources/Paywall.swift"), `let product: Product?
+if let product {
+  Text(product.displayPrice).accessibilityIdentifier("paywall.price")
+  Text("$19.99").strikethrough().accessibilityIdentifier("paywall.discountBadge")
+  Button("Buy") { Task { try await product.purchase() } }.accessibilityIdentifier("paywall.purchase")
+} else {
+  ProgressView("Loading price")
+  Button("Price unavailable") {}.disabled(true).accessibilityIdentifier("paywall.purchase")
+}
+`);
+  await writeFile(path.join(root, "Tests/PaywallUITests.swift"), `import XCTest
+final class PaywallUITests: XCTestCase {
+  func testPriceIsVisible() {
+    XCTAssertTrue(app.staticTexts["paywall.price"].waitForExistence(timeout: 5))
+  }
+  func testDiscountBadgeShowsOriginalPrice() {
+    XCTAssertEqual(app.staticTexts["paywall.discountBadge"].label, "$19.99")
+  }
+}
+`);
+  const report = await preflight(root, manifest);
+  assert.equal(report.results.some((item) => item.id === "purchase.presentation-tests" && item.severity === "block"), false);
 });
 
 test("subscription evidence must render and test period, offer terms, Terms, and Privacy", async () => {
