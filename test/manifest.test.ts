@@ -71,3 +71,26 @@ test("Apple locale, territory, version, privacy vocabulary, and subscription gro
   valid.monetization.group.localizations["en-US"].displayName = "Example Pro"; valid.app.version = "banana"; assert.throws(() => validateManifest(valid), /Invalid shiplayer/);
   valid.app.version = "1.0"; valid.dataProcessing = [{ category: "Not Apple Data", purpose: ["App Functionality"], linkedToIdentity: false, usedForTracking: false, confirmation: "confirmed" }]; assert.throws(() => validateManifest(valid), /Invalid shiplayer/);
 });
+
+test("a truthful AI consent affirmativeAction and an honestly-false subscription disclosure both load; the corresponding gate, not manifest validation, is where they are judged", () => {
+  // BackYet's real consent button says "Allow & scan" -- no send/share/upload/transmit wording.
+  // Whether that is acceptable is purchase/ai-sharing gate territory (src/preflight.ts), not a
+  // reason the manifest itself should refuse to load; the app must be able to declare the truth.
+  const withAi = readyManifest("free");
+  withAi.aiDataSharing = {
+    enabled: true,
+    dataSent: ["Receipt photo"],
+    purpose: "Extract totals",
+    processorNames: ["Example AI"],
+    consent: { shownBeforeTransmission: true, affirmativeAction: "Allow & scan", declinePath: "Enter manually", privacyPolicyLinkVisible: true, evidence: ["Sources/AIConsent.swift"], confirmation: "confirmed" },
+    privacyPolicy: { identifiesDataAndCollectionMethod: true, identifiesAllUses: true, namesAllProcessors: true, explainsRetentionAndDeletion: true, confirmsEqualProtection: true, evidence: ["Legal/privacy.md"], confirmation: "confirmed" }
+  };
+  validateManifest(withAi);
+
+  const subscription = readyManifest("subscriptions");
+  if (subscription.monetization.type !== "subscriptions") throw new Error("fixture");
+  subscription.monetization.purchasePresentation.subscriptionPeriodVisibleBeforePurchase = false;
+  subscription.monetization.purchasePresentation.termsAndPrivacyLinksVisibleBeforePurchase = false;
+  subscription.monetization.purchasePresentation.offerTermsVisibleBeforePurchase = false;
+  validateManifest(subscription);
+});

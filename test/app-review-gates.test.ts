@@ -164,6 +164,27 @@ NavigationLink { PrivacyView() } label: { Text("Privacy Policy") }
   assert.ok(report.results.some((item) => item.id === "ai-sharing.consent-evidence" && item.severity === "pass"));
 });
 
+test("AI consent accepts design-system Button/Link wrappers rendering the declared action, decline, and privacy link", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-ai-wrapped-controls-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  addCompleteAISharing(manifest);
+  await writeAISharingEvidence(root);
+  // Real SwiftUI apps normally wrap their buttons in a design-system component instead of using
+  // the literal SwiftUI Button/Link initializers directly; this is the normal case, not an edge
+  // case (see BackYet's PrimaryActionButton).
+  await writeFile(path.join(root, "Sources/AIConsent.swift"), `Text("Cloudflare OpenRouter Alibaba Cloud International ${DATA_SENT} ${PURPOSE}")
+PrimaryActionButton(title: "Allow and send to AI", action: { send() })
+SecondaryActionButton(title: "Keep on device and enter manually", action: { manual() })
+PolicyLink(title: "Privacy Policy", destination: privacyURL)
+`);
+  const report = await preflight(root, manifest);
+  for (const id of ["ai-sharing.consent-action", "ai-sharing.consent-decline", "ai-sharing.consent-privacy-link"]) {
+    assert.equal(report.results.some((item) => item.id === id && item.severity === "block"), false, id);
+  }
+  assert.ok(report.results.some((item) => item.id === "ai-sharing.consent-evidence" && item.severity === "pass"));
+});
+
 test("AI consent ignores strings hidden in action and destination closures", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-ai-hidden-control-copy-"));
   const manifest = readyManifest();
@@ -513,6 +534,78 @@ test("purchase evidence accepts a localized displayPrice value that reaches visi
   await writeFile(path.join(root, "Sources/Paywall.swift"), `let product: Product?\nif let product {\n  let localizedPrice = product.displayPrice\n  Text("Unlock for \\(localizedPrice)")\n  Button("Buy") { Task { try await product.purchase() } }\n} else {\n  ProgressView("Loading price")\n}\n`);
   const report = await preflight(root, manifest);
   assert.equal(report.results.some((item) => item.id === "purchase.localized-price-source" && item.severity === "block"), false);
+});
+
+test("purchase evidence accepts a case-pattern-bound displayPrice that reaches visible UI", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-price-pattern-binding-"));
+  const manifest = readyManifest("non-consumables");
+  await writeReadyAssets(root, manifest);
+  await writeFile(path.join(root, "Sources/Paywall.swift"), `enum ProductState { case loading; case available(displayName: String, displayPrice: String); case unavailable }
+let state: ProductState
+switch state {
+case .loading:
+  ProgressView("Loading price")
+case .available(_, let displayPrice):
+  Text("One-time purchase · \\(displayPrice)")
+  Button("Unlock for \\(displayPrice)") { Task { try await product.purchase() } }
+case .unavailable:
+  Text("Price unavailable")
+}
+`);
+  const report = await preflight(root, manifest);
+  assert.equal(report.results.some((item) => item.id === "purchase.localized-price-source" && item.severity === "block"), false);
+});
+
+test("purchase evidence accepts a design-system Button wrapper rendering displayPrice", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-price-wrapped-button-"));
+  const manifest = readyManifest("non-consumables");
+  await writeReadyAssets(root, manifest);
+  await writeFile(path.join(root, "Sources/Paywall.swift"), `let product: Product?
+if let product {
+  PrimaryActionButton(
+    title: "Unlock for \\(product.displayPrice)",
+    isEnabled: true,
+    action: { Task { try await product.purchase() } }
+  )
+} else {
+  ProgressView("Loading price")
+}
+`);
+  const report = await preflight(root, manifest);
+  assert.equal(report.results.some((item) => item.id === "purchase.localized-price-source" && item.severity === "block"), false);
+  assert.equal(report.results.some((item) => item.id === "purchase.call-source" && item.severity === "block"), false);
+});
+
+test("purchase presentation tests block when the only price assertion equals a hard-coded in-app fixture", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-price-fixture-test-"));
+  const manifest = readyManifest("non-consumables");
+  await writeReadyAssets(root, manifest);
+  // Production source genuinely renders StoreKit's displayPrice, but also carries a
+  // test-flag-gated hard-coded literal fixture value — mirroring BackYet's
+  // LifetimePaywallManager, which substitutes a raw "$9.99" string for
+  // --ui-testing-purchase- launch arguments instead of ever calling StoreKit.
+  await writeFile(path.join(root, "Sources/Paywall.swift"), `let product: Product?
+let displayPrice = testArguments.contains(where: { $0.hasPrefix("--ui-testing-purchase-") }) ? "$9.99" : product?.displayPrice
+if let product {
+  Text("One-time purchase · \\(product.displayPrice)").accessibilityIdentifier("paywall.price")
+  Button("Buy") { Task { try await product.purchase() } }.accessibilityIdentifier("paywall.purchase")
+} else {
+  ProgressView("Loading price")
+  Button("Price unavailable") {}.disabled(true).accessibilityIdentifier("paywall.purchase")
+}
+`);
+  await writeFile(path.join(root, "Tests/PaywallUITests.swift"), `import XCTest
+final class PaywallUITests: XCTestCase {
+  func testPaywallEvidence() {
+    let price = app.staticTexts["paywall.price"]
+    XCTAssertTrue(price.exists)
+    XCTAssertEqual(price.label, "One-time purchase · $9.99")
+  }
+}
+`);
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "purchase.presentation-tests" && item.severity === "block" && item.message.includes("$9.99")));
+  assert.equal(report.results.some((item) => item.id === "purchase.presentation-tests" && item.severity === "pass"), false);
 });
 
 test("subscription evidence must render and test period, offer terms, Terms, and Privacy", async () => {
