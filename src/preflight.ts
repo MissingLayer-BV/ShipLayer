@@ -833,10 +833,16 @@ async function aiDataSharingChecks(repository: string, manifest: ShipLayerManife
   else if (referenced.some((processor) => processor?.confirmation !== "confirmed" || processor.protectionConfirmation !== "confirmed")) add("ai-sharing.processors", "block", "AI sharing references a processor whose handling or equal-protection review is unconfirmed.", "Confirm each recipient only after reviewing its role, data policy, and protection obligations.");
   else add("ai-sharing.processors", "pass", `AI sharing names ${sharing.processorNames.join(", ")}.`);
 
+  // A truthful affirmativeAction declaration (whatever the app's real button says) must always
+  // be loadable; this check is where Apple's transmission-language expectation is judged, not
+  // manifest validation (see src/manifest.ts) — a manifest that could not hold the real label
+  // would leave the app unable to reach `check` at all.
+  const affirmativeActionSaysTransmission = /(?:send|share|upload|transmit)/i.test(sharing.consent.affirmativeAction);
+  if (!affirmativeActionSaysTransmission) add("ai-sharing.consent-action-language", "block", `The declared affirmative action "${sharing.consent.affirmativeAction}" does not clearly say data will be sent, shared, uploaded, or transmitted.`, `Apple expects the pre-transmission action to explicitly state that data leaves the device (e.g. "Allow & Send to AI", "Scan & Upload"). Rename the action, then re-confirm it still matches what the production consent screen renders.`);
   const consentReady = sharing.consent.shownBeforeTransmission
     && sharing.consent.privacyPolicyLinkVisible
     && sharing.consent.confirmation === "confirmed"
-    && /(?:send|share|upload|transmit)/i.test(sharing.consent.affirmativeAction)
+    && affirmativeActionSaysTransmission
     && Boolean(sharing.consent.declinePath);
   if (!consentReady) add("ai-sharing.consent", "block", "The in-context AI disclosure/permission is incomplete or uses a generic affirmative action.", "Before transmission, state what is sent, name who receives it and why, provide a visible privacy link and non-AI decline path, and use an explicit action such as 'Allow and send to AI'.");
   else add("ai-sharing.consent", "pass", "AI sharing has a human-confirmed, explicit pre-transmission consent flow and decline path.");
@@ -963,8 +969,12 @@ async function purchasePresentationChecks(repository: string, manifest: ShipLaye
   else add("purchase.presentation", "pass", "Purchase presentation declares visible StoreKit-localized pricing before purchase.");
 
   if (money.type === "subscriptions") {
-    if (presentation.subscriptionPeriodVisibleBeforePurchase !== true || presentation.termsAndPrivacyLinksVisibleBeforePurchase !== true) add("purchase.subscription-disclosures", "block", "Subscription billing period or Terms/Privacy links are not confirmed visible before purchase.");
-    if (money.products.some((product) => product.introductoryOffer) && presentation.offerTermsVisibleBeforePurchase !== true) add("purchase.offer-disclosures", "block", "Introductory-offer terms are not confirmed visible before purchase.");
+    // These booleans are a truthful, human-declared statement about the real paywall, not
+    // something manifest validation may force to true (see src/manifest.ts) — a subscription
+    // that genuinely does not show this before purchase must still be declarable so this gate
+    // can block it with an actionable message instead of the manifest refusing to load.
+    if (presentation.subscriptionPeriodVisibleBeforePurchase !== true || presentation.termsAndPrivacyLinksVisibleBeforePurchase !== true) add("purchase.subscription-disclosures", "block", "Subscription billing period or Terms/Privacy links are not confirmed visible before purchase.", "Show the billing period and both Terms of Use and Privacy Policy links on the paywall before purchase, then declare subscriptionPeriodVisibleBeforePurchase and termsAndPrivacyLinksVisibleBeforePurchase as true only once that is actually true.");
+    if (money.products.some((product) => product.introductoryOffer) && presentation.offerTermsVisibleBeforePurchase !== true) add("purchase.offer-disclosures", "block", "Introductory-offer terms are not confirmed visible before purchase.", "Show the trial/introductory-offer terms on the paywall before purchase, then declare offerTermsVisibleBeforePurchase as true only once that is actually true.");
   }
 
   const source = await evidenceText(repository, presentation.sourceEvidence);
@@ -973,9 +983,12 @@ async function purchasePresentationChecks(repository: string, manifest: ShipLaye
   const testRoleValid = presentation.testEvidence.every(isTestSourceEvidencePath);
   if (!sourceRoleValid) add("purchase.presentation-source-role", "block", "Purchase source evidence must reference production app source, not tests, fixtures, scripts, generated declarations, or documentation.", "Reference the contained production Swift/Objective-C paywall source.");
   if (!testRoleValid) add("purchase.presentation-test-role", "block", "Purchase test evidence must reference conventional test source paths.", "Reference contained UI/unit/snapshot test source under a Tests or UITests target/path.");
+  // Shared with the test-evidence branch below, so a hard-coded price literal found in
+  // production source can be cross-referenced against what the tests actually assert.
+  let sourceCode = "";
   if (!source.complete) add("purchase.presentation-source", "block", "Purchase presentation source evidence is missing, symlinked, unreadable, or oversized.", "Reference production StoreKit/paywall source files.");
   else {
-    const sourceCode = stripNonReleaseConditionalCompilation(stripCodeComments(source.text));
+    sourceCode = stripNonReleaseConditionalCompilation(stripCodeComments(source.text));
     const customProductViewStyle = hasUnverifiedCustomProductViewStyle(sourceCode);
     const customSubscriptionControlStyle = hasUnverifiedCustomSubscriptionStoreControlStyle(sourceCode);
     const renderedProductView = hasRenderedSwiftUICall(sourceCode, "ProductView");
@@ -1021,9 +1034,23 @@ async function purchasePresentationChecks(repository: string, manifest: ShipLaye
     if (!testBodies) add("purchase.presentation-test-container", "block", "Purchase test evidence is not contained in a credible XCTest or Swift Testing test method.", "Reference compiling test source with import XCTest, an XCTestCase test method, or import Testing and an @Test function.");
     const assertions = assertionEvidence(testBodies);
     const positiveAssertions = assertions.filter(isPositiveVisibilityAssertion);
-    const visiblePriceTested = positiveAssertions.some((value) => /(?:displayPrice|paywall\.price|localized.{0,30}price|price.{0,30}(?:visible|exist|label))/is.test(value));
+    const priceNamedPattern = /(?:displayPrice|paywall\.price|localized.{0,30}price|price.{0,30}(?:visible|exist|label))/is;
+    const visiblePriceTested = positiveAssertions.some((value) => priceNamedPattern.test(value));
     const unavailableTested = assertions.some(isPurchaseUnavailableAssertion);
+    // Scoped narrowly on purpose: only an assertion that is BOTH about the price (same
+    // content filter as visiblePriceTested above) AND equality-shaped (XCTAssertEqual/#expect
+    // ==, the only shapes that can assert "equals this literal" at all) can taint the result —
+    // an unrelated existence assertion elsewhere in the same evidence file (routine when
+    // testEvidence references a whole *UITests.swift file) can never trigger this.
+    const hardcodedPriceLiterals = hardcodedPriceLiteralsInSource(sourceCode);
+    let hardcodedPriceLiteral: string | undefined;
+    for (const value of assertions) {
+      if (!priceNamedPattern.test(value) || !isEqualityShapedAssertion(value)) continue;
+      const found = hardcodedPriceLiteralInAssertion(value, hardcodedPriceLiterals);
+      if (found) { hardcodedPriceLiteral = found; break; }
+    }
     if (!visiblePriceTested) add("purchase.presentation-tests", "block", "Test evidence does not assert that the localized price is visible before purchase.", "Add a focused UI/snapshot assertion for visible localized pricing.");
+    else if (hardcodedPriceLiteral) add("purchase.presentation-tests", "block", `Test evidence compares the price to "${hardcodedPriceLiteral}", a literal also hard-coded in production source, instead of proving the displayed value originates from StoreKit's Product.displayPrice.`, "Assert only that the price element exists/is visible (e.g. `.exists`, `.waitForExistence`), not equality with a specific fixed string; if the value must be launched with a test flag, drive it from real StoreKit Testing configuration rather than an in-app constant.");
     if (!unavailableTested) add("purchase.unavailable-tests", "block", "Test evidence does not assert that purchase is disabled/unavailable before Product pricing loads.", "Add a focused assertion that the purchase action is disabled or absent in the loading/unavailable state.");
     let subscriptionTestsReady = true;
     if (money.type === "subscriptions") {
@@ -1035,7 +1062,7 @@ async function purchasePresentationChecks(repository: string, manifest: ShipLaye
       if (!legalLinksTested) add("purchase.legal-links-tests", "block", "Test evidence does not assert that both Terms and Privacy links are visible.", "Assert both legal links exist on the paywall.");
       subscriptionTestsReady = periodTested && offerTested && legalLinksTested;
     }
-    if (testRoleValid && Boolean(testBodies) && visiblePriceTested && unavailableTested && subscriptionTestsReady) add("purchase.presentation-tests", "pass", "Test evidence covers visible localized pricing, unavailable state, and applicable subscription disclosures.");
+    if (testRoleValid && Boolean(testBodies) && visiblePriceTested && !hardcodedPriceLiteral && unavailableTested && subscriptionTestsReady) add("purchase.presentation-tests", "pass", "Test evidence covers visible localized pricing, unavailable state, and applicable subscription disclosures.");
   }
 }
 
@@ -1635,8 +1662,11 @@ function visibleUICallArguments(source: string, names: Set<string>): string[] {
     const firstClosure = closureImmediatelyAfter(source, closing + 1);
     if (firstClosure) {
       const explicitLabel = labeledClosureImmediatelyAfter(source, firstClosure.end + 1, "label");
-      if (explicitLabel) visibleParts.push(explicitLabel.body);
-      else if (/\b(?:action|destination)\s*:/.test(rawArguments)) visibleParts.push(firstClosure.body);
+      // Only genuine Text(...)/Label(...) content inside the closure counts as visible — not the
+      // closure's raw source text, which can contain arbitrary non-rendered statements (e.g. a
+      // sibling log(...)/track(...) call) that must never be mistaken for on-screen copy.
+      if (explicitLabel) visibleParts.push(...visibleUICallArguments(explicitLabel.body, new Set(["Text", "Label"])));
+      else if (/\b(?:action|destination)\s*:/.test(rawArguments)) visibleParts.push(...visibleUICallArguments(firstClosure.body, new Set(["Text", "Label"])));
     }
     if (visibleParts.length) argumentsList.push(visibleParts.join("\n"));
   }
@@ -1647,6 +1677,38 @@ function visibleUICallArguments(source: string, names: Set<string>): string[] {
     if (closing < 0) continue;
     const label = labeledClosureImmediatelyAfter(source, closing + 1, "label");
     if (label) argumentsList.push(label.body);
+  }
+  // Design-system wrappers around Button/Link (e.g. PrimaryActionButton, CheckoutLink) are the
+  // normal way real SwiftUI apps render controls, not an edge case; a wrapper that follows Swift
+  // naming convention by ending in the control it wraps is inspected the same way the literal
+  // name above is (unlabeled first argument, a `title:`/`label:` string argument, or an
+  // `action:`/`destination:` closure) — this widens WHICH calls are looked inside, not what
+  // counts as evidence once found, so a wrapped value must still trace to the real content.
+  const wrapperRoles = [...names].filter((name) => name === "Button" || name === "Link" || name === "NavigationLink");
+  if (wrapperRoles.length) {
+    const suffixPattern = new RegExp(`\\b([A-Z]\\w*(?:${wrapperRoles.join("|")}))\\s*\\(`, "g");
+    for (const match of source.matchAll(suffixPattern)) {
+      if (names.has(match[1])) continue;
+      const opening = source.indexOf("(", match.index);
+      const closing = matchingDelimiter(source, opening, "(", ")", 2_000);
+      if (closing < 0) continue;
+      const rawArguments = source.slice(opening + 1, closing);
+      const visibleParts: string[] = [];
+      const topLevelArguments = splitTopLevelArguments(rawArguments);
+      const firstArgument = topLevelArguments[0];
+      if (firstArgument && !/^[A-Za-z_]\w*\s*:/.test(firstArgument)) visibleParts.push(firstArgument);
+      const titleArgument = topLevelArguments.find((argument) => /^(?:title|label)\s*:\s*(?!\{)/.test(argument));
+      if (titleArgument) visibleParts.push(titleArgument.replace(/^(?:title|label)\s*:\s*/, ""));
+      const firstClosure = closureImmediatelyAfter(source, closing + 1);
+      if (firstClosure) {
+        const explicitLabel = labeledClosureImmediatelyAfter(source, firstClosure.end + 1, "label");
+        // Same restriction as the literal-name loop above: only genuine Text(...)/Label(...)
+        // content inside the closure counts, never the closure's raw source text.
+        if (explicitLabel) visibleParts.push(...visibleUICallArguments(explicitLabel.body, new Set(["Text", "Label"])));
+        else if (/\b(?:action|destination)\s*:/.test(rawArguments)) visibleParts.push(...visibleUICallArguments(firstClosure.body, new Set(["Text", "Label"])));
+      }
+      if (visibleParts.length) argumentsList.push(visibleParts.join("\n"));
+    }
   }
   return argumentsList;
 }
@@ -1812,12 +1874,66 @@ function maskHiddenControlClosures(source: string): string {
   for (const [start, end] of ranges) for (let index = start; index <= end; index++) if (characters[index] !== "\n") characters[index] = " ";
   return characters.join("");
 }
+// A bare currency-formatted literal (e.g. "$9.99", "9,99 €") found verbatim in production
+// source is strong, narrow evidence of an in-app constant, not a derived StoreKit value — the
+// same shape SKILL.md already forbids approving as "hard-coded, debug-only, ... prices". This
+// only flags strings that are ENTIRELY a price token, never prose that happens to mention money.
+const HARDCODED_PRICE_LITERAL = /^[$€£¥]\s?\d[\d.,]*$|^\d[\d.,]*\s?[$€£¥]$/;
+function hardcodedPriceLiteralsInSource(source: string): Set<string> {
+  const literals = new Set<string>();
+  for (const match of source.matchAll(/"((?:\\.|[^"\\])*)"/g)) {
+    const value = match[1].trim();
+    if (HARDCODED_PRICE_LITERAL.test(value)) literals.add(value);
+  }
+  return literals;
+}
+// Returns the specific hard-coded source literal a test assertion's string argument(s) contain,
+// if any — a test that compares the observed price to a value that is ALSO a bare literal
+// constant in production source (not a `.displayPrice`-derived interpolation) proves the test
+// exercised the constant, not StoreKit, regardless of any other assertion in the same evidence.
+function hardcodedPriceLiteralInAssertion(evidence: string, literals: Set<string>): string | undefined {
+  if (!literals.size) return undefined;
+  for (const match of evidence.matchAll(/"((?:\\.|[^"\\])*)"/g)) {
+    for (const literal of literals) if (match[1].includes(literal)) return literal;
+  }
+  return undefined;
+}
+// XCTAssertEqual(a, b) or #expect(a == b) — the only shapes that can actually assert "this
+// value equals that specific literal", as opposed to an existence/visibility check
+// (.exists/.waitForExistence) that says nothing about a literal string at all. Restricting the
+// hard-coded-fixture scan to this shape (plus the price-named content filter at the call site)
+// keeps an unrelated existence assertion elsewhere in the same evidence file from ever being
+// examined for a coincidental literal match.
+function isEqualityShapedAssertion(evidence: string): boolean {
+  if (/^\s*XCTAssertEqual\s*\(/.test(evidence)) return callArguments(evidence).length >= 2;
+  if (/^\s*#expect\s*\(/.test(evidence)) {
+    const argumentsList = callArguments(evidence);
+    if (!argumentsList.length) return false;
+    const comparison = splitDirectBooleanComparison(stripOuterParentheses(argumentsList[0]));
+    return Boolean(comparison) && comparison![1] === "==";
+  }
+  return false;
+}
 function hasVisibleLocalizedPrice(source: string): boolean {
   const visibleArguments = visibleUICallArguments(source, new Set(["Text", "Button", "Label"]));
   if (visibleArguments.some((value) => /\.displayPrice\b/.test(value))) return true;
-  for (const match of source.matchAll(/\b(?:let|var)\s+([A-Za-z_]\w*)\s*=\s*[^\n;]*\.displayPrice\b/g)) {
-    const name = match[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    if (visibleArguments.some((value) => new RegExp(`\\\\\\(${name}\\b`).test(value))) return true;
+  const tracedNames = new Set<string>();
+  for (const match of source.matchAll(/\b(?:let|var)\s+([A-Za-z_]\w*)\s*=\s*[^\n;]*\.displayPrice\b/g)) tracedNames.add(match[1]);
+  // A switch/if/guard `case` pattern can destructure an associated value straight into a local
+  // named `displayPrice` (e.g. `case .available(_, let displayPrice):`) instead of an
+  // assignment. The bound NAME alone proves nothing — an enum can just as easily carry a
+  // hard-coded fixture under a `displayPrice` label (e.g. `.ready(displayPrice: "$0.99")`) with
+  // no StoreKit involved at all. Only trust the binding when this SAME evidence also contains a
+  // genuine `.displayPrice` member read somewhere (a literal dot before the identifier, i.e. an
+  // actual property access such as `product.displayPrice`, not just the bare bound name) — the
+  // same real API surface the assignment form above already requires on its right-hand side.
+  const hasRealDisplayPriceMemberRead = /\.displayPrice\b/.test(source);
+  if (hasRealDisplayPriceMemberRead) {
+    for (const match of source.matchAll(/\bcase\b[^{;]{0,200}?\blet\s+(displayPrice)\b/g)) tracedNames.add(match[1]);
+  }
+  for (const name of tracedNames) {
+    const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (visibleArguments.some((value) => new RegExp(`\\\\\\(${escapedName}\\b`).test(value))) return true;
   }
   return false;
 }
