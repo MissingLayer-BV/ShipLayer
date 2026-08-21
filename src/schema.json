@@ -331,6 +331,9 @@
         "whatsNew": {
           "type": "string",
           "maxLength": 4000
+        },
+        "confirmation": {
+          "$ref": "#/$defs/confirmation"
         }
       }
     },

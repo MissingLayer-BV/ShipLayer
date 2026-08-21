@@ -3,7 +3,7 @@ import { lstat, mkdir, readFile, realpath, rename, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { stringify } from "yaml";
 import { copyFileTree, ensureDirectory, resolveContained, safeRelativePath, stableJson, writeBinary, writeText } from "./fs.js";
-import type { AnalysisReport, PreflightReport, ShipLayerManifest } from "./types.js";
+import type { AnalysisReport, LocaleCopy, PreflightReport, ShipLayerManifest } from "./types.js";
 import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, externalServiceFindings, MONETIZATION_CONTRADICTION_FINDING, resolveContradictionOverride, storekitPurchaseEvidence } from "./evidence.js";
 import { detectScreenshotHarness } from "./scanner.js";
 import { buildMarketingSlideEntries, DEFAULT_MARKETING_FINAL_DIR, DEFAULT_OUTPUT_DIRECTORY, EXPORT_MJS, frameForFamily, renderPackageJson, renderReadme, renderSlideHtml, renderSlidesManifestJson, STRIP_ALPHA_MJS } from "./marketing.js";
@@ -26,7 +26,7 @@ export async function generateReleasePackage(repository: string, manifest: ShipL
   const packageAnalysis = { ...analysis, repository: ".", scannedAt: "omitted-for-deterministic-package", ignored: { ...packageIgnored, directories: analysis.ignored.directories.filter((directory) => !/(^|\/)(?:shiplayer-)?release(?:-|$)|(^|\/)\.shiplayer-staging(?:\/|$)/.test(directory)) } };
   const packagePreflight = { ...preflight, repository: "." };
   await emit("reports/analysis.json", stableJson(packageAnalysis)); await emit("reports/preflight.json", stableJson(packagePreflight)); await emit("reports/preflight.md", preflightMarkdown(packagePreflight));
-  for (const [locale, copy] of Object.entries(manifest.metadata.localizations)) await emit(`metadata/${locale}.json`, stableJson({ locale, ...copy, characterLimits: { name: 30, subtitle: 30, promotionalText: 170, description: 4000, keywords: 100, whatsNew: 4000 } }));
+  for (const [locale, copy] of Object.entries(manifest.metadata.localizations)) await emit(`metadata/${locale}.json`, stableJson(localeMetadataJson(locale, copy)));
   await emit("privacy/questionnaire-draft.md", await privacyDraft(repository, manifest, analysis)); await emit("privacy/evidence-matrix.json", stableJson({ disclaimer: "Draft only. Apple privacy declarations require human confirmation and must include third-party processing. No-retention/no-training controls do not mean data was not shared.", permissions: manifest.permissions, permissionFlows: manifest.permissionFlows, dataProcessing: manifest.dataProcessing, externalProcessors: manifest.externalProcessors, aiDataSharing: manifest.aiDataSharing, externalServiceDecisions: manifest.externalServiceDecisions, sourceContradictionOverrides: manifest.sourceContradictionOverrides }));
   await emit("compliance/age-rating-and-content-rights.md", complianceDraft(manifest));
   await emit("legal/privacy-policy-draft.html", await privacyPage(repository, manifest, analysis)); await emit("legal/support-page-draft.html", await supportPage(repository, manifest, analysis)); await emit("legal/terms-of-use-draft.md", await termsOfUseDraft(repository, manifest, analysis));
@@ -288,6 +288,23 @@ function recordingScript(manifest: ShipLayerManifest, analysis: AnalysisReport):
 // literal "confirmed", including an absent field, so an artifact must never assert "confirmed" for
 // a scenario the gate itself refuses to pass — defaulting absence to "confirmed" here would let a
 // generated artifact claim something stronger than `check` allows.
+// App Store copy is a human-reviewable proposal, exactly like a screenshot scenario (see
+// capturePlan below and its own comment on this) — never laundered into a fact here. An absent
+// confirmation is written out explicitly as "needs-human-confirmation", never defaulted to
+// "confirmed": `shiplayer check`'s metadata.<locale>.confirmation gate blocks on anything other
+// than a literal "confirmed" (see preflight.ts's metadataChecks), so this file must never assert
+// something stronger than that gate allows. The actual drafted text is still included even when
+// unconfirmed — this is a draft hand-off a human reviews before submission, not a final artifact,
+// and hiding the draft would make it harder, not easier, to review. characterCounts lets a human
+// see remaining headroom against each Apple-published limit at a glance; keywords is counted the
+// same way preflight.ts counts it (UTF-8 bytes of the comma-joined string, since that is the
+// literal text App Store Connect's single keywords field accepts), not the array's item count.
+function localeMetadataJson(locale: string, copy: LocaleCopy): object {
+  const keywordsJoined = copy.keywords?.join(",") || "";
+  const characterLimits = { name: 30, subtitle: 30, promotionalText: 170, description: 4000, keywords: 100, whatsNew: 4000 };
+  const characterCounts = { name: copy.name?.length ?? 0, subtitle: copy.subtitle?.length ?? 0, promotionalText: copy.promotionalText?.length ?? 0, description: copy.description?.length ?? 0, keywords: Buffer.byteLength(keywordsJoined, "utf8"), whatsNew: copy.whatsNew?.length ?? 0 };
+  return { locale, ...copy, confirmation: copy.confirmation ?? "needs-human-confirmation", characterLimits, characterCounts };
+}
 function capturePlan(manifest: ShipLayerManifest): object { return { command: "shiplayer capture <repo>", prerequisites: ["macOS with Xcode for direct simulator capture", "Configured scheme and launch arguments", "No paid CI is used automatically"], configurations: manifest.screenshots.configurations.map((configuration) => ({ ...configuration, outputDirectory: `${manifest.screenshots.rawOutputDir}/${configuration.family}/${configuration.locale}`, scenarios: manifest.screenshots.scenarios.map((scenario) => ({ id: scenario.id, outputFile: `${scenario.id}.png`, title: scenario.title, launchArguments: scenario.launchArguments || [], steps: scenario.steps, confirmation: scenario.confirmation ?? "needs-human-confirmation" })) })), note: "This is a neutral hand-off. Create or use a separate app-store-screenshots scaffold/template; this JSON is not directly importable by that editor. Raw device screenshots must show the actual app and use each scenario ID as the filename. A scenario whose confirmation is not \"confirmed\" is an unverified proposal, not a fact." }; }
 // Repository-root-relative "assets/device-frames/" sits next to both src/ (dev, run via tsx) and
 // dist/ (built) — one level up from this compiled/source module's own directory either way — so
