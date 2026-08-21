@@ -2,10 +2,12 @@
 
 ShipLayer's schema field names (`dismissibleScreenBeforePrompt`, `aiPipelineRecipient`,
 `baseTerritoryConfirmation`...) are for you and the manifest. They are not questions a person can
-answer. Every one of the human-input fields listed in SKILL.md step 3 needs translating into a
-question about **what the owner can actually observe**: what they tap, what appears next, what a
-screenshot shows. This file gives verbatim-usable templates for that translation, one per field
-group.
+answer. Every human-input field needs translating into a question about **what the owner can
+actually observe**: what they tap, what appears next, what a screenshot shows. This file gives
+verbatim-usable templates for the fields most often asked about and hardest to phrase — it does
+not enumerate every human-input field in the schema. When `shiplayer check` blocks on a field with
+no template here, apply the same shape yourself: find the concrete, on-screen or in-repo fact
+behind the field name, and ask about that.
 
 ## The rule that matters most
 
@@ -43,8 +45,7 @@ source (swap in the actual button/screen name):
 >
 > Second: if the user has already said no (denied the permission earlier), what happens now when
 > they try the same action? Do they see anything — an alert, a banner, disabled state — that
-> offers a way to open Settings and turn it back on? Or does nothing visible happen / does the
-> feature just silently fail?
+> offers a way to open Settings and turn it back on?
 
 Map the answers directly:
 - "System dialog appears first, nothing dismissible in front of it" → `dismissibleScreenBeforePrompt: false`.
@@ -53,9 +54,12 @@ Map the answers directly:
   say so, then help fix the flow (make the request reachable directly, or strip the
   cancel/dismiss option) rather than just recording the admission.
 - "Yes, there's a Settings link when denied" → `deniedPathOffersSettingsLink: true`.
-- "No / not sure / nothing happens" → `deniedPathOffersSettingsLink: false` — this **blocks**
-  (`permission-flow.<category>.denied-path-settings-link`); help add a denied-state link to
-  Settings (`UIApplication.openSettingsURLString`) rather than recording a guess either way.
+- "No, nothing offers a way to Settings when denied" → `deniedPathOffersSettingsLink: false` —
+  this **blocks** (`permission-flow.<category>.denied-path-settings-link`); help add a
+  denied-state link to Settings (`UIApplication.openSettingsURLString`).
+- "Not sure / never tried it denied" → **do not record either value.** This falls under the
+  golden rule above: ask the owner to actually deny the permission once and retry the action, or
+  walk the denied-state code path with them, and only record what they then observed.
 
 Never accept "I think so" or "probably" for either half — ask them to actually trigger the flow
 (or check the code path with you) and describe what they saw.
@@ -82,6 +86,23 @@ For price and paywall behavior specifically:
 > it match a real StoreKit product you configured in App Store Connect — not a number typed into
 > the SwiftUI code? If the price hasn't loaded yet, is the buy button disabled, or can it still be
 > tapped?
+
+For a non-consumable or subscription, three more things `check` requires and a scanner can't see
+(`iap.paywall`/`subscriptions.paywall`, `iap.restore`/`subscriptions.restore`, and, for
+subscriptions, `purchase.subscription-disclosures`/`.offer-disclosures`):
+
+> - Walk me from the app's main screen to the actual purchase button, step by step — what do you
+>   tap, in order? (This becomes `paywallNavigation`.)
+> - Is there a "Restore Purchases" button or link visible on or near that same screen? Exactly
+>   where? (This becomes `restorePath` — it must exist somewhere reachable, not buried.)
+> - [Subscriptions only] Before you're able to tap buy: is the renewal period shown (e.g.
+>   "$X.XX/month")? Are Terms of Use and Privacy Policy links visible on that same screen? If
+>   there's a free trial or introductory price, are its exact terms (length, price after trial)
+>   shown before purchase, not only after?
+
+Only set the corresponding `purchasePresentation` booleans to `true` once the owner confirms they
+saw those specific things on that specific screen — SKILL.md's App Review hard gates already say
+human confirmation must still verify these disclosures; this is the question that gets you there.
 
 ## AI data sharing
 
@@ -114,10 +135,11 @@ turned out to be a plain provider policy or docs link, not an API call — see
 > API call? If it sends data, what does it send and why?
 
 "It's just a link, nothing is ever sent there" → an `externalServiceDecisions` entry with
-`disposition: "not-a-processor"` and a `reason` saying so. "It sends data" → declare the
-processor (name, purpose from Apple's fixed list, data categories, policy URL) and link the
-decision to it. Never leave the finding undeclared — it blocks either way until there's a
-confirmed disposition.
+`disposition: "not-an-external-processor"` and a `reason` saying so — **that exact string**;
+`"not-a-processor"` is not a valid value and fails schema validation. "It sends data" → declare
+the processor (name, purpose from Apple's fixed list, data categories, policy URL) and link the
+decision to it (`disposition: "declared-processor"`). Never leave the finding undeclared — it
+blocks either way until there's a confirmed disposition.
 
 ## Privacy, legal, trader status, agreements, age rating, content rights
 
@@ -140,16 +162,71 @@ don't accept "should be fine":
 
 Only `confirmed` once they say yes to the actual action, not the intention to do it later.
 
+`not-applicable` is a valid value, but only for `trader`, `paidAgreements`, and `contentRights` —
+e.g. a genuinely free app with no paid agreement to activate should record
+`confirmations.paidAgreements: not-applicable`, not leave it as
+`needs-human-confirmation` (which blocks). `privacy`, `legal`, and `ageRating` must be a literal
+`confirmed` — `check` rejects `not-applicable` for those three even if it seems like it should
+qualify; every app still needs a completed age-rating questionnaire and privacy/legal review.
+
+## Data collection and tracking (App Privacy questionnaire — `dataProcessing[]`)
+
+This is separate from `confirmations.privacy` above: that confirms the owner *filled out* the App
+Store Connect questionnaire; `dataProcessing[]` is what the questionnaire's actual answers should
+be, and `check` cross-checks it against `PrivacyInfo.xcprivacy`/Info.plist evidence where present.
+Do the easy part yourself first — the scanner proposes categories from source/manifest evidence —
+then ask the owner only the two genuinely judgment-based questions, once per data category (e.g.
+once for "Email Address", once for "Precise Location"):
+
+> For **[data category]**, which this app collects/uses:
+> 1. Can this data be traced back to this specific person — e.g. it's tied to their account,
+>    email, or a device ID that identifies them — or is it collected in a way nobody (including
+>    you) could connect back to an individual? (→ `linkedToIdentity`)
+> 2. Is this data — or anything derived from it — ever used to track the user across *other*
+>    companies' apps or websites for advertising, or shared with a data broker? (This is Apple's
+>    specific definition of "tracking," not a synonym for "collected" or "used internally.")
+>    (→ `usedForTracking`)
+
+Both answers must be an explicit `true`/`false` before `confirmation: confirmed` is valid —
+`privacy.<category>.details` blocks a confirmed row that still leaves either one as `"unknown"`.
+Don't let "I'm not sure" become a guessed `false`; if the owner doesn't know, that's a real answer
+("unknown") and the row stays unconfirmed until they find out.
+
+## Build configuration (export compliance, signing)
+
+Check the repository first — `check` already cross-verifies `build.signing` against
+`CODE_SIGN_STYLE` in the production target (`consistency.signing`) and `build.exportCompliance`
+against a declared `ITSAppUsesNonExemptEncryption` value (`consistency.encryption`). Only ask the
+owner when the repository is silent or ambiguous, since `init` otherwise leaves both as
+`"unknown"`, which hard-blocks (`build.signing`, `export-compliance`) on its own:
+
+> - In Xcode, on this target's Signing & Capabilities tab: is "Automatically manage signing"
+>   checked, or is a specific certificate/provisioning profile chosen manually? (→
+>   `build.signing`: `automatic` or `manual`.)
+> - Does this app use any encryption beyond standard HTTPS/TLS network calls — a custom cipher,
+>   an encryption library, end-to-end encrypted messaging, anything you wrote or added yourself
+>   for cryptography? Most apps that only call `https://` URLs qualify as exempt. If the answer is
+>   genuinely "just HTTPS" → `build.exportCompliance`: `exempt`. If there's custom crypto, or the
+>   owner isn't sure → `documentation-required`, and tell them this is Apple's export-compliance
+>   questionnaire (the one Xcode/App Store Connect asks at every submission) — point them at it
+>   rather than guessing on their behalf.
+
 ## App Review contact and demo account
 
 > Who should Apple's reviewer contact if they have a question about this submission — first
 > name, last name, email, phone? And does the app require signing in to review it? If so, what
-> username/password should the reviewer use, and does anything need to be set up first (seed
-> data, a specific account state)?
+> account should the reviewer use, and does anything need to be set up first (seed data, a
+> specific account state)?
 
-If a demo account is required, confirm the credentials actually work in the current build before
-setting `credentialsEnteredConfirmation: confirmed` — ask the owner to log in with them, don't
-take their word that they "should" work.
+**The manifest never stores a literal username or password.** `demoAccount.usernameEnv` and
+`.passwordEnv` are the *names* of environment variables (e.g. `DEMO_USERNAME`, `DEMO_PASSWORD`)
+that hold the real credentials outside the repo — never write the actual username/password
+anywhere in `shiplayer.yml`, including free-text fields like `setupInstructions`. If the owner
+gives you literal credentials, tell them where those values actually need to live (their own
+secrets store / CI environment) and only record the *variable name* in the manifest. Confirm the
+credentials actually work in the current build — ask the owner to log in with them — before
+setting `credentialsEnteredConfirmation: confirmed`; don't take their word that they "should"
+work.
 
 ## Availability and subscription territory
 
@@ -157,8 +234,12 @@ take their word that they "should" work.
 > models "all" — if they want a subset, tell them to configure it directly in App Store Connect
 > and record that decision outside the manifest.)
 
-For a subscription's base territory:
+For a subscription's base territory, `monetization.baseTerritory` is a **three-letter ISO
+3166-1 alpha-3 code** (`USA`, `GBR`, `NLD`, ... — not the two-letter form, and a two-letter value
+fails schema validation with a confusing error that names neither the field nor the real problem,
+since the `monetization` union just falls through to a sibling branch). App Store Connect's
+pricing screen shows territory *names*, not codes, so don't ask the owner to "read off the code":
 
-> Open the subscription pricing screen in App Store Connect — what territory is set as the base
-> for this subscription group right now? Confirm the two-letter/ISO code matches what's actually
-> configured, not just a country you assume is correct.
+> Open the subscription pricing/availability screen in App Store Connect — what territory name is
+> set as the base for this subscription group right now (e.g. "United States", "United Kingdom",
+> "Netherlands")? Tell me the name; I'll map it to the three-letter code myself.
