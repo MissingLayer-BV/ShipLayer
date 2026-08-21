@@ -1,6 +1,6 @@
 # ShipLayer
 
-**From repo to review.** ShipLayer is a local-first, safety-first release-preparation CLI and Codex skill for native Swift/SwiftUI iPhone and iPad apps.
+**From repo to review.** ShipLayer is a local-first, safety-first release-preparation CLI and agent skill for native Swift/SwiftUI iPhone and iPad apps.
 
 It scans a repository, captures evidence rather than guesses, and generates the assets and checklists between a build and an App Store submission. It supports free apps, paid apps, non-consumable lifetime unlocks, and auto-renewable subscriptions.
 
@@ -19,6 +19,22 @@ npm run build
 ```
 
 This package is intentionally private in v0.1; it is not published to npm. Run `./dist/index.js`, use `npm link` from this checkout, or install from a reviewed local/Git checkout before using `shiplayer` in another repository. ShipLayer targets Node 22+.
+
+## Installation
+
+`scripts/install.sh` (wrapped by `npm run install-skill` / `make install-skill`) builds the CLI, links it onto PATH with `npm link`, and symlinks (never copies) `skills/ship-app-store` into the two directories agent tools read skills from: `~/.claude/skills/ship-app-store` and `~/.codex/skills/ship-app-store`. It is idempotent, refuses to overwrite anything at either path that isn't its own symlink back to this checkout, and prints every path it touched.
+
+```bash
+npm run install-skill      # build + npm link + symlink both skill directories
+command -v shiplayer       # verify: should print the linked path
+shiplayer --version
+ls -la ~/.claude/skills/ship-app-store ~/.codex/skills/ship-app-store   # both -> this checkout's skills/ship-app-store
+npm run install-skill      # safe to re-run; a second run is a no-op
+```
+
+Because both paths are symlinks to this checkout, an edit to `skills/ship-app-store/` is visible through them immediately — no re-run needed and no risk of a stale copy. `npm run install-status` reports current link state without changing anything; `npm run uninstall-skill` removes only the symlinks/link this script created (it never touches a directory it didn't create, and leaves anything unrelated at those paths alone).
+
+The two skill directories exist because different agent tools each read their own skills path from `$HOME`: `~/.claude/skills/` for Claude Code, `~/.codex/skills/` for Codex. `skills/ship-app-store/agents/openai.yaml` is Codex-specific agent-launcher metadata; it ships in the shared directory (and so appears in both installs) because the install deliberately symlinks one source of truth rather than maintaining two diverging copies — it is inert for Claude Code, which only reads `SKILL.md` and what it links to.
 
 ## Commands
 

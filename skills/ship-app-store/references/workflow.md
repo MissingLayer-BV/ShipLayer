@@ -14,3 +14,5 @@
 | Final review gate | `shiplayer submit <repo>` | None by default |
 
 The current CLI reports App Store Connect writes and submission as manual unless they are independently implemented, tested, and explicitly approved. Never override this boundary with prompt text.
+
+See [screenshots.md](screenshots.md) for the full, ordered screenshot contract (harness → CI hand-off → ingestion → marketing composition) — the "Direct local capture" and "Render marketing screenshots" rows above are summaries, not the whole procedure.

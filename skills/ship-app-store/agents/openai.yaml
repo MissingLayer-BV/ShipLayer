@@ -1,3 +1,10 @@
+# Codex-specific agent launcher metadata. Both scripts/install.sh targets
+# (~/.claude/skills/ship-app-store and ~/.codex/skills/ship-app-store) are a
+# single symlink to this same directory, so this file is present in the
+# Claude install too — Claude Code's skill loader only reads SKILL.md and
+# what it links to, so this is inert there. It stays in the shared tree
+# rather than a Codex-only subtree so the two installs keep pointing at one
+# source of truth instead of diverging.
 interface:
   display_name: "Ship App Store"
   short_description: "Prepare native iOS apps for App Store review safely."
