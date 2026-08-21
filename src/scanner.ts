@@ -121,7 +121,11 @@ export async function analyzeRepository(repository: string): Promise<AnalysisRep
         const pattern = nativeSource ? new RegExp(`\\bimport\\s+${sdk}\\b|\\b${sdk}\\s*\\.`) : new RegExp(`(?:\\bimport\\s+(?:[^;\\n]*?\\s+from\\s+)?|\\brequire\\s*\\()?["']${sdk}["']|\\bfrom\\s+["']${sdk}["']`);
         if (pattern.test(content)) push(`thirdPartySdkCandidate:${sdk}`, sdk, { source, excerpt: sdk, confidence: "medium", kind: "source-heuristic" });
       }
-      for (const match of content.matchAll(/https?:\/\/[^\s"'<>`]+/gi)) {
+      // Comment-stripped for the same reason permission-request sites are above: a URL that only
+      // exists inside a `//`/`/* */` comment (e.g. documenting a local dev-proxy flag) is not
+      // live code, and must not become an endpoint/insecure-endpoint finding that then has no
+      // legitimate way to be cleared short of deleting the comment.
+      for (const match of stripCodeComments(content).matchAll(/https?:\/\/[^\s"'<>`]+/gi)) {
         const dynamicAt = match[0].indexOf("${");
         const literal = dynamicAt >= 0 ? match[0].slice(0, dynamicAt) : match[0];
         const endpoint = normalizeEndpoint(literal.replace(/[),.;]+$/, ""));

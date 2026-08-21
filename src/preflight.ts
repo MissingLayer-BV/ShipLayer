@@ -8,7 +8,7 @@ import { inspectImage } from "./image.js";
 import { validateAscPrivateKey } from "./asc.js";
 import { appReviewNotes } from "./generator.js";
 import { DEFAULT_MARKETING_FINAL_DIR } from "./marketing.js";
-import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, isNonProductionSourcePath, MONETIZATION_CONTRADICTION_FINDING, PURCHASE_UNAVAILABLE_CONTRADICTION_FINDING, productionEvidenceOnly, resolveContradictionOverride, storekitPurchaseEvidence, stripCodeComments } from "./evidence.js";
+import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, isLoopbackOrPrivateEndpoint, isNonProductionSourcePath, MONETIZATION_CONTRADICTION_FINDING, PURCHASE_UNAVAILABLE_CONTRADICTION_FINDING, productionEvidenceOnly, resolveContradictionOverride, storekitPurchaseEvidence, stripCodeComments } from "./evidence.js";
 
 // Apple requires ONE uniform size per required display class, and the classes are not
 // interchangeable: a 6.5-inch capture does not satisfy the 6.9-inch slot. Each display class is
@@ -1391,7 +1391,13 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
   for (const permission of manifest.permissions) if (!report.findings.some((finding) => finding.key === `permission:${permission.key}`) && !(permission.evidence || []).length) add(`manifest.permission.${permission.key}`, "warn", `${permission.key} has no scanner evidence or manifest evidence path.`, "Verify the purpose string and add source evidence if this permission is used.");
   for (const finding of report.findings.filter((item) => item.key.startsWith("thirdPartySdkCandidate:") || item.key.startsWith("endpoint:"))) {
     const findingId = externalFindingId(finding);
-    if (finding.key.startsWith("endpoint:http://")) add(`source.insecure-endpoint.${findingId}`, "block", `Source declares insecure HTTP endpoint ${String(finding.value)}.`, "Use HTTPS or document an App Transport Security exception and resolve it with human review.");
+    if (finding.key.startsWith("endpoint:http://") && !isLoopbackOrPrivateEndpoint(finding.key.slice("endpoint:".length))) {
+      const insecureEndpointId = `source.insecure-endpoint.${findingId}`;
+      const insecureSourcePaths = new Set(finding.evidence.map((item) => item.source));
+      const insecureOverride = await resolveContradictionOverride(repository, manifest, insecureEndpointId, insecureSourcePaths);
+      if (insecureOverride) add(insecureEndpointId, "warn", `Source declares insecure HTTP endpoint ${String(finding.value)}, but this is human-overridden: ${insecureOverride.reason}`, "Re-verify this override whenever the source or manifest changes.");
+      else add(insecureEndpointId, "block", `Source declares insecure HTTP endpoint ${String(finding.value)}.`, `Use HTTPS or document an App Transport Security exception, or add a confirmed sourceContradictionOverride naming '${insecureEndpointId}' with a reason and evidence that intersects this finding's source.`);
+    }
     const decision = manifest.externalServiceDecisions.find((item) => item.finding === findingId);
     if (!decision || decision.confirmation !== "confirmed" || !decision.reason || !decision.evidence.length) { add(`source.external.${findingId}`, "block", `Source heuristic '${findingId}' has no confirmed processor/disposition decision.`, "Declare the processor or explicitly record why it is not an external processor, with source evidence."); continue; }
     const sourcePaths = new Set(finding.evidence.map((item) => item.source)); const decisionEvidence = await validEvidencePaths(repository, decision.evidence);

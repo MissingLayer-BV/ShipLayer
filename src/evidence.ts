@@ -75,21 +75,31 @@ export function isXCUITestSourcePath(file: string): boolean {
 // --- comment stripping ------------------------------------------------------------------------
 // Shared by preflight.ts (AI consent, purchase, and permission-flow evidence text must not let a
 // commented-out disclosure/link satisfy a gate) and scanner.ts (permission-request-site detection
-// should not propose a permission from dead, commented-out code). One implementation only: this
-// used to live in preflight.ts alone, but the permission-flow gates need the identical Swift/ObjC
-// comment-and-string-aware stripping from scanner.ts too, and scanner.ts cannot import from
-// preflight.ts (preflight.ts already imports scanner.ts; that would be a cycle).
+// should not propose a permission from dead, commented-out code; endpoint-literal detection must
+// not treat a URL inside a commented-out line as live source). One implementation only: this used
+// to live in preflight.ts alone, but the permission-flow gates need the identical comment-and-
+// string-aware stripping from scanner.ts too, and scanner.ts cannot import from preflight.ts
+// (preflight.ts already imports scanner.ts; that would be a cycle).
+//
+// Tracks `'` and `` ` `` as string delimiters alongside `"` (not just for Swift/ObjC, whose
+// syntax has no bare single-quote/backtick string literals so this is a strict improvement for
+// those callers) — this is required for correctness on TS/JS evidence: a `//` inside an
+// `https://...` URL written in a single-quoted or template-literal string (`fetch('https://…')`,
+// `` fetch(`https://…`) ``) is not a comment, and without delimiter-aware tracking here the scan
+// would truncate the URL at that `//` as if a line comment had started there, silently discarding
+// live endpoint evidence rather than merely failing to strip an actual comment.
 export function stripCodeComments(source: string): string {
   let output = "";
   let index = 0;
   let state: "normal" | "string" | "multiline-string" | "line-comment" | "block-comment" = "normal";
   let blockDepth = 0;
+  let stringDelimiter = "";
   while (index < source.length) {
     if (state === "normal") {
       if (source.startsWith("//", index)) { state = "line-comment"; index += 2; continue; }
       if (source.startsWith("/*", index)) { state = "block-comment"; blockDepth = 1; index += 2; continue; }
       if (source.startsWith('"""', index)) { output += '"""'; state = "multiline-string"; index += 3; continue; }
-      if (source[index] === '"') { output += source[index]; state = "string"; index++; continue; }
+      if (source[index] === '"' || source[index] === "'" || source[index] === "`") { stringDelimiter = source[index]; output += source[index]; state = "string"; index++; continue; }
       output += source[index++];
       continue;
     }
@@ -112,7 +122,7 @@ export function stripCodeComments(source: string): string {
     }
     output += source[index];
     if (source[index] === "\\" && index + 1 < source.length) output += source[++index];
-    else if (source[index] === '"') state = "normal";
+    else if (source[index] === stringDelimiter) state = "normal";
     index++;
   }
   return output;
@@ -218,6 +228,41 @@ export function classifyAiEndpoint(endpointUrl: string): "provider" | "path-shap
   if (isApiOnlyProviderHost(host)) return "provider";
   if (isMixedProviderApex(host)) return AI_API_PATH_PATTERN.test(url.pathname) ? "provider" : "policy";
   return AI_API_PATH_PATTERN.test(url.pathname) ? "path-shape" : "none";
+}
+
+// --- loopback/private endpoint exemption for source.insecure-endpoint -------------------------
+// App Transport Security is a transport-security control between the app and a network peer.
+// RFC 5735/RFC 1918/RFC 4193 loopback, link-local, and private-use address ranges (including
+// "localhost") never leave the device or the developer's own private network the way a public
+// endpoint does — a local Wrangler/dev-proxy `http://127.0.0.1:8788/...` referenced only to
+// document a local flag is not a transport-security risk by any reading. Deliberately narrow: a
+// public hostname or public IP over http:// is completely unaffected and still blocks.
+function isIPv4LoopbackOrPrivate(host: string): boolean {
+  const match = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!match) return false;
+  const octets = match.slice(1, 5).map(Number);
+  if (octets.some((value) => value > 255)) return false;
+  const [a, b] = octets;
+  return a === 127 // 127.0.0.0/8 loopback
+    || a === 10 // 10.0.0.0/8 private
+    || (a === 172 && b >= 16 && b <= 31) // 172.16.0.0/12 private
+    || (a === 192 && b === 168) // 192.168.0.0/16 private
+    || (a === 169 && b === 254); // 169.254.0.0/16 link-local
+}
+function isIPv6LoopbackOrPrivate(host: string): boolean {
+  const normalized = host.replace(/^\[|\]$/g, "").toLowerCase();
+  return normalized === "::1" // loopback
+    || /^fe[89ab][0-9a-f]:/.test(normalized) // fe80::/10 link-local
+    || /^f[cd][0-9a-f]{2}:/.test(normalized); // fc00::/7 unique local
+}
+/** True when `endpointUrl`'s host is loopback, RFC 1918 private, or link-local — never a
+ * transport-security risk, so source.insecure-endpoint must not fire on it regardless of scheme. */
+export function isLoopbackOrPrivateEndpoint(endpointUrl: string): boolean {
+  let url: URL;
+  try { url = new URL(endpointUrl); } catch { return false; }
+  const host = url.hostname.toLowerCase().replace(/\.$/, "");
+  if (host === "localhost" || host.endsWith(".localhost")) return true;
+  return isIPv4LoopbackOrPrivate(host) || isIPv6LoopbackOrPrivate(host);
 }
 
 export function endpointFindingUrl(finding: Finding): string { return finding.key.slice("endpoint:".length); }
