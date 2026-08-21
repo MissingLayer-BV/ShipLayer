@@ -624,11 +624,11 @@
       "properties": {
         "finding": {
           "$ref": "#/$defs/nonEmpty",
-          "description": "Identifies the exact contradiction blocker this overrides, e.g. 'monetization.source-contradiction' or 'ai-sharing.source-contradiction:endpoint:https://example.com/v1/chat/completions'."
+          "description": "Identifies the exact blocker this overrides, e.g. 'monetization.source-contradiction', 'ai-sharing.source-contradiction:endpoint:https://example.com/v1/chat/completions', or 'purchase.unavailable-source'."
         },
         "reason": {
           "$ref": "#/$defs/nonEmpty",
-          "description": "Human-authored explanation of why the source evidence does not actually contradict the manifest declaration."
+          "description": "Human-authored explanation of why the source evidence does not actually contradict the manifest declaration (or, for purchase.unavailable-source, why payment truly does stay unavailable while price data is loading or unavailable)."
         },
         "evidence": {
           "type": "array",
