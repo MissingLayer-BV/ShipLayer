@@ -1409,6 +1409,23 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
     } else add(`source.external.${findingId}`, "pass", `Source heuristic '${findingId}' has a human-confirmed non-processor disposition.`);
   }
   for (const processor of manifest.externalProcessors.filter((item) => item.confirmation === "confirmed")) {
+    // Whether this processor's receipt of data is "collection" under Apple's App Privacy
+    // definition is a legal judgment ShipLayer must route to a human, never decide itself — see
+    // Apple's own definition (developer.apple.com/app-store/app-privacy-details/): data
+    // transmitted off-device only to service the request in real time and not retained (Apple's
+    // own examples: an auth token or IP address on a server call, or data discarded immediately
+    // after servicing the request) falls OUTSIDE "collection" entirely, which covers most CDN
+    // edge traffic and read-only API calls. `collectionDetermination` is optional and unset/
+    // "needs-human-confirmation" by default; absence must NEVER be read as "not-collection" — it
+    // blocks exactly like every other unconfirmed fact in this manifest until a human answers.
+    const determination = processor.collectionDetermination;
+    if (determination !== "collection" && determination !== "not-collection") { add(`privacy.processor.${processor.name}.collection-determination`, "block", `${processor.name} has no human-confirmed determination of whether its receipt of data is "collection" under Apple's App Privacy definition.`, "Set externalProcessors[].collectionDetermination to 'collection' or 'not-collection', based on whether this processor retains data beyond servicing the request in real time — see references/questions.md."); continue; }
+    if (determination === "not-collection") {
+      if (!processor.collectionDeterminationReason || !processor.collectionDeterminationReason.trim().length) { add(`privacy.processor.${processor.name}.collection-determination`, "block", `${processor.name} is declared 'not-collection' but records no reason.`, "Record why this processor's receipt of data falls under Apple's real-time-service exception (transmitted only to service the request, not retained)."); continue; }
+      add(`privacy.processor.${processor.name}.collection-determination`, "pass", `${processor.name} is human-confirmed not to constitute "collection" under Apple's App Privacy definition: ${processor.collectionDeterminationReason}`);
+      continue; // a confirmed non-collection processor makes no App Privacy claim, so no dataProcessing row can or should be demanded for it
+    }
+    add(`privacy.processor.${processor.name}.collection-determination`, "pass", `${processor.name} is human-confirmed to constitute "collection" under Apple's App Privacy definition.`);
     for (const category of processor.dataCategories) {
       const declaration = manifest.dataProcessing.find((item) => item.category === category && item.confirmation === "confirmed" && item.purpose.includes(processor.purpose));
       if (!declaration) add(`privacy.processor.${processor.name}.${category}`, "block", `${processor.name} declares ${category} for ${processor.purpose}, but no matching confirmed App Privacy dataProcessing row exists.`, "Add the processor-collected category/purpose to dataProcessing and explicitly confirm identity/tracking answers.");

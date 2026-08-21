@@ -55,6 +55,26 @@ export interface ExternalProcessor {
   protectionConfirmation: Confirmation;
   confirmation: Confirmation;
   evidence?: string[];
+  /**
+   * Whether this processor's receipt of data is "collection" under Apple's App Privacy
+   * definition: "transmitting data off the device in a way that allows you and/or your
+   * third-party partners to access it for a period longer than what is necessary to service the
+   * transmitted request in real time" (developer.apple.com/app-store/app-privacy-details/). Data
+   * sent only to service a request in real time and not retained beyond that — Apple's own
+   * examples are an auth token or IP address on a server call, or data discarded immediately
+   * after servicing the request — falls OUTSIDE that definition and is not "collection" at all;
+   * that covers most CDN edge traffic and read-only API calls. This is a legal judgment ShipLayer
+   * must route to a human, never decide itself: optional and unanswered
+   * ("needs-human-confirmation") by default, and an absent value is treated identically to
+   * "needs-human-confirmation" — it must NEVER be read as "not-collection". Only "collection"
+   * requires a matching dataProcessing row per category; "not-collection" requires
+   * collectionDeterminationReason instead.
+   */
+  collectionDetermination?: "collection" | "not-collection" | "needs-human-confirmation";
+  /** Required (non-empty) when collectionDetermination is "not-collection": the human-authored,
+   * observable basis for why this processor's receipt of data falls under Apple's real-time-
+   * service exception — what is sent, and why it is not retained beyond servicing the request. */
+  collectionDeterminationReason?: string;
 }
 
 export type AIDataSharing =

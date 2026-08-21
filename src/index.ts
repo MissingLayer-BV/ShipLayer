@@ -138,7 +138,7 @@ function externalProcessorProposals(report: AnalysisReport): ShipLayerManifest["
       record(name, "other", `https://unconfirmed.invalid/${encodeURIComponent(name)}`, finding);
     }
   }
-  return [...byName.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([name, entry]) => ({ name, kind: entry.kind, aiPipelineRecipient: false, purpose: "Other Purposes", dataCategories: ["Other Data"], privacyPolicyUrl: entry.privacyPolicyUrl, protectionConfirmation: "needs-human-confirmation", confirmation: "needs-human-confirmation", evidence: [...entry.evidence].sort() }));
+  return [...byName.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([name, entry]) => ({ name, kind: entry.kind, aiPipelineRecipient: false, purpose: "Other Purposes", dataCategories: ["Other Data"], privacyPolicyUrl: entry.privacyPolicyUrl, protectionConfirmation: "needs-human-confirmation", confirmation: "needs-human-confirmation", collectionDetermination: "needs-human-confirmation", evidence: [...entry.evidence].sort() }));
 }
 /** A synthesized https://<host>/ guess is only usable when it is itself a schema-valid URL (the
  * schema's URL pattern requires a dotted hostname); a single-label host such as "localhost" or an

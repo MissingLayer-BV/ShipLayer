@@ -504,6 +504,14 @@
           "items": {
             "$ref": "#/$defs/repoPath"
           }
+        },
+        "collectionDetermination": {
+          "enum": ["collection", "not-collection", "needs-human-confirmation"],
+          "description": "Human-confirmed: does this processor's receipt of data constitute 'collection' under Apple's App Privacy definition, or does it fall under Apple's real-time-service exception (transmitted only to service the request, not retained)? Optional; absent or 'needs-human-confirmation' blocks until answered and is never read as 'not-collection'."
+        },
+        "collectionDeterminationReason": {
+          "$ref": "#/$defs/nonEmpty",
+          "description": "Required when collectionDetermination is 'not-collection': why this processor's receipt of data is not retained beyond servicing the request."
         }
       }
     },

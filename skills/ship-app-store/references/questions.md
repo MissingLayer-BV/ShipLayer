@@ -141,6 +141,60 @@ the processor (name, purpose from Apple's fixed list, data categories, policy UR
 decision to it (`disposition: "declared-processor"`). Never leave the finding undeclared — it
 blocks either way until there's a confirmed disposition.
 
+**Declaring the processor is not the last question about it.** A confirmed `externalProcessors[]`
+row with `dataCategories` set immediately needs its own `collectionDetermination` answer (next
+section) — confirming a processor and stopping there just trades one blocker
+(`source.external.<findingId>`) for a new one (`privacy.processor.<name>.collection-determination`)
+that has no forward pointer anywhere else, so don't stop at "declared."
+
+## Is this processor's receipt of data "collection" — `externalProcessors[].collectionDetermination`
+
+Every confirmed `externalProcessors[]` row needs one more human answer before it's done: whether
+*receiving* data through it counts as "collection" under Apple's own App Privacy definition. This
+is a different, narrower, and earlier question than the `dataProcessing[]` category/tracking
+questions further below — those only come into play once this one is answered `collection`.
+
+Apple's own wording: "collect" means "transmitting data off the device in a way that allows you
+and/or your third-party partners to access it for a period longer than what is necessary to
+service the transmitted request in real time" — with Apple's own examples of what falls *outside*
+that definition: "if an authentication token or IP address is sent on a server call and not
+retained, or if data is sent to your servers then immediately discarded after servicing the
+request, you do not need to disclose this" (developer.apple.com/app-store/app-privacy-details/).
+Ask, grounded in what actually happens to the request after it leaves the device, not the vendor's
+marketing description:
+
+> For **[processor name]**, which this app sends [data] to at `<host/path>`:
+> 1. Does this processor — or its logs, its database, anyone downstream of it — keep a copy of
+>    what was sent, or of the response tied back to this user or request, for longer than it
+>    takes to answer that one request? Or does it just do its job (serve a file, answer a lookup,
+>    proxy a call through) and nothing sent there is ever retained afterward?
+> 2. If you don't know for certain, check the vendor's own documentation or data-processing
+>    agreement for a stated retention/logging policy, or ask them directly. "I assume not" does
+>    not count as an answer here.
+
+"Nothing is retained past servicing the request" (confirmed from the vendor's documented
+no-logging/edge-only behavior, or your own backend's code) → `collectionDetermination:
+"not-collection"`, with `collectionDeterminationReason` stating the concrete, checked basis (not
+"I think so") — this clears `privacy.processor.<name>.collection-determination` and, for this
+processor, no `dataProcessing[]` row is required at all. "Yes, it's retained" (or you cannot find
+or confirm a real no-retention basis) → `collectionDetermination: "collection"` — this now
+requires a matching confirmed `dataProcessing[]` row for every one of that processor's
+`dataCategories` (see "Data collection and tracking" below).
+
+**Never record either answer to make the blocker disappear rather than because it's true.**
+Guessing `not-collection` when you don't actually know is the exact failure this field exists to
+prevent — a false "not collection" is itself grounds for an App Review 5.1.1(i) rejection if
+Apple's questionnaire ends up wrong. If you genuinely don't know, leave it
+`needs-human-confirmation` (or absent — both block identically) and tell the owner it stays
+blocked until they find out.
+
+**This is not the same question as Zero Data Retention (ZDR) or "no training on this data."** A
+processor can promise ZDR/no-training and still retain the data itself for a window (for abuse
+monitoring, for billing, for the ZDR retention period itself) — that is still "collection" under
+Apple's definition. Only "nothing is kept past answering the request" clears this one; see
+SKILL.md's App Review hard gates section for why ShipLayer never infers this from ZDR/no-training
+language alone.
+
 ## Privacy, legal, trader status, agreements, age rating, content rights
 
 These map to `confirmations.*` and are yes/no facts about steps the owner (not you) must
@@ -174,6 +228,11 @@ qualify; every app still needs a completed age-rating questionnaire and privacy/
 This is separate from `confirmations.privacy` above: that confirms the owner *filled out* the App
 Store Connect questionnaire; `dataProcessing[]` is what the questionnaire's actual answers should
 be, and `check` cross-checks it against `PrivacyInfo.xcprivacy`/Info.plist evidence where present.
+It is also connected to `externalProcessors[]`, not independent of it: every confirmed processor
+row whose `collectionDetermination` is `"collection"` needs a matching confirmed `dataProcessing`
+row for each of its `dataCategories`, or `privacy.processor.<name>.<category>` blocks — see "Is
+this processor's receipt of data 'collection'" above before you get here, since a processor
+correctly confirmed `"not-collection"` needs no `dataProcessing` row for its data at all.
 Do the easy part yourself first — the scanner proposes categories from source/manifest evidence —
 then ask the owner only the two genuinely judgment-based questions, once per data category (e.g.
 once for "Email Address", once for "Precise Location"):
