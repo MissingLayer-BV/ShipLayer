@@ -61,5 +61,5 @@ Use the repository's `shiplayer` CLI for all deterministic work. Do not recreate
 
 - [references/workflow.md](references/workflow.md) — command and safety matrix.
 - [references/screenshots.md](references/screenshots.md) — screenshot harness, CI hand-off, ingestion, and marketing composition, start to finish.
-- [references/questions.md](references/questions.md) — verbatim-usable question templates for every human-input field in this workflow, and the rule for when not to record an answer.
+- [references/questions.md](references/questions.md) — verbatim-usable question templates for the human-input fields most often asked about and hardest to phrase; it does not cover every field in the schema. Read it before asking the user anything: it also carries the rule for when not to record an answer, and the shape to apply yourself when a blocked field has no template.
 - [references/ai-data-sharing.md](references/ai-data-sharing.md) — AI-sharing verbatim-matching rules, the fixed `purpose` enum, and the endpoint-disposition requirement.
