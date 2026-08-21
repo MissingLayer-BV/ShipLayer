@@ -123,11 +123,10 @@ export function validateManifest(candidate: unknown): asserts candidate is ShipL
     const presentation = manifest.monetization.purchasePresentation;
     if (presentation.subscriptionPeriodVisibleBeforePurchase !== "not-applicable" || presentation.offerTermsVisibleBeforePurchase !== "not-applicable" || presentation.termsAndPrivacyLinksVisibleBeforePurchase !== "not-applicable") errors.push("non-consumable purchase presentation must mark subscription-only disclosures not-applicable");
   }
-  if (manifest.monetization.type === "subscriptions") {
-    const presentation = manifest.monetization.purchasePresentation;
-    if (presentation.subscriptionPeriodVisibleBeforePurchase !== true || presentation.termsAndPrivacyLinksVisibleBeforePurchase !== true) errors.push("subscription purchase presentation must show billing period plus Terms and Privacy links before purchase");
-    if (manifest.monetization.products.some((product) => product.introductoryOffer) && presentation.offerTermsVisibleBeforePurchase !== true) errors.push("subscription introductory-offer terms must be visible before purchase");
-  }
+  // Whether these disclosures are actually visible before purchase is a judgment about the real
+  // paywall, not something manifest validation may force — a truthful `false` declaration must
+  // still load so `purchase.subscription-disclosures`/`purchase.offer-disclosures` (preflight.ts)
+  // can block it with an actionable message instead of the manifest refusing to load at all.
   const unique = (label: string, values: string[]): void => { if (new Set(values).size !== values.length) errors.push(`${label} must not contain duplicates`); };
   unique("dataProcessing categories", manifest.dataProcessing.map((item) => item.category));
   unique("external processor names", manifest.externalProcessors.map((item) => item.name));
@@ -144,7 +143,11 @@ export function validateManifest(candidate: unknown): asserts candidate is ShipL
     unique("AI consent evidence", manifest.aiDataSharing.consent.evidence);
     unique("AI privacy-policy evidence", manifest.aiDataSharing.privacyPolicy.evidence);
     for (const evidence of [...manifest.aiDataSharing.consent.evidence, ...manifest.aiDataSharing.privacyPolicy.evidence]) try { safeRelativePath(evidence, "AI disclosure evidence"); } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
-    if (!/(?:send|share|upload|transmit)/i.test(manifest.aiDataSharing.consent.affirmativeAction)) errors.push("AI consent affirmativeAction must clearly say data will be sent, shared, uploaded, or transmitted");
+    // Whether affirmativeAction clearly says data will be sent/shared/uploaded/transmitted is a
+    // judgment about the real button label, not something manifest validation may force — a
+    // truthful declaration (whatever the app's real button says) must still load so
+    // ai-sharing.consent-action-language (preflight.ts) can block it with an actionable message
+    // instead of the manifest refusing to load at all.
   }
   for (const item of manifest.externalServiceDecisions) unique(`external service decision ${item.finding} evidence`, item.evidence);
   for (const item of manifest.sourceContradictionOverrides) unique(`source contradiction override ${item.finding} evidence`, item.evidence);

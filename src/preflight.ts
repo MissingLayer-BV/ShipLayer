@@ -833,10 +833,16 @@ async function aiDataSharingChecks(repository: string, manifest: ShipLayerManife
   else if (referenced.some((processor) => processor?.confirmation !== "confirmed" || processor.protectionConfirmation !== "confirmed")) add("ai-sharing.processors", "block", "AI sharing references a processor whose handling or equal-protection review is unconfirmed.", "Confirm each recipient only after reviewing its role, data policy, and protection obligations.");
   else add("ai-sharing.processors", "pass", `AI sharing names ${sharing.processorNames.join(", ")}.`);
 
+  // A truthful affirmativeAction declaration (whatever the app's real button says) must always
+  // be loadable; this check is where Apple's transmission-language expectation is judged, not
+  // manifest validation (see src/manifest.ts) — a manifest that could not hold the real label
+  // would leave the app unable to reach `check` at all.
+  const affirmativeActionSaysTransmission = /(?:send|share|upload|transmit)/i.test(sharing.consent.affirmativeAction);
+  if (!affirmativeActionSaysTransmission) add("ai-sharing.consent-action-language", "block", `The declared affirmative action "${sharing.consent.affirmativeAction}" does not clearly say data will be sent, shared, uploaded, or transmitted.`, `Apple expects the pre-transmission action to explicitly state that data leaves the device (e.g. "Allow & Send to AI", "Scan & Upload"). Rename the action, then re-confirm it still matches what the production consent screen renders.`);
   const consentReady = sharing.consent.shownBeforeTransmission
     && sharing.consent.privacyPolicyLinkVisible
     && sharing.consent.confirmation === "confirmed"
-    && /(?:send|share|upload|transmit)/i.test(sharing.consent.affirmativeAction)
+    && affirmativeActionSaysTransmission
     && Boolean(sharing.consent.declinePath);
   if (!consentReady) add("ai-sharing.consent", "block", "The in-context AI disclosure/permission is incomplete or uses a generic affirmative action.", "Before transmission, state what is sent, name who receives it and why, provide a visible privacy link and non-AI decline path, and use an explicit action such as 'Allow and send to AI'.");
   else add("ai-sharing.consent", "pass", "AI sharing has a human-confirmed, explicit pre-transmission consent flow and decline path.");
@@ -963,8 +969,12 @@ async function purchasePresentationChecks(repository: string, manifest: ShipLaye
   else add("purchase.presentation", "pass", "Purchase presentation declares visible StoreKit-localized pricing before purchase.");
 
   if (money.type === "subscriptions") {
-    if (presentation.subscriptionPeriodVisibleBeforePurchase !== true || presentation.termsAndPrivacyLinksVisibleBeforePurchase !== true) add("purchase.subscription-disclosures", "block", "Subscription billing period or Terms/Privacy links are not confirmed visible before purchase.");
-    if (money.products.some((product) => product.introductoryOffer) && presentation.offerTermsVisibleBeforePurchase !== true) add("purchase.offer-disclosures", "block", "Introductory-offer terms are not confirmed visible before purchase.");
+    // These booleans are a truthful, human-declared statement about the real paywall, not
+    // something manifest validation may force to true (see src/manifest.ts) — a subscription
+    // that genuinely does not show this before purchase must still be declarable so this gate
+    // can block it with an actionable message instead of the manifest refusing to load.
+    if (presentation.subscriptionPeriodVisibleBeforePurchase !== true || presentation.termsAndPrivacyLinksVisibleBeforePurchase !== true) add("purchase.subscription-disclosures", "block", "Subscription billing period or Terms/Privacy links are not confirmed visible before purchase.", "Show the billing period and both Terms of Use and Privacy Policy links on the paywall before purchase, then declare subscriptionPeriodVisibleBeforePurchase and termsAndPrivacyLinksVisibleBeforePurchase as true only once that is actually true.");
+    if (money.products.some((product) => product.introductoryOffer) && presentation.offerTermsVisibleBeforePurchase !== true) add("purchase.offer-disclosures", "block", "Introductory-offer terms are not confirmed visible before purchase.", "Show the trial/introductory-offer terms on the paywall before purchase, then declare offerTermsVisibleBeforePurchase as true only once that is actually true.");
   }
 
   const source = await evidenceText(repository, presentation.sourceEvidence);

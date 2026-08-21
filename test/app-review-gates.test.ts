@@ -94,12 +94,25 @@ test("AI readiness requires exact data, purpose, recipients, consent, and matchi
   assert.ok(report.results.some((item) => item.id === "ai-sharing.consent-recipients" && item.severity === "block"));
 });
 
-test("generic AI permission actions are rejected by manifest validation", () => {
+test("generic AI permission actions load (a truthful declaration must be representable) but block at the check gate", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-ai-generic-action-"));
   const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
   addCompleteAISharing(manifest);
   if (!manifest.aiDataSharing.enabled) throw new Error("fixture");
   manifest.aiDataSharing.consent.affirmativeAction = "Allow and scan";
-  assert.throws(() => validateManifest(manifest), /affirmativeAction/);
+  assert.doesNotThrow(() => validateManifest(manifest));
+  // The rendered consent screen is updated to match the same (still generic) label so this
+  // isolates the affirmativeAction-language gate from the separate evidence-rendering gate.
+  await mkdir(path.join(root, "Sources"), { recursive: true });
+  await writeFile(path.join(root, "Sources/AIConsent.swift"), `Text("Cloudflare OpenRouter Alibaba Cloud International ${DATA_SENT} ${PURPOSE}")
+Button("Allow and scan") {}
+Button("Keep on device and enter manually") {}
+Link("Privacy Policy", destination: privacyURL)
+`);
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "ai-sharing.consent-action-language" && item.severity === "block" && item.message.includes("Allow and scan")));
+  assert.equal(report.canSubmit, false);
 });
 
 test("AI consent evidence must render the declared action, decline path, and Privacy Policy link", async () => {
