@@ -1,11 +1,16 @@
 ---
 name: ship-app-store
-description: Prepare a native Swift/SwiftUI iPhone and iPad repository for App Store release using ShipLayer. Use when Codex must audit App Store readiness, generate metadata/privacy/support/review artifacts, plan screenshots, validate IAP or subscriptions, or safely discover an app's state in App Store Connect. Enforce a human-confirmed, no-surprises release workflow.
+description: Prepare a native Swift/SwiftUI iPhone and iPad repository for App Store release using ShipLayer. Use when an agent must audit App Store readiness, generate metadata/privacy/support/review artifacts, plan and capture screenshots, validate IAP or subscriptions, or safely discover an app's state in App Store Connect. Enforce a human-confirmed, no-surprises release workflow.
 ---
 
 # Ship App Store
 
-Use the repository's `shiplayer` CLI for all deterministic work. Do not recreate release logic in prose. Before starting, run `command -v shiplayer` or use the reviewed local checkout's `./dist/index.js`; this private v0.1 package is not assumed to be globally installed or published to npm.
+Use the repository's `shiplayer` CLI for all deterministic work. Do not recreate release logic in prose. Run `command -v shiplayer` first — the ShipLayer checkout's `npm run install-skill` links it onto PATH via `npm link`. If it does not resolve, fall back to that checkout's `./dist/index.js`; this private v0.1 package is not published to npm.
+
+## Environment notes (check these before step 6)
+
+- **No macOS/Xcode simulator on this machine.** Never attempt a local `xcodebuild`/simulator run for screenshots. Emit the harness template and `screenshots/capture-workflow.yml`, then hand off to a human or a macOS/Xcode CI runner — see [references/screenshots.md](references/screenshots.md).
+- **Playwright on this machine needs a system browser.** This host's macOS (12.7.6) is below Playwright's bundled-Chromium floor, so `npm run export` fails to launch a browser unless you set `SHIPLAYER_PW_CHANNEL=chrome` (or another installed channel) first. Set it up front rather than waiting for the failure message.
 
 ## Workflow
 
@@ -14,10 +19,11 @@ Use the repository's `shiplayer` CLI for all deterministic work. Do not recreate
 3. Ask for confirmation only for facts the scanner cannot prove: pricing, availability, privacy collection/third parties, legal/trader status, App Review contact, and paywall behavior. Never infer that Zero Data Retention, no-training, or disabled provider collection means user data was not shared with the processors that received it.
 4. Draft `metadata.localizations.<locale>` (App Store name/subtitle/description/keywords/promotionalText/whatsNew) yourself from the app's real source and screenshots — see "App Store copy" below for the drafting rules and the checks that validate it. Present the draft to the user for approval; never set its `confirmation` to `confirmed` yourself.
 5. Update and validate `shiplayer.yml`, then run `shiplayer prepare <repo>` and `shiplayer check <repo>`.
-6. `prepare` emits a marketing screenshot composition project at `shiplayer-release/screenshots/marketing/` — a device frame + caption + background HTML slide per scenario, not the raw UI screenshot. Draft a concise, human-reviewed `screenshots.scenarios[].caption` for each scenario in `shiplayer.yml` (max 100 characters, no line breaks, though a wide-script caption — CJK, kana, hangul, fullwidth forms — should be kept noticeably shorter since those glyphs render close to full-width; sell one outcome per slide, not a feature list) — ShipLayer never invents these itself, and `init`'s unresolved questions will call out scenarios still missing one. A caption on an unconfirmed scenario still renders with a visible "Draft — needs confirmation" badge; do not treat it as finished until the scenario's `confirmation` is `confirmed`. Then run the commands the generated `screenshots/marketing/README.md` documents (`npm install`, `npx playwright install chromium`, then `npm run export`) to render final PNGs, and re-run `shiplayer check <repo>` to validate them. If the bundled Chromium download is blocked or unsupported (as on this owner's own machine), set `SHIPLAYER_PW_CHANNEL=chrome` (or another installed browser channel) before `npm run export` instead of downloading one — `export.mjs` also prints this exact suggestion if the browser launch fails.
-7. Preview every generated screenshot, metadata field, privacy/support page, review note, and preflight warning with the user.
-8. Run `shiplayer plan <repo>` first. Use `--remote` only with the user's credentials configured as environment variables; it is read-only.
-9. Treat `apply` and `submit` as separate explicit user-authorized gates. Do not pass their confirmation flags on the user's behalf. In v0.1 explicit execution reports a manual/unsupported handoff and exits 3; explain that no operation happened.
+6. Get real screenshots before compositing marketing slides: run `shiplayer capture <repo>` to check for an existing UI-test harness, generate one via `prepare` if none exists, hand the resulting `screenshots/capture-workflow.yml` off to a human/macOS-CI runner (never run it yourself — see "Environment notes" above), then ingest the exported PNGs with `shiplayer capture <repo> --from <dir> --family <iphone|ipad> --locale <locale>`. Full contract in [references/screenshots.md](references/screenshots.md).
+7. Draft each scenario's `screenshots.scenarios[].caption` in `shiplayer.yml`, then render `prepare`'s marketing composition project (`npm install && npm run export` in `shiplayer-release/screenshots/marketing/`, remembering `SHIPLAYER_PW_CHANNEL` from "Environment notes"), and re-run `shiplayer check <repo>`. Caption rules and the render pipeline are in [references/screenshots.md](references/screenshots.md).
+8. Preview every generated screenshot, metadata field, privacy/support page, review note, and preflight warning with the user.
+9. Run `shiplayer plan <repo>` first. Use `--remote` only with the user's credentials configured as environment variables; it is read-only.
+10. Treat `apply` and `submit` as separate explicit user-authorized gates. Do not pass their confirmation flags on the user's behalf. In v0.1 explicit execution reports a manual/unsupported handoff and exits 3; explain that no operation happened.
 
 ## App Review hard gates
 
@@ -47,8 +53,9 @@ Use the repository's `shiplayer` CLI for all deterministic work. Do not recreate
 - Never put credentials, `.p8` contents, login passwords, banking data, or tax details in `shiplayer.yml` or generated artifacts.
 - Never make or imply legal/privacy compliance. Require explicit human confirmation.
 - Do not create initial app records, accept agreements, alter tax/banking/trader declarations, or submit an app without direct user approval.
-- Use `shiplayer capture` to inspect the deterministic harness hand-off. v0.1 does not execute generic Simulator capture commands; only run a repository-owned, reviewed UI-test harness on macOS/Xcode.
+- Use `shiplayer capture` to inspect the deterministic harness hand-off. v0.1 does not execute generic Simulator capture commands; only run a repository-owned, reviewed UI-test harness on macOS/Xcode — never attempt one yourself on a machine without it (see "Environment notes" above).
 
 ## Reference
 
-Read [references/workflow.md](references/workflow.md) for the command and safety matrix.
+- [references/workflow.md](references/workflow.md) — command and safety matrix.
+- [references/screenshots.md](references/screenshots.md) — screenshot harness, CI hand-off, ingestion, and marketing composition, start to finish.
