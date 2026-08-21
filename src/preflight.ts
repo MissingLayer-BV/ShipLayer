@@ -8,7 +8,7 @@ import { inspectImage } from "./image.js";
 import { validateAscPrivateKey } from "./asc.js";
 import { appReviewNotes } from "./generator.js";
 import { DEFAULT_MARKETING_FINAL_DIR } from "./marketing.js";
-import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, isNonProductionSourcePath, MONETIZATION_CONTRADICTION_FINDING, productionEvidenceOnly, resolveContradictionOverride, storekitPurchaseEvidence, stripCodeComments } from "./evidence.js";
+import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, isNonProductionSourcePath, MONETIZATION_CONTRADICTION_FINDING, PURCHASE_UNAVAILABLE_CONTRADICTION_FINDING, productionEvidenceOnly, resolveContradictionOverride, storekitPurchaseEvidence, stripCodeComments } from "./evidence.js";
 
 // Apple requires ONE uniform size per required display class, and the classes are not
 // interchangeable: a 6.5-inch capture does not satisfy the 6.9-inch slot. Each display class is
@@ -1006,7 +1006,17 @@ async function purchasePresentationChecks(repository: string, manifest: ShipLaye
     if (customStyledMerchandising) add("purchase.custom-product-view-style", "block", "Purchase evidence applies an unverified custom ProductViewStyle, so StoreKit-owned price and loading presentation cannot be assumed.", "Use a built-in .automatic, .compact, .regular, or .large productViewStyle, or replace the custom style with a fully evidenced custom paywall.");
     if (customStyledSubscriptionStore) add("purchase.custom-subscription-control-style", "block", "Subscription evidence applies an unverified custom SubscriptionStoreControlStyle, so automatic price, period, and offer presentation cannot be assumed.", "Use a built-in .automatic, .buttons, .picker, .prominentPicker, .compactPicker, .pagedPicker, or .pagedProminentPicker subscriptionStoreControlStyle, or replace it with a fully evidenced custom paywall.");
     if (!storeKitMerchandisingView && !/\.purchase\s*\(/.test(sourceCode)) add("purchase.call-source", "block", "Purchase evidence does not include a StoreKit purchase call or a supported StoreKit-owned merchandising view.", "Reference the source that starts StoreKit purchase after price availability, or ProductView/SubscriptionStoreView.");
-    if (!unavailableStateRendered) add("purchase.unavailable-source", "block", "Purchase evidence does not keep payment unavailable while product/price data is loading or unavailable.", "Disable or withhold the purchase action until Product loads and render an explicit loading/unavailable/retry state.");
+    if (!unavailableStateRendered) {
+      // This is a same-file heuristic, not a manifest-vs-source disagreement, but it can be
+      // wrong about a real paywall shaped differently than it expects (e.g. the purchase-capable
+      // control is a custom component reached through an enum case rather than a literal Button
+      // with a recognized .disabled predicate) exactly the way a *.source-contradiction finding
+      // can be wrong — so it is resolved through the same evidence-intersecting human override,
+      // never silently, and it downgrades to a visible warning rather than clearing.
+      const override = await resolveContradictionOverride(repository, manifest, PURCHASE_UNAVAILABLE_CONTRADICTION_FINDING, presentation.sourceEvidence);
+      if (override) add("purchase.unavailable-source", "warn", `Purchase evidence in ${presentation.sourceEvidence.join(", ")} does not visibly keep payment unavailable while product/price data is loading or unavailable, but this is human-overridden: ${override.reason}`, "Re-verify this override whenever the source or manifest changes.");
+      else add("purchase.unavailable-source", "block", "Purchase evidence does not keep payment unavailable while product/price data is loading or unavailable.", "Disable or withhold the purchase action until Product loads and render an explicit loading/unavailable/retry state, or add a confirmed sourceContradictionOverride naming 'purchase.unavailable-source' with a reason and evidence that intersects this finding's source paths if the real paywall does keep payment unavailable this way.");
+    }
 
     if (money.type === "subscriptions") {
       const periodRendered = subscriptionStoreView || hasVisibleSubscriptionPeriod(sourceCode);

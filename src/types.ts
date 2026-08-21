@@ -92,10 +92,13 @@ export interface ExternalServiceDecision {
 /**
  * The only way to resolve a `*.source-contradiction` blocker (source evidence disagrees with a
  * manifest declaration, e.g. StoreKit purchase code present while monetization.type is "free", or
- * a third-party AI/inference endpoint called while aiDataSharing.enabled is false). `finding`
- * identifies the exact blocker id being overridden. An override can never be expressed as an
- * empty/default value: reason and evidence are both required and non-empty, and confirmation must
- * be explicitly "confirmed" by a human.
+ * a third-party AI/inference endpoint called while aiDataSharing.enabled is false) or the
+ * `purchase.unavailable-source` heuristic blocker (source evidence does not visibly prove payment
+ * stays unavailable while product/price data is loading or unavailable — a same-file scan that,
+ * like any heuristic, can be wrong about a real paywall shaped differently than it expects).
+ * `finding` identifies the exact blocker id being overridden. An override can never be expressed
+ * as an empty/default value: reason and evidence are both required and non-empty, and confirmation
+ * must be explicitly "confirmed" by a human.
  */
 export interface SourceContradictionOverride {
   finding: string;

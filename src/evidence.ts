@@ -244,9 +244,18 @@ export function externalServiceFindings(analysis: AnalysisReport): Finding[] {
   return productionEvidenceOnly(analysis.findings.filter((finding) => finding.key.startsWith("thirdPartySdkCandidate:") || finding.key.startsWith("endpoint:")));
 }
 
-// --- human overrides for a *.source-contradiction blocker -----------------------------------
+// --- human overrides for a *.source-contradiction blocker, and for purchase.unavailable-source ---
+// The same mechanism also resolves purchase.unavailable-source: that gate is a same-file source
+// heuristic (does a literal Button whose action calls .purchase( sit behind a safe disabled
+// predicate or an if-let product/price guard?), not a manifest-vs-source disagreement, so its
+// finding id intentionally does not carry a ".source-contradiction" suffix. It belongs here
+// anyway rather than behind a second, parallel override path: the heuristic can be wrong in
+// exactly the same way (a real paywall shaped differently than the scanner expects), and a wrong
+// heuristic deserves the exact same auditable, evidence-intersecting, warn-not-clear resolution —
+// never a second mechanism with different rigor.
 
 export const MONETIZATION_CONTRADICTION_FINDING = "monetization.source-contradiction";
+export const PURCHASE_UNAVAILABLE_CONTRADICTION_FINDING = "purchase.unavailable-source";
 export function aiContradictionFindingId(finding: Finding): string { return `ai-sharing.source-contradiction:${finding.key}`; }
 
 export function findContradictionOverride(manifest: ShipLayerManifest, findingId: string): SourceContradictionOverride | undefined {
@@ -254,11 +263,12 @@ export function findContradictionOverride(manifest: ShipLayerManifest, findingId
 }
 
 /**
- * Resolves a *.source-contradiction blocker's override, or undefined if none applies. A valid
- * override must: name this exact finding; be explicitly confirmed by a human with a non-empty
- * reason; cite at least one evidence path that (a) actually exists as a contained, non-symlinked
- * file, and (b) intersects the flagged finding's own source paths — an override cannot cite an
- * unrelated file such as NOTES.md to wave away evidence it never actually addresses.
+ * Resolves a *.source-contradiction blocker's (or purchase.unavailable-source's) override, or
+ * undefined if none applies. A valid override must: name this exact finding; be explicitly
+ * confirmed by a human with a non-empty reason; cite at least one evidence path that (a) actually
+ * exists as a contained, non-symlinked file, and (b) intersects the flagged finding's own source
+ * paths — an override cannot cite an unrelated file such as NOTES.md to wave away evidence it
+ * never actually addresses.
  */
 export async function resolveContradictionOverride(repository: string, manifest: ShipLayerManifest, findingId: string, findingSourcePaths: Iterable<string>): Promise<SourceContradictionOverride | undefined> {
   const override = findContradictionOverride(manifest, findingId);
