@@ -177,8 +177,8 @@ marketing description:
 attestations:
 
 ```yaml
-# First-party implementation: cite the exact existing processor evidence path, not a README,
-# project manifest, .env file, test, or credential/config secret.
+# First-party implementation: cite a scanner-discovered runtime source/config path for this
+# processor's exact endpoint, not a README, project manifest, .env file, test, or secret.
 notCollectionAttestation:
   dataNotRetainedBeyondRealTimeService: true
   basis: first-party-implementation
@@ -188,10 +188,14 @@ notCollectionAttestation:
   confirmation: confirmed
 ```
 
-The `repo-path` must be an existing contained regular production source/config file that exactly
-overlaps `externalProcessors[].evidence` for this processor. ShipLayer verifies that linkage and
-existence, not what the file means; the human still owns the retention fact. An arbitrary README,
-project manifest, `.env`, test, docs file, or a path from another processor does not clear this.
+The `repo-path` must be an existing contained regular production source/config file that the
+scanner independently found as runtime evidence for this processor's exact endpoint. For a
+display-name processor, a human may make that exact mapping in a confirmed
+`externalServiceDecision.processorName`; merely adding a path to `externalProcessors[].evidence`
+does not establish it. ShipLayer verifies that linkage, ordinary-file status, and absence of
+direct credential material — not what the file means; the human still owns the retention fact. An
+arbitrary README, project manifest, `.env`, test, docs file, or a path from another processor does
+not clear this.
 
 ```yaml
 # Vendor documentation: use the row's canonical public privacy policy, not a generic vendor link.
@@ -203,14 +207,19 @@ notCollectionAttestation:
   confirmation: confirmed
 ```
 
-For that second form, the processor's `privacyPolicyUrl` must be public HTTPS with no userinfo,
-query string, or fragment; it cannot be loopback/private/reserved/IDN and must be on the
-processor's exact or registrable domain. ShipLayer verifies only that URL safety/linkage; it does
-not fetch, read, or prove the policy's retention terms. Do not use an arbitrary `public-url`, a
-generic no-training/ZDR link, or another vendor's policy as evidence. Contracts/DPAs and written
-vendor confirmations are confidential and cannot safely clear this v0.1 gate: keep them outside
-the release manifest and leave the row pending or record `collection` until a safe evidence model
-exists.
+For that second form, the processor's `privacyPolicyUrl` itself is the evidence: it must be public
+HTTPS with no userinfo, query string, or fragment; it cannot be loopback/private/reserved/IDN; its
+host must exactly match the structured processor host or an exact scanner endpoint that a confirmed
+`externalServiceDecision.processorName` maps to this row. Its route must be a canonical
+privacy/data-protection/data-collection/retention/DPA route — a root page, marketing/docs page,
+generic ZDR page, another vendor, a parent domain, or a different tenant on shared hosting does not
+clear the gate. ShipLayer verifies only that URL safety and exact linkage; it does not fetch, read,
+or prove the policy's retention terms. Do not use an arbitrary `public-url`, a generic
+no-training/ZDR link, or another vendor's policy as evidence. Contracts/DPAs and written vendor
+confirmations are confidential and cannot safely clear this v0.1 gate: keep them outside the
+release manifest and leave the row pending or record `collection` until a safe evidence model
+exists. Ordinary support/privacy URLs elsewhere in the manifest may have benign queries/fragments;
+this strict URL form applies only to structured attestation evidence.
 
 The exact observable fact is deliberately a literal field: **does this processor and every
 downstream recipient avoid retaining the transmitted data beyond real-time servicing of the

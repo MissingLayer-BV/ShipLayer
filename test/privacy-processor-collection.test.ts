@@ -25,12 +25,12 @@ function attestation(overrides: Partial<NotCollectionAttestation> = {}): NotColl
 
 function processor(overrides: Partial<ShipLayerManifest["externalProcessors"][number]> = {}): ShipLayerManifest["externalProcessors"][number] {
   return {
-    name: "cdn.example.com",
+    name: "cdn.vendor-a.com",
     kind: "network",
     aiPipelineRecipient: false,
     purpose: "App Functionality",
     dataCategories: ["Product Interaction"],
-    privacyPolicyUrl: "https://example.com/privacy",
+    privacyPolicyUrl: "https://cdn.vendor-a.com/privacy",
     protectionConfirmation: "confirmed",
     confirmation: "confirmed",
     evidence: ["Sources/CdnClient.swift"],
@@ -38,18 +38,33 @@ function processor(overrides: Partial<ShipLayerManifest["externalProcessors"][nu
   };
 }
 
+function endpointForProcessor(item: ShipLayerManifest["externalProcessors"][number]): string {
+  try {
+    const policyHost = new URL(item.privacyPolicyUrl).hostname;
+    const host = /^[a-z0-9.-]+$/i.test(item.name) && item.name.includes(".") ? item.name : policyHost;
+    return `https://${host}/v1/realtime`;
+  } catch { return "https://cdn.vendor-a.com/v1/realtime"; }
+}
+
+function linkScannerEndpoint(manifest: ShipLayerManifest, item: ShipLayerManifest["externalProcessors"][number], source: string): void {
+  const endpoint = endpointForProcessor(item);
+  manifest.externalServiceDecisions.push({ finding: `endpoint:${endpoint}`, disposition: "declared-processor", processorName: item.name, reason: "Human confirmed this runtime endpoint belongs to the declared processor.", evidence: [source], confirmation: "confirmed" });
+}
+
 async function reportFor(overrides: Partial<ShipLayerManifest["externalProcessors"][number]>): Promise<Awaited<ReturnType<typeof preflight>>> {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-collection-attestation-"));
   const manifest = readyManifest();
   await writeReadyAssets(root, manifest);
   await mkdir(path.join(root, "Sources"), { recursive: true });
-  await writeFile(path.join(root, "Sources/CdnClient.swift"), "struct CdnClient { func fetch() {} }\n");
-  manifest.externalProcessors.push(processor(overrides));
+  const item = processor(overrides);
+  await writeFile(path.join(root, "Sources/CdnClient.swift"), `let processorEndpoint = "${endpointForProcessor(item)}"\n`);
+  manifest.externalProcessors.push(item);
+  linkScannerEndpoint(manifest, item, "Sources/CdnClient.swift");
   return preflight(root, manifest);
 }
 
 function hasCollectionBlock(report: Awaited<ReturnType<typeof preflight>>): boolean {
-  return report.results.some((item) => item.id === "privacy.processor.cdn.example.com.collection-determination" && item.severity === "block");
+  return report.results.some((item) => item.id === "privacy.processor.cdn.vendor-a.com.collection-determination" && item.severity === "block");
 }
 
 async function configuredNotCollectionProcessor(
@@ -61,9 +76,12 @@ async function configuredNotCollectionProcessor(
   const manifest = readyManifest();
   await writeReadyAssets(root, manifest);
   await mkdir(path.join(root, "Sources"), { recursive: true });
-  await writeFile(path.join(root, "Sources/CdnClient.swift"), "struct CdnClient { func fetch() {} }\n");
+  const item = processor({ collectionDetermination: "not-collection", notCollectionAttestation: attestation(attestationOverrides), ...processorOverrides });
+  const firstParty = item.notCollectionAttestation?.basis === "first-party-implementation";
+  await writeFile(path.join(root, "Sources/CdnClient.swift"), firstParty ? `let processorEndpoint = "${endpointForProcessor(item)}"\n` : "struct CdnClient { func fetch() {} }\n");
   if (setup) await setup(root);
-  manifest.externalProcessors.push(processor({ collectionDetermination: "not-collection", notCollectionAttestation: attestation(attestationOverrides), ...processorOverrides }));
+  manifest.externalProcessors.push(item);
+  if (firstParty) linkScannerEndpoint(manifest, item, "Sources/CdnClient.swift");
   return { root, manifest, report: await preflight(root, manifest) };
 }
 
@@ -74,7 +92,7 @@ function collectionDeterminationBlocked(report: Awaited<ReturnType<typeof prefli
 test("a confirmed external processor with no collectionDetermination blocks until answered, and does not also demand a dataProcessing row while unanswered", async () => {
   const report = await reportFor({});
   assert.ok(hasCollectionBlock(report));
-  assert.equal(report.results.filter((item) => item.id === "privacy.processor.cdn.example.com.Product Interaction").length, 0);
+  assert.equal(report.results.filter((item) => item.id === "privacy.processor.cdn.vendor-a.com.Product Interaction").length, 0);
 });
 
 test("collectionDetermination explicitly needs-human-confirmation blocks identically to absent", async () => {
@@ -83,8 +101,8 @@ test("collectionDetermination explicitly needs-human-confirmation blocks identic
 
 test("a complete structured attestation clears the category blocker without a dataProcessing row", async () => {
   const report = await reportFor({ collectionDetermination: "not-collection", notCollectionAttestation: attestation() });
-  assert.ok(report.results.some((item) => item.id === "privacy.processor.cdn.example.com.collection-determination" && item.severity === "pass"));
-  assert.equal(report.results.filter((item) => item.id === "privacy.processor.cdn.example.com.Product Interaction").length, 0);
+  assert.ok(report.results.some((item) => item.id === "privacy.processor.cdn.vendor-a.com.collection-determination" && item.severity === "pass"));
+  assert.equal(report.results.filter((item) => item.id === "privacy.processor.cdn.vendor-a.com.Product Interaction").length, 0);
   assert.equal(report.canSubmit, true);
 });
 
@@ -140,7 +158,7 @@ test("vendor documentation clears only through a domain-linked canonical process
   await writeReadyAssets(root, manifest);
   manifest.externalProcessors.push(processor({
     name: "api.vendor-a.com",
-    privacyPolicyUrl: "https://vendor-a.com/privacy",
+    privacyPolicyUrl: "https://api.vendor-a.com/privacy",
     evidence: [],
     collectionDetermination: "not-collection",
     notCollectionAttestation: attestation({ basis: "vendor-documentation", evidence: { kind: "processor-privacy-policy" } })
@@ -150,12 +168,12 @@ test("vendor documentation clears only through a domain-linked canonical process
   assert.ok(report.results.some((item) => item.id === "privacy.processor.api.vendor-a.com.collection-determination" && item.severity === "pass"));
 });
 
-test("first-party implementation evidence must be eligible, existing processor evidence rather than an unrelated file", async () => {
+test("first-party implementation evidence must be scanner-correlated rather than manifest-self-certified", async () => {
   const cases: Array<{ label: string; path: string; processorEvidence: string[]; setup?: (root: string) => Promise<void> }> = [
     { label: "generic project manifest", path: "project.yml", processorEvidence: ["project.yml"] },
     { label: "README", path: "README.md", processorEvidence: ["README.md"], setup: async (root) => { await writeFile(path.join(root, "README.md"), "Vendor integration notes\n"); } },
     { label: "dotenv credential file", path: ".env", processorEvidence: [".env"], setup: async (root) => { await writeFile(path.join(root, ".env"), "API_TOKEN=not-for-manifest\n"); } },
-    { label: "unrelated but existing source", path: "Sources/Unrelated.swift", processorEvidence: ["Sources/CdnClient.swift"], setup: async (root) => { await writeFile(path.join(root, "Sources/Unrelated.swift"), "struct Unrelated {}\n"); } },
+    { label: "self-listed unrelated source", path: "Sources/Unrelated.swift", processorEvidence: ["Sources/Unrelated.swift"], setup: async (root) => { await writeFile(path.join(root, "Sources/Unrelated.swift"), "let unrelatedEndpoint = \"https://other.vendor-a.com/v1/events\"\n"); } },
     { label: "nonexistent source", path: "Sources/Missing.swift", processorEvidence: ["Sources/Missing.swift"] },
     { label: "symlink source", path: "Sources/Linked.swift", processorEvidence: ["Sources/Linked.swift"], setup: async (root) => { await symlink("CdnClient.swift", path.join(root, "Sources/Linked.swift")); } }
   ];
@@ -170,13 +188,44 @@ test("first-party implementation evidence must be eligible, existing processor e
   assert.throws(() => validateManifest(traversal), /Invalid shiplayer/);
 });
 
+test("first-party evidence needs a scanner endpoint match, rejects secrets, and can use an exact human decision for a display-name processor", async () => {
+  const selfListed = await configuredNotCollectionProcessor(
+    { evidence: ["Sources/Unrelated.swift"] },
+    { evidence: { kind: "repo-path", path: "Sources/Unrelated.swift" } },
+    async (root) => { await writeFile(path.join(root, "Sources/Unrelated.swift"), "let unrelatedEndpoint = \"https://other.vendor-a.com/v1/events\"\n"); }
+  );
+  assert.ok(collectionDeterminationBlocked(selfListed.report), "adding the same unrelated path to both manifest fields cannot self-certify it");
+
+  const secretBearing = await configuredNotCollectionProcessor(
+    {},
+    {},
+    async (root) => { await writeFile(path.join(root, "Sources/CdnClient.swift"), "let apiToken = \"sekrit-value\"\nlet endpoint = \"https://cdn.vendor-a.com/v1/realtime\"\n"); }
+  );
+  assert.ok(collectionDeterminationBlocked(secretBearing.report));
+  assert.doesNotMatch(JSON.stringify(secretBearing.report), /sekrit-value/i);
+
+  const unrelatedSecret = await configuredNotCollectionProcessor(
+    { evidence: ["Sources/Unrelated.swift"] },
+    { evidence: { kind: "repo-path", path: "Sources/Unrelated.swift" } },
+    async (root) => { await writeFile(path.join(root, "Sources/Unrelated.swift"), "let apiToken = \"unrelated-sekrit\"\nlet unrelatedEndpoint = \"https://other.vendor-a.com/v1/events\"\n"); }
+  );
+  assert.ok(collectionDeterminationBlocked(unrelatedSecret.report));
+  assert.doesNotMatch(JSON.stringify(unrelatedSecret.report), /unrelated-sekrit/i);
+
+  const displayName = await configuredNotCollectionProcessor(
+    { name: "Vendor Edge", privacyPolicyUrl: "https://edge.vendor-a.com/privacy", evidence: ["Sources/CdnClient.swift"] },
+    {}
+  );
+  assert.equal(displayName.report.canSubmit, true, "a confirmed externalServiceDecision can exactly map scanner evidence to a display-name processor");
+});
+
 test("basis and evidence compatibility fails closed, including arbitrary public links and confidential bases", async () => {
   const cases: Array<{ label: string; processor: Partial<ShipLayerManifest["externalProcessors"][number]>; attestation: Partial<NotCollectionAttestation> }> = [
     { label: "vendor documentation with project file", processor: { evidence: ["project.yml"] }, attestation: { basis: "vendor-documentation", evidence: { kind: "repo-path", path: "project.yml" } } },
     { label: "vendor documentation with unrelated public URL", processor: {}, attestation: { basis: "vendor-documentation", evidence: { kind: "public-url", url: "https://unrelated.example/cat-picture" } } },
-    { label: "vendor generic ZDR link", processor: { name: "api.vendor-a.com", privacyPolicyUrl: "https://vendor-a.com/privacy", evidence: [] }, attestation: { basis: "vendor-documentation", evidence: { kind: "public-url", url: "https://vendor-a.com/zdr" } } },
+    { label: "vendor generic ZDR link", processor: { name: "api.vendor-a.com", privacyPolicyUrl: "https://api.vendor-a.com/privacy", evidence: [] }, attestation: { basis: "vendor-documentation", evidence: { kind: "public-url", url: "https://api.vendor-a.com/zdr" } } },
     { label: "first-party with policy URL", processor: {}, attestation: { basis: "first-party-implementation", evidence: { kind: "processor-privacy-policy" } } },
-    { label: "contract DPA with policy URL", processor: { name: "api.vendor-a.com", privacyPolicyUrl: "https://vendor-a.com/privacy", evidence: [] }, attestation: { basis: "contract-dpa", evidence: { kind: "processor-privacy-policy" } } },
+    { label: "contract DPA with policy URL", processor: { name: "api.vendor-a.com", privacyPolicyUrl: "https://api.vendor-a.com/privacy", evidence: [] }, attestation: { basis: "contract-dpa", evidence: { kind: "processor-privacy-policy" } } },
     { label: "contract DPA with dotenv file", processor: { evidence: [".env"] }, attestation: { basis: "contract-dpa", evidence: { kind: "repo-path", path: ".env" } } },
     { label: "written vendor confirmation with repository path", processor: {}, attestation: { basis: "written-vendor-confirmation", evidence: { kind: "repo-path", path: "Sources/CdnClient.swift" } } },
     { label: "unrelated processor policy", processor: { name: "api.vendor-a.com", privacyPolicyUrl: "https://unrelated.example/cats", evidence: [] }, attestation: { basis: "vendor-documentation", evidence: { kind: "processor-privacy-policy" } } }
@@ -188,18 +237,36 @@ test("basis and evidence compatibility fails closed, including arbitrary public 
   }
 });
 
-test("vendor policy linkage accepts sibling subdomains on the same registrable domain and rejects lookalikes", async () => {
+test("vendor policy clearance is exact-host only and rejects shared-host tenants, special-use hosts, and arbitrary paths", async () => {
   const passing = [
-    { name: "api.vendor-a.com", privacyPolicyUrl: "https://docs.vendor-a.com/privacy" },
-    { name: "api.vendor-a.co.uk", privacyPolicyUrl: "https://docs.vendor-a.co.uk/privacy" }
+    { name: "api.vendor-a.com", privacyPolicyUrl: "https://api.vendor-a.com/privacy" },
+    { name: "api.vendor-a.co.in", privacyPolicyUrl: "https://api.vendor-a.co.in/data-protection" },
+    { name: "vendor.github.io", privacyPolicyUrl: "https://vendor.github.io/privacy-policy" },
+    { name: "tenant.pages.dev", privacyPolicyUrl: "https://tenant.pages.dev/retention" }
   ];
   for (const entry of passing) {
     const { report } = await configuredNotCollectionProcessor({ ...entry, evidence: [] }, { basis: "vendor-documentation", evidence: { kind: "processor-privacy-policy" } });
     assert.equal(report.canSubmit, true, entry.name);
   }
   const failing = [
-    { name: "api.vendor-a.com", privacyPolicyUrl: "https://api.vendor-b.com/privacy" },
-    { name: "api.vendor-a.com", privacyPolicyUrl: "https://notvendor-a.com/privacy" }
+    { name: "api.vendor.co.in", privacyPolicyUrl: "https://docs.attacker.co.in/privacy" },
+    { name: "vendor.github.io", privacyPolicyUrl: "https://attacker.github.io/privacy" },
+    { name: "tenant.appspot.com", privacyPolicyUrl: "https://attacker.appspot.com/privacy" },
+    { name: "tenant.pages.dev", privacyPolicyUrl: "https://attacker.pages.dev/privacy" },
+    { name: "tenant.vercel.app", privacyPolicyUrl: "https://attacker.vercel.app/privacy" },
+    { name: "tenant.cloudfront.net", privacyPolicyUrl: "https://attacker.cloudfront.net/privacy" },
+    { name: "vendor.onion", privacyPolicyUrl: "https://vendor.onion/privacy" },
+    { name: "vendor.home.arpa", privacyPolicyUrl: "https://vendor.home.arpa/privacy" },
+    { name: "vendor.alt", privacyPolicyUrl: "https://vendor.alt/privacy" },
+    { name: "vendor.local", privacyPolicyUrl: "https://vendor.local/privacy" },
+    { name: "vendor.internal", privacyPolicyUrl: "https://vendor.internal/privacy" },
+    { name: "vendor.corp", privacyPolicyUrl: "https://vendor.corp/privacy" },
+    { name: "vendor.localdomain", privacyPolicyUrl: "https://vendor.localdomain/privacy" },
+    { name: "api.vendor-a.com", privacyPolicyUrl: "https://api.vendor-a.com/" },
+    { name: "api.vendor-a.com", privacyPolicyUrl: "https://api.vendor-a.com/zdr" },
+    { name: "api.vendor-a.com", privacyPolicyUrl: "https://api.vendor-a.com/cats" },
+    { name: "api.vendor-a.com", privacyPolicyUrl: "https://api.vendor-a.com/docs/privacy" },
+    { name: "api.vendor-a.com", privacyPolicyUrl: "https://api.vendor-a.com/marketing/privacy" }
   ];
   for (const entry of failing) {
     const { report } = await configuredNotCollectionProcessor({ ...entry, evidence: [] }, { basis: "vendor-documentation", evidence: { kind: "processor-privacy-policy" } });
@@ -207,9 +274,52 @@ test("vendor policy linkage accepts sibling subdomains on the same registrable d
   }
 
   const namedVendor = await configuredNotCollectionProcessor({ name: "Vendor A", privacyPolicyUrl: "https://vendor-a.com/privacy", evidence: [] }, { basis: "vendor-documentation", evidence: { kind: "processor-privacy-policy" } });
-  assert.equal(namedVendor.report.canSubmit, true, "a display name can match its exact registrable-domain label");
+  assert.ok(collectionDeterminationBlocked(namedVendor.report), "a display name requires scanner-linked evidence rather than a domain-name guess");
   const lookalikeName = await configuredNotCollectionProcessor({ name: "Vendor", privacyPolicyUrl: "https://notvendor.com/privacy", evidence: [] }, { basis: "vendor-documentation", evidence: { kind: "processor-privacy-policy" } });
   assert.ok(collectionDeterminationBlocked(lookalikeName.report), "a display-name substring must not authenticate a lookalike domain");
+
+  const mappedVendor = await configuredNotCollectionProcessor(
+    { name: "Vendor Edge", privacyPolicyUrl: "https://edge.vendor-a.com/privacy", evidence: ["Sources/CdnClient.swift"] },
+    { basis: "vendor-documentation", evidence: { kind: "processor-privacy-policy" } }
+  );
+  await writeFile(path.join(mappedVendor.root, "Sources/CdnClient.swift"), "let endpoint = \"https://edge.vendor-a.com/v1/realtime\"\n");
+  linkScannerEndpoint(mappedVendor.manifest, mappedVendor.manifest.externalProcessors[0], "Sources/CdnClient.swift");
+  const mappedVendorReport = await preflight(mappedVendor.root, mappedVendor.manifest);
+  assert.equal(mappedVendorReport.canSubmit, true, "a display-name vendor can use an exact scanner endpoint plus a named human processor decision");
+});
+
+test("ordinary manifest URLs may use benign query strings or fragments while structured evidence remains strict", () => {
+  const manifest = readyManifest();
+  manifest.contacts.supportUrl = "https://support.vendor-a.com/help?lang=en";
+  manifest.contacts.privacyUrl = "https://vendor-a.com/privacy#retention";
+  manifest.externalProcessors.push(processor({
+    collectionDetermination: "collection",
+    privacyPolicyUrl: "https://cdn.vendor-a.com/privacy?lang=en#retention",
+    evidence: []
+  }));
+  assert.doesNotThrow(() => validateManifest(manifest));
+
+  const credentialedOrdinaryUrl = readyManifest();
+  credentialedOrdinaryUrl.contacts.supportUrl = "https://support.vendor-a.com/help?token=sekrit";
+  assert.throws(() => validateManifest(credentialedOrdinaryUrl), (error: unknown) => {
+    assert.doesNotMatch(String(error), /sekrit/i);
+    return true;
+  });
+  credentialedOrdinaryUrl.contacts.supportUrl = "https://support.vendor-a.com/help#access_token=sekrit";
+  assert.throws(() => validateManifest(credentialedOrdinaryUrl), (error: unknown) => {
+    assert.doesNotMatch(String(error), /sekrit/i);
+    return true;
+  });
+
+  const strict = readyManifest();
+  strict.externalProcessors.push(processor({
+    name: "api.vendor-a.com",
+    privacyPolicyUrl: "https://api.vendor-a.com/privacy?lang=en",
+    evidence: [],
+    collectionDetermination: "not-collection",
+    notCollectionAttestation: attestation({ basis: "vendor-documentation", evidence: { kind: "processor-privacy-policy" } })
+  }));
+  assert.throws(() => validateManifest(strict), /credential-safe public HTTPS URL/);
 });
 
 test("unsafe evidence URLs are rejected without leaking their value into diagnostics or generated artifacts", async () => {
@@ -294,9 +404,9 @@ test("collection requires a matching confirmed dataProcessing row", async () => 
   manifest.dataProcessing.push({ category: "Product Interaction", purpose: ["App Functionality"], linkedToIdentity: false, usedForTracking: false, confirmation: "confirmed" });
   let report = await preflight(root, manifest);
   assert.equal(report.canSubmit, true);
-  assert.ok(report.results.some((item) => item.id === "privacy.processor.cdn.example.com.Product Interaction" && item.severity === "pass"));
+  assert.ok(report.results.some((item) => item.id === "privacy.processor.cdn.vendor-a.com.Product Interaction" && item.severity === "pass"));
 
   manifest.dataProcessing = [];
   report = await preflight(root, manifest);
-  assert.ok(report.results.some((item) => item.id === "privacy.processor.cdn.example.com.Product Interaction" && item.severity === "block"));
+  assert.ok(report.results.some((item) => item.id === "privacy.processor.cdn.vendor-a.com.Product Interaction" && item.severity === "block"));
 });

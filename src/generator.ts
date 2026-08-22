@@ -9,6 +9,7 @@ import { detectScreenshotHarness } from "./scanner.js";
 import { buildMarketingSlideEntries, DEFAULT_MARKETING_FINAL_DIR, DEFAULT_OUTPUT_DIRECTORY, EXPORT_MJS, frameForFamily, renderPackageJson, renderReadme, renderSlideHtml, renderSlidesManifestJson, STRIP_ALPHA_MJS } from "./marketing.js";
 import { assessNotCollectionAttestation, notCollectionAttestationIssueMessage } from "./collection-attestation.js";
 import { validateManifest } from "./manifest.js";
+import { containsDirectCredentialMaterial } from "./secrets.js";
 
 export interface PreparedPackage { directory: string; files: string[] }
 const RESERVED_OUTPUT_ROOTS = new Set([".git", ".github", ".shiplayer-staging", "node_modules", "pods", "carthage", "deriveddata", "build", ".build", "dist", ".swiftpm", "vendor", "release", "shiplayer.yml"]);
@@ -177,7 +178,7 @@ function assertFinalOutputDirNotReserved(finalOutputDir: string): void {
   if (reserved) throw new Error(`screenshots.finalOutputDir cannot use reserved or source-control path '${reserved}'. Choose a location that does not overlap a VCS/build/dependency directory.`);
 }
 function assertManifestPaths(manifest: ShipLayerManifest): void { safeRelativePath(manifest.screenshots.rawOutputDir, "screenshots.rawOutputDir"); if (manifest.screenshots.marketingProjectPath) safeRelativePath(manifest.screenshots.marketingProjectPath, "screenshots.marketingProjectPath"); if (manifest.screenshots.finalOutputDir) { safeRelativePath(manifest.screenshots.finalOutputDir, "screenshots.finalOutputDir"); assertFinalOutputDirNotReserved(manifest.screenshots.finalOutputDir); } if (manifest.monetization.type === "non-consumables" || manifest.monetization.type === "subscriptions") for (const product of manifest.monetization.products) safeRelativePath(product.reviewScreenshot, `review screenshot for ${product.productId}`); }
-function assertNoSecretOutput(contents: string, label: string): void { if (/-----BEGIN(?: [A-Z]+)? PRIVATE KEY-----/i.test(contents) || /\b(?:api[ _-]?key|access[ _-]?token|auth[ _-]?token|secret|password|private[ _-]?key)\s*[:=]\s*\S+/i.test(contents) || /\bsk-[A-Za-z0-9_-]{16,}\b/.test(contents)) throw new Error(`Refusing to generate ${label} because it appears to contain credential material.`); }
+function assertNoSecretOutput(contents: string, label: string): void { if (containsDirectCredentialMaterial(contents)) throw new Error(`Refusing to generate ${label} because it appears to contain credential material.`); }
 
 // --- shared "did the scan contradict this declaration" helpers, used by every generated ------
 // artifact below that would otherwise assert a confident absence it never actually checked.
@@ -263,7 +264,7 @@ function externalProcessorQuestionnaireLine(processor: ShipLayerManifest["extern
     else if (!preflightPass) determination = " UNVERIFIED: marked not-collection, but its structured attestation or evidence is not ready in preflight. Do not use this row to support an app-wide questionnaire answer.";
     else {
       const auditNote = processor.collectionDeterminationReason ? ` Audit note (not semantically validated by ShipLayer): ${JSON.stringify(processor.collectionDeterminationReason)}.` : "";
-      determination = ` Human-confirmed not to be App Privacy collection for this processor, based on a structured real-time-service attestation (${attestation.basis}; ${notCollectionEvidenceSummary(attestation.evidence)}). This processor alone adds no category disclosure requirement.${aggregateReminder}${auditNote}`;
+      determination = ` Human-confirmed not to be App Privacy collection for this processor, based on a structured real-time-service attestation (${attestation.basis}; ${notCollectionEvidenceSummary(attestation.evidence)}). ShipLayer verified the evidence linkage only; it did not infer or prove retention behavior from code or policy text. This processor alone adds no category disclosure requirement.${aggregateReminder}${auditNote}`;
     }
   }
   else determination = ` Human-confirmed to be App Privacy collection for this processor. Include its categories in the app-wide declarations.${aggregateReminder}`;

@@ -1,8 +1,9 @@
 import type { NotCollectionAttestation } from "./types.js";
 
 const NOT_COLLECTION_ATTESTATION_BASES = new Set<string>(["first-party-implementation", "vendor-documentation", "contract-dpa", "written-vendor-confirmation"]);
-const RESERVED_HOST_SUFFIXES = [".example", ".test", ".invalid", ".localhost", ".local", ".localdomain", ".internal", ".home", ".corp", ".example.com", ".example.net", ".example.org"];
-const MULTI_LABEL_PUBLIC_SUFFIXES = new Set(["ac.uk", "co.uk", "gov.uk", "ltd.uk", "me.uk", "net.uk", "org.uk", "plc.uk", "com.au", "net.au", "org.au", "edu.au", "gov.au", "co.jp", "ne.jp", "or.jp", "com.br", "com.cn", "com.mx", "co.nz", "co.za", "com.sg", "com.tr"]);
+// These are special-use/reserved namespaces, not a substitute for the public suffix list. The
+// vendor-evidence contract below intentionally avoids registrable-domain inference altogether.
+const SPECIAL_USE_HOST_SUFFIXES = [".example", ".test", ".invalid", ".localhost", ".local", ".localdomain", ".internal", ".home", ".corp", ".onion", ".alt", ".example.com", ".example.net", ".example.org", ".home.arpa"];
 
 /**
  * Structural readiness for a processor's App Privacy real-time-service exception.
@@ -36,22 +37,22 @@ export function assessPublicEvidenceUrl(value: string): { issue?: PublicEvidence
   return { url };
 }
 
-/** A deliberately conservative registrable-domain comparison for processor/document linkage. */
-export function processorNameLinksToDocumentation(processorName: string, documentationUrl: string): boolean {
-  const assessed = assessPublicEvidenceUrl(documentationUrl);
-  if (!assessed.url) return false;
-  const documentDomain = registrableDomain(normalizedHost(assessed.url.hostname));
-  if (!documentDomain) return false;
-  const nameHost = hostFromProcessorName(processorName);
-  if (nameHost) return registrableDomain(nameHost) === documentDomain;
-  // A display name has less provenance than a network host.  Permit only a strict match to the
-  // registrable-domain label (after harmless company-suffix normalization), not a substring:
-  // "Vendor" must not authenticate notvendor.example.  A false negative leaves the row pending;
-  // a false positive would let one vendor's policy clear another processor.
-  const normalizedName = processorName.toLowerCase().trim().replace(/(?:[\s,.-]+(?:inc(?:orporated)?|llc|ltd|limited|gmbh|bv|corp(?:oration)?))$/i, "");
-  const compactName = normalizedName.replace(/[^a-z0-9]+/g, "");
-  const compactDomainLabel = documentDomain.split(".")[0].replace(/[^a-z0-9]+/g, "");
-  return compactName.length >= 3 && compactName === compactDomainLabel;
+/**
+ * A scanner-derived endpoint and a processor host must match byte-for-byte after URL hostname
+ * normalization. Deliberately do not use registrable-domain guessing: it is unsafe for tenants
+ * such as github.io, pages.dev, appspot.com, or an unlisted country suffix.
+ */
+export function normalizedSafeHost(value: string): string | undefined {
+  const normalized = normalizedHost(value);
+  if (!normalized || normalized.split(".").some((label) => label.startsWith("xn--")) || isIpAddress(normalized) || isNonPublicHost(normalized)) return undefined;
+  return normalized;
+}
+
+/** A vendor policy must use a canonical privacy/data-protection/retention/DPA route, not a ZDR,
+ * marketing, generic docs, root, or arbitrary page. This checks route shape only, never content. */
+export function hasCanonicalPrivacyEvidencePath(url: URL): boolean {
+  const pathname = url.pathname.toLowerCase().replace(/\/+$/, "") || "/";
+  return /^\/(?:legal\/)?(?:privacy(?:[-_](?:policy|notice|statement))?|data[-_](?:protection|privacy|collection|retention)(?:[-_](?:policy|notice|statement))?|retention(?:[-_](?:policy|notice|statement))?|dpa|data[-_]processing(?:[-_]addendum)?)(?:\.[a-z0-9]+)?$/.test(pathname);
 }
 
 export function assessNotCollectionAttestation(attestation: NotCollectionAttestation | undefined): { issue?: NotCollectionAttestationIssue } {
@@ -75,26 +76,10 @@ export function notCollectionAttestationIssueMessage(issue: NotCollectionAttesta
   return "the attestation's evidence reference is invalid";
 }
 
-function hostFromProcessorName(value: string): string | undefined {
-  const trimmed = value.trim().toLowerCase().replace(/\.$/, "");
-  if (!/^[a-z0-9.-]+$/.test(trimmed) || !trimmed.includes(".")) return undefined;
-  if (trimmed.split(".").some((label) => !label || label.startsWith("xn--"))) return undefined;
-  return isNonPublicHost(trimmed) ? undefined : trimmed;
-}
-
 function normalizedHost(value: string): string { return value.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, ""); }
 
-function registrableDomain(host: string): string | undefined {
-  if (!host || isIpAddress(host) || isNonPublicHost(host)) return undefined;
-  const labels = host.split(".");
-  if (labels.some((label) => !label || label.startsWith("xn--"))) return undefined;
-  const suffixLength = MULTI_LABEL_PUBLIC_SUFFIXES.has(labels.slice(-2).join(".")) ? 2 : 1;
-  if (labels.length <= suffixLength) return undefined;
-  return labels.slice(-(suffixLength + 1)).join(".");
-}
-
 function isNonPublicHost(host: string): boolean {
-  if (host === "localhost" || RESERVED_HOST_SUFFIXES.some((suffix) => host === suffix.slice(1) || host.endsWith(suffix))) return true;
+  if (host === "localhost" || SPECIAL_USE_HOST_SUFFIXES.some((suffix) => host === suffix.slice(1) || host.endsWith(suffix))) return true;
   if (isIPv4Address(host)) return isNonPublicIPv4(host);
   if (host.includes(":")) return isNonPublicIPv6(host);
   return false;

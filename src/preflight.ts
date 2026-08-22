@@ -8,8 +8,9 @@ import { inspectImage } from "./image.js";
 import { validateAscPrivateKey } from "./asc.js";
 import { appReviewNotes } from "./generator.js";
 import { DEFAULT_MARKETING_FINAL_DIR } from "./marketing.js";
-import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, isLoopbackOrPrivateEndpoint, isNonProductionSourcePath, MONETIZATION_CONTRADICTION_FINDING, PURCHASE_UNAVAILABLE_CONTRADICTION_FINDING, productionEvidenceOnly, resolveContradictionOverride, storekitPurchaseEvidence, stripCodeComments } from "./evidence.js";
-import { assessNotCollectionAttestation, assessPublicEvidenceUrl, notCollectionAttestationIssueMessage, processorNameLinksToDocumentation } from "./collection-attestation.js";
+import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, externalServiceFindings, isLoopbackOrPrivateEndpoint, isNonProductionSourcePath, MONETIZATION_CONTRADICTION_FINDING, PURCHASE_UNAVAILABLE_CONTRADICTION_FINDING, productionEvidenceOnly, resolveContradictionOverride, storekitPurchaseEvidence, stripCodeComments } from "./evidence.js";
+import { assessNotCollectionAttestation, assessPublicEvidenceUrl, hasCanonicalPrivacyEvidencePath, normalizedSafeHost, notCollectionAttestationIssueMessage } from "./collection-attestation.js";
+import { containsDirectCredentialMaterial } from "./secrets.js";
 
 // Apple requires ONE uniform size per required display class, and the classes are not
 // interchangeable: a 6.5-inch capture does not satisfy the 6.9-inch slot. Each display class is
@@ -1409,7 +1410,7 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
     const sourcePaths = new Set(finding.evidence.map((item) => item.source)); const decisionEvidence = await validEvidencePaths(repository, decision.evidence);
     if (!intersects(decisionEvidence, sourcePaths)) { add(`source.external.${findingId}`, "block", `Disposition for '${findingId}' must cite an existing source evidence file that matches the scanner finding.`, "Reference exact contained, non-symlinked source evidence."); continue; }
     if (decision.disposition === "declared-processor") {
-      const linkedProcessor = manifest.externalProcessors.find((processor) => processor.confirmation === "confirmed" && intersects(new Set(processor.evidence || []), decisionEvidence));
+      const linkedProcessor = manifest.externalProcessors.find((processor) => processor.confirmation === "confirmed" && (!decision.processorName || processor.name === decision.processorName) && intersects(new Set(processor.evidence || []), decisionEvidence));
       if (!linkedProcessor || !intersects(await validEvidencePaths(repository, linkedProcessor.evidence || []), decisionEvidence)) add(`source.external.${findingId}`, "block", `Processor decision for '${findingId}' is not linked to a confirmed external processor evidence record.`, "Add the matching external processor with confirmed data categories and evidence.");
       else add(`source.external.${findingId}`, "pass", `Source heuristic '${findingId}' has a human-confirmed processor disposition.`);
     } else add(`source.external.${findingId}`, "pass", `Source heuristic '${findingId}' has a human-confirmed non-processor disposition.`);
@@ -1437,7 +1438,7 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
       const attestation = processor.notCollectionAttestation;
       const assessment = assessNotCollectionAttestation(attestation);
       if (assessment.issue || !attestation) { add(`privacy.processor.${processor.name}.collection-determination`, "block", `${processor.name} is declared 'not-collection' but ${notCollectionAttestationIssueMessage(assessment.issue || "missing")}.`, "Record a literal human-confirmed real-time-service attestation (dataNotRetainedBeyondRealTimeService: true), a checked evidence basis, and a non-secret evidence reference. Free-form audit notes cannot clear this blocker."); continue; }
-      const evidenceGate = await notCollectionEvidenceGate(repository, processor);
+      const evidenceGate = await notCollectionEvidenceGate(repository, manifest, report, processor);
       if (evidenceGate.issue) { add(`privacy.processor.${processor.name}.collection-determination`, "block", `${processor.name}'s structured not-collection attestation cannot use its evidence: ${evidenceGate.issue}.`, evidenceGate.remediation); continue; }
       add(`privacy.processor.${processor.name}.collection-determination`, "pass", `${processor.name} is human-confirmed not to constitute "collection" under Apple's App Privacy definition, based on a structured real-time-service attestation (${attestation.basis}; ${notCollectionEvidenceLabel(attestation.evidence)}). ShipLayer verified ${evidenceGate.verified}; it did not retrieve evidence or infer the retention fact from document/source text.`);
       continue; // a confirmed non-collection processor makes no App Privacy claim, so no dataProcessing row can or should be demanded for it
@@ -1489,30 +1490,41 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
 
 function notCollectionEvidenceLabel(evidence: NonNullable<ShipLayerManifest["externalProcessors"][number]["notCollectionAttestation"]>["evidence"]): string {
   if (evidence.kind === "repo-path") return `repository evidence ${evidence.path}`;
-  if (evidence.kind === "public-url") return `public evidence ${evidence.url}`;
+  if (evidence.kind === "public-url") return "a legacy public URL (which cannot clear readiness)";
   return "the processor privacy-policy URL";
 }
 
-async function notCollectionEvidenceGate(repository: string, processor: ShipLayerManifest["externalProcessors"][number]): Promise<{ issue?: string; remediation: string; verified: string }> {
+async function notCollectionEvidenceGate(repository: string, manifest: ShipLayerManifest, report: AnalysisReport, processor: ShipLayerManifest["externalProcessors"][number]): Promise<{ issue?: string; remediation: string; verified: string }> {
   const attestation = processor.notCollectionAttestation!;
   const evidence = attestation.evidence;
   const blocked = (issue: string, remediation: string): { issue: string; remediation: string; verified: string } => ({ issue, remediation, verified: "nothing" });
-  if (evidence.kind === "public-url" && assessPublicEvidenceUrl(evidence.url).issue) return blocked("the public evidence URL is not a credential-safe public HTTPS URL", "Do not place credentials, query strings, fragments, private/reserved hosts, or IDN hostnames in the manifest. For vendor documentation, use processor-privacy-policy after recording the vendor's canonical public policy URL.");
+  if (evidence.kind === "public-url") {
+    if (assessPublicEvidenceUrl(evidence.url).issue) return blocked("the public evidence URL is not a credential-safe public HTTPS URL", "Do not place credentials, query strings, fragments, private/reserved hosts, or IDN hostnames in structured evidence.");
+    return blocked("generic public-url evidence is not a supported not-collection clearance", "Use first-party-implementation with scanner-correlated runtime evidence, vendor-documentation with the processor's exact canonical privacy-policy URL, or leave the determination pending.");
+  }
   if (evidence.kind === "processor-privacy-policy" && assessPublicEvidenceUrl(processor.privacyPolicyUrl).issue) return blocked("the processor privacy-policy URL is not a credential-safe public HTTPS URL", "Record a canonical public HTTPS policy URL without userinfo, query strings, fragments, private/reserved hosts, or IDN hostnames; do not put access links or credentials in the manifest.");
   if (attestation.basis === "contract-dpa" || attestation.basis === "written-vendor-confirmation") return blocked(`${attestation.basis} is not a safely verifiable v0.1 evidence basis`, "Keep confidential contracts or written confirmations outside the release manifest. Do not paste or link them here; record collection or leave the determination pending until a future evidence model supports a safe, reviewable reference.");
   if (attestation.basis === "first-party-implementation") {
-    if (evidence.kind !== "repo-path") return blocked("first-party-implementation requires a processor-linked repository source/config path", "Use an existing regular source/config file already listed in this processor's evidence, or choose collection/pending. Vendor documentation and contracts cannot substitute for first-party implementation evidence.");
-    const processorEvidence = await validEvidencePaths(repository, processor.evidence || []);
-    if (!processorEvidence.has(evidence.path)) return blocked("the repository path does not overlap the processor's existing evidence", "Use the exact contained regular source/config path already recorded in externalProcessors[].evidence for this processor; unrelated files cannot attest to its handling.");
-    if (!isFirstPartyImplementationEvidencePath(evidence.path)) return blocked("the repository path is not an eligible non-secret processor source/config file", "Use a processor-linked production source or non-secret service configuration file. README/project manifests, .env files, credentials, tests, and documentation cannot clear this gate.");
-    return { remediation: "", verified: `the contained regular evidence path overlaps this processor's declared source evidence (${evidence.path})` };
+    if (evidence.kind !== "repo-path") return blocked("first-party-implementation requires a scanner-correlated runtime source/config path", "Use an existing regular runtime source/config file independently discovered by the scanner for this processor endpoint, or choose collection/pending. Vendor documentation and contracts cannot substitute for first-party implementation evidence.");
+    if (!isFirstPartyImplementationEvidencePath(evidence.path)) return blocked("the repository path is not an eligible non-secret processor runtime source/config file", "Use a scanner-detected runtime source or non-secret service configuration file. README/project manifests, .env files, credentials, tests, and documentation cannot clear this gate.");
+    const evidenceInspection = await inspectFirstPartyEvidence(repository, evidence.path);
+    if (evidenceInspection.issue) return blocked(evidenceInspection.issue, evidenceInspection.remediation);
+    const correlation = firstPartyEndpointCorrelation(manifest, report, processor, evidence.path);
+    if (!correlation) return blocked("the repository path is not independently correlated to this processor by scanner endpoint evidence", "Use the exact source/config path attached to a scanner-detected runtime endpoint whose normalized host exactly matches this processor, or add a confirmed externalServiceDecision naming this exact processor and finding. Manifest-only evidence overlap cannot clear this gate.");
+    return { remediation: "", verified: correlation };
   }
   if (attestation.basis === "vendor-documentation") {
     if (evidence.kind !== "processor-privacy-policy") return blocked("vendor-documentation must use the processor's canonical privacy-policy reference", "Set evidence.kind: processor-privacy-policy and record the vendor's canonical public privacyPolicyUrl. Arbitrary repository files, generic ZDR/no-training links, and public URLs do not clear this gate in v0.1.");
-    if (!processorNameLinksToDocumentation(processor.name, processor.privacyPolicyUrl)) return blocked("the privacy-policy host is not defensibly linked to the declared processor", "Use a canonical policy URL on the processor's exact or registrable domain, or leave this determination pending. Do not point one processor at another vendor's policy.");
-    return { remediation: "", verified: "the canonical privacy-policy URL is credential-safe public HTTPS and domain-linked to the declared processor" };
+    const policy = assessPublicEvidenceUrl(processor.privacyPolicyUrl).url;
+    const policyHost = policy ? normalizedSafeHost(policy.hostname) : undefined;
+    if (!policy || !policyHost) return blocked("the processor privacy-policy URL is not a credential-safe public HTTPS URL", "Record a canonical public HTTPS policy URL without userinfo, query strings, fragments, private/reserved hosts, IP literals, or IDN hostnames.");
+    if (!hasCanonicalPrivacyEvidencePath(policy)) return blocked("the privacy-policy URL does not use a canonical privacy/data-protection/retention/DPA route", "Use the processor's canonical privacy, data-protection, data-collection, retention, or DPA page; root, marketing, docs, ZDR/no-training, and arbitrary pages cannot clear this gate.");
+    const structuredHost = normalizedSafeHost(processor.name);
+    const scannerLinked = hasExactScannerProcessorLink(manifest, report, processor, policyHost);
+    if (structuredHost !== policyHost && !scannerLinked) return blocked("the privacy-policy host is not exactly linked to the declared processor", "Use a policy URL on the exact processor hostname, or provide scanner endpoint evidence plus a confirmed externalServiceDecision naming this processor. Shared-host tenants and parent-domain guesses never clear this gate.");
+    return { remediation: "", verified: structuredHost === policyHost ? "the canonical policy hostname exactly matches the structured processor host and uses a privacy/data-protection/retention/DPA route" : "a scanner endpoint and confirmed processor decision exactly link the canonical policy hostname to this processor; ShipLayer did not read or verify policy content" };
   }
-  return blocked("the evidence basis is unsupported", "Use first-party-implementation with overlapping processor source/config evidence, vendor-documentation with a canonical processor privacy-policy URL, or leave the determination pending.");
+  return blocked("the evidence basis is unsupported", "Use first-party-implementation with scanner-correlated runtime source/config evidence, vendor-documentation with a canonical processor privacy-policy URL, or leave the determination pending.");
 }
 
 function isFirstPartyImplementationEvidencePath(value: string): boolean {
@@ -1522,6 +1534,51 @@ function isFirstPartyImplementationEvidencePath(value: string): boolean {
   if (basename.startsWith(".env") || /(?:^|[._-])(?:credential|credentials|secret|secrets|token|tokens|password|passwords|private[-_]?key|api[-_]?key)(?:[._-]|$)/i.test(basename)) return false;
   return /\.(?:swift|m|mm|h|c|cc|cpp|js|jsx|ts|tsx|json|plist|xcconfig|pbxproj|ya?ml)$/i.test(basename);
 }
+
+async function inspectFirstPartyEvidence(repository: string, evidencePath: string): Promise<{ issue?: string; remediation: string }> {
+  try {
+    const target = await resolveContained(repository, evidencePath, "not-collection evidence");
+    const details = await lstat(target);
+    if (!details.isFile() || details.isSymbolicLink() || details.size > 1_000_000) return { issue: "the repository evidence is missing, symlinked, non-regular, or too large to inspect safely", remediation: "Use a contained, regular, bounded runtime source/config file discovered by the scanner." };
+    if (containsDirectCredentialMaterial(await readFile(target, "utf8"))) return { issue: "the repository evidence contains credential material", remediation: "Remove credentials from repository evidence and use an environment-variable reference; do not use a secret-bearing file to support this attestation." };
+    return { remediation: "" };
+  } catch { return { issue: "the repository evidence is missing, unreadable, or outside the repository", remediation: "Use a contained regular runtime source/config file discovered by the scanner." }; }
+}
+
+function firstPartyEndpointCorrelation(manifest: ShipLayerManifest, report: AnalysisReport, processor: ShipLayerManifest["externalProcessors"][number], evidencePath: string): string | undefined {
+  const structuredHost = normalizedSafeHost(processor.name);
+  for (const finding of externalServiceFindings(report)) {
+    if (!finding.key.startsWith("endpoint:")) continue;
+    const url = endpointUrl(finding);
+    const endpointHost = url ? normalizedSafeHost(url.hostname) : undefined;
+    if (!endpointHost || !finding.evidence.some((item) => item.source === evidencePath && isCredibleRuntimeEvidencePath(item.source))) continue;
+    if (structuredHost && endpointHost === structuredHost) return `the scanner independently found a runtime endpoint on this processor's exact normalized host in ${evidencePath}`;
+    if (isConfirmedProcessorDecision(manifest, finding, processor.name, evidencePath)) return `the scanner independently found the runtime endpoint in ${evidencePath}, and a confirmed externalServiceDecision names this exact processor`;
+  }
+  return undefined;
+}
+
+function hasExactScannerProcessorLink(manifest: ShipLayerManifest, report: AnalysisReport, processor: ShipLayerManifest["externalProcessors"][number], expectedHost: string): boolean {
+  return externalServiceFindings(report).some((finding) => {
+    if (!finding.key.startsWith("endpoint:")) return false;
+    const url = endpointUrl(finding);
+    const endpointHost = url ? normalizedSafeHost(url.hostname) : undefined;
+    if (endpointHost !== expectedHost || !finding.evidence.some((item) => isCredibleRuntimeEvidencePath(item.source))) return false;
+    return isConfirmedProcessorDecision(manifest, finding, processor.name);
+  });
+}
+
+function isConfirmedProcessorDecision(manifest: ShipLayerManifest, finding: AnalysisReport["findings"][number], processorName: string, requiredEvidencePath?: string): boolean {
+  return manifest.externalServiceDecisions.some((decision) => decision.finding === externalFindingId(finding)
+    && decision.disposition === "declared-processor"
+    && decision.processorName === processorName
+    && decision.confirmation === "confirmed"
+    && (!requiredEvidencePath || decision.evidence.includes(requiredEvidencePath))
+    && decision.evidence.some((path) => finding.evidence.some((item) => item.source === path && isCredibleRuntimeEvidencePath(item.source))));
+}
+
+function endpointUrl(finding: AnalysisReport["findings"][number]): URL | undefined { try { return new URL(endpointFindingUrl(finding)); } catch { return undefined; } }
+function isCredibleRuntimeEvidencePath(value: string): boolean { return isFirstPartyImplementationEvidencePath(value) && !/(?:^|\/)(?:docs?|marketing)(?:\/|$)/i.test(value); }
 
 function stringValues(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : typeof value === "string" ? [value] : []; }
 function intersects(left: Set<string>, right: Set<string>): boolean { return [...left].some((item) => right.has(item)); }

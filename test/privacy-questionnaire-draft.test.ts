@@ -30,7 +30,12 @@ function processor(name: string, dataCategories: string[], overrides: Partial<Ex
 
 async function questionnaire(root: string, manifest: ShipLayerManifest): Promise<{ draft: string; report: Awaited<ReturnType<typeof preflight>> }> {
   await mkdir(path.join(root, "Sources"), { recursive: true });
-  await writeFile(path.join(root, "Sources/ProcessorClient.swift"), "struct ProcessorClient { func send() {} }\n");
+  const firstParty = manifest.externalProcessors.find((item) => item.notCollectionAttestation?.basis === "first-party-implementation" && item.notCollectionAttestation.evidence.kind === "repo-path" && item.notCollectionAttestation.evidence.path === "Sources/ProcessorClient.swift");
+  if (firstParty) {
+    const endpoint = `https://${firstParty.name}/v1/realtime`;
+    await writeFile(path.join(root, "Sources/ProcessorClient.swift"), `let processorEndpoint = "${endpoint}"\n`);
+    if (!manifest.externalServiceDecisions.some((item) => item.finding === `endpoint:${endpoint}`)) manifest.externalServiceDecisions.push({ finding: `endpoint:${endpoint}`, disposition: "declared-processor", processorName: firstParty.name, reason: "Human confirmed this runtime endpoint belongs to the declared processor.", evidence: ["Sources/ProcessorClient.swift"], confirmation: "confirmed" });
+  } else await writeFile(path.join(root, "Sources/ProcessorClient.swift"), "struct ProcessorClient { func send() {} }\n");
   const analysis = await analyzeRepository(root);
   const report = await preflight(root, manifest, false, analysis);
   const generated = await generateReleasePackage(root, manifest, analysis, report, "shiplayer-release");
@@ -75,8 +80,8 @@ test("all structured not-collection rows are aggregate-aware without a global Da
   const manifest = readyManifest();
   await writeReadyAssets(root, manifest);
   manifest.externalProcessors = [
-    processor("cdn.example.com", ["Product Interaction"], { collectionDetermination: "not-collection", notCollectionAttestation: attestation() }),
-    processor("api.vendor-a.com", ["Email Address"], { privacyPolicyUrl: "https://vendor-a.com/privacy", evidence: [], collectionDetermination: "not-collection", notCollectionAttestation: attestation({ basis: "vendor-documentation", evidence: { kind: "processor-privacy-policy" } }) })
+    processor("cdn.vendor-a.com", ["Product Interaction"], { collectionDetermination: "not-collection", notCollectionAttestation: attestation() }),
+    processor("api.vendor-a.com", ["Email Address"], { privacyPolicyUrl: "https://api.vendor-a.com/privacy", evidence: [], collectionDetermination: "not-collection", notCollectionAttestation: attestation({ basis: "vendor-documentation", evidence: { kind: "processor-privacy-policy" } }) })
   ];
 
   const { draft, report } = await questionnaire(root, manifest);
@@ -133,7 +138,7 @@ test("mixed, shared, and locally collected categories stay aggregate-aware", asy
   await writeReadyAssets(root, manifest);
   manifest.externalProcessors = [
     processor("analytics.example.com", ["Product Interaction"], { collectionDetermination: "collection" }),
-    processor("cdn.example.com", ["Product Interaction"], { collectionDetermination: "not-collection", notCollectionAttestation: attestation() })
+    processor("cdn.vendor-a.com", ["Product Interaction"], { collectionDetermination: "not-collection", notCollectionAttestation: attestation() })
   ];
   // Product Interaction is shared by both processors; Email Address is collected locally.
   manifest.dataProcessing = [
@@ -173,7 +178,7 @@ test("unreconciled endpoints and an unconfirmed app-wide privacy declaration rem
   const manifest = readyManifest();
   await writeReadyAssets(root, manifest);
   manifest.confirmations.privacy = "needs-human-confirmation";
-  manifest.externalProcessors = [processor("cdn.example.com", ["Product Interaction"], { collectionDetermination: "not-collection", notCollectionAttestation: attestation() })];
+  manifest.externalProcessors = [processor("cdn.vendor-a.com", ["Product Interaction"], { collectionDetermination: "not-collection", notCollectionAttestation: attestation() })];
   await mkdir(path.join(root, "Sources"), { recursive: true });
   await writeFile(path.join(root, "Sources/Telemetry.swift"), `let telemetry = "https://telemetry.example.com/v1/events"\n`);
 
@@ -204,13 +209,13 @@ test("arbitrary audit prose cannot affect readiness, while a valid structured at
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-questionnaire-audit-prose-"));
   const manifest = readyManifest();
   await writeReadyAssets(root, manifest);
-  manifest.externalProcessors = [processor("cdn.example.com", ["Product Interaction"], { collectionDetermination: "not-collection" })];
+  manifest.externalProcessors = [processor("cdn.vendor-a.com", ["Product Interaction"], { collectionDetermination: "not-collection" })];
 
   for (const collectionDeterminationReason of ARBITRARY_AUDIT_NOTES) {
     manifest.externalProcessors[0].collectionDeterminationReason = collectionDeterminationReason;
     manifest.externalProcessors[0].notCollectionAttestation = undefined;
     let generated = await questionnaire(root, manifest);
-    assert.ok(hasBlock(generated.report, "privacy.processor.cdn.example.com.collection-determination"), collectionDeterminationReason);
+    assert.ok(hasBlock(generated.report, "privacy.processor.cdn.vendor-a.com.collection-determination"), collectionDeterminationReason);
     assert.equal(generated.report.canSubmit, false, collectionDeterminationReason);
     assert.match(generated.draft, /structured real-time-service attestation is missing/, collectionDeterminationReason);
 

@@ -530,9 +530,9 @@
         },
         "basis": {
           "enum": ["first-party-implementation", "vendor-documentation", "contract-dpa", "written-vendor-confirmation", "needs-human-confirmation"],
-          "description": "Preflight clears only first-party-implementation with overlapping processor source/config evidence, or vendor-documentation with processor-privacy-policy. contract-dpa and written-vendor-confirmation remain fail-closed in v0.1 to avoid storing confidential evidence."
+          "description": "Preflight clears only scanner-correlated first-party runtime source/config evidence, or vendor-documentation with the exact processor-privacy-policy URL on an exact linked host and a canonical privacy/data-protection/data-collection/retention/DPA route. contract-dpa and written-vendor-confirmation remain fail-closed in v0.1 to avoid storing confidential evidence."
         },
-        "evidence": { "$ref": "#/$defs/notCollectionEvidence", "description": "Preflight verifies path existence/processor overlap or policy-host linkage only; it never proves retention semantics from a document." },
+        "evidence": { "$ref": "#/$defs/notCollectionEvidence", "description": "Preflight verifies scanner/path or exact-host/policy-route linkage only; it never proves retention semantics from a document." },
         "confirmation": { "$ref": "#/$defs/confirmation" }
       }
     },
@@ -647,6 +647,10 @@
             "declared-processor",
             "not-an-external-processor"
           ]
+        },
+        "processorName": {
+          "$ref": "#/$defs/nonEmpty",
+          "description": "For a declared-processor disposition, the exact externalProcessors[].name the human linked to this scanner finding."
         },
         "reason": {
           "$ref": "#/$defs/nonEmpty"

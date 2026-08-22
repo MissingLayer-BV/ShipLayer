@@ -7,6 +7,7 @@ import { readText, safeRelativePath } from "./fs.js";
 import schema from "./schema.json" with { type: "json" };
 import type { ShipLayerManifest } from "./types.js";
 import { assessPublicEvidenceUrl } from "./collection-attestation.js";
+import { containsDirectCredentialMaterial, urlContainsCredentialMaterial } from "./secrets.js";
 
 const ajv = new Ajv2020({ allErrors: true, strict: false });
 const validateSchema = ajv.compile(schema);
@@ -171,11 +172,10 @@ export function validateManifest(candidate: unknown): asserts candidate is ShipL
 
 function collectSecrets(value: unknown, location: string, errors: string[]): void {
   if (typeof value === "string") {
-    const directCredential = /\b(?:api[ _-]?key|access[ _-]?token|auth[ _-]?token|secret|password|private[ _-]?key)\s*[:=]\s*\S+/i;
-    if (/-----BEGIN(?: [A-Z]+)? PRIVATE KEY-----/i.test(value) || directCredential.test(value) || /\bsk-[A-Za-z0-9_-]{16,}\b/.test(value)) errors.push(`${location || "manifest"} appears to contain credential material; use an environment-variable reference instead`);
+    if (containsDirectCredentialMaterial(value)) errors.push(`${location || "manifest"} appears to contain credential material; use an environment-variable reference instead`);
     try {
       const url = new URL(value);
-      if ((url.protocol === "https:" || url.protocol === "http:") && (url.username || url.password || url.search || url.hash)) errors.push(`${location || "manifest"} URL must not contain userinfo, query strings, or fragments; use a canonical public reference without credentials`);
+      if ((url.protocol === "https:" || url.protocol === "http:") && urlContainsCredentialMaterial(url)) errors.push(`${location || "manifest"} URL appears to contain credential material; use a canonical public reference without credentials`);
     } catch { /* non-URL fields are handled by their own schema rules */ }
     return;
   }
