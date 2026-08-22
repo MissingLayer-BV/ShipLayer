@@ -27,7 +27,7 @@ export async function generateReleasePackage(repository: string, manifest: ShipL
   const packagePreflight = { ...preflight, repository: "." };
   await emit("reports/analysis.json", stableJson(packageAnalysis)); await emit("reports/preflight.json", stableJson(packagePreflight)); await emit("reports/preflight.md", preflightMarkdown(packagePreflight));
   for (const [locale, copy] of Object.entries(manifest.metadata.localizations)) await emit(`metadata/${locale}.json`, stableJson(localeMetadataJson(locale, copy)));
-  await emit("privacy/questionnaire-draft.md", await privacyDraft(repository, manifest, analysis)); await emit("privacy/evidence-matrix.json", stableJson({ disclaimer: "Draft only. Apple privacy declarations require human confirmation and must include third-party processing. No-retention/no-training controls do not mean data was not shared.", permissions: manifest.permissions, permissionFlows: manifest.permissionFlows, dataProcessing: manifest.dataProcessing, externalProcessors: manifest.externalProcessors, aiDataSharing: manifest.aiDataSharing, externalServiceDecisions: manifest.externalServiceDecisions, sourceContradictionOverrides: manifest.sourceContradictionOverrides }));
+  await emit("privacy/questionnaire-draft.md", await privacyDraft(repository, manifest, analysis, preflight)); await emit("privacy/evidence-matrix.json", stableJson({ disclaimer: "Draft only. Apple privacy declarations require human confirmation and must include third-party processing. No-retention/no-training controls do not mean data was not shared.", permissions: manifest.permissions, permissionFlows: manifest.permissionFlows, dataProcessing: manifest.dataProcessing, externalProcessors: manifest.externalProcessors, aiDataSharing: manifest.aiDataSharing, externalServiceDecisions: manifest.externalServiceDecisions, sourceContradictionOverrides: manifest.sourceContradictionOverrides }));
   await emit("compliance/age-rating-and-content-rights.md", complianceDraft(manifest));
   await emit("legal/privacy-policy-draft.html", await privacyPage(repository, manifest, analysis)); await emit("legal/support-page-draft.html", await supportPage(repository, manifest, analysis)); await emit("legal/terms-of-use-draft.md", await termsOfUseDraft(repository, manifest, analysis));
   await emit("review/app-review-notes.md", await appReviewNotes(repository, manifest, analysis)); await emit("review/physical-device-recording-script.md", recordingScript(manifest, analysis));
@@ -204,7 +204,7 @@ async function aiContradictionInfo(repository: string, manifest: ShipLayerManife
   return { unresolvedEndpoints, overriddenReasons };
 }
 
-async function privacyDraft(repository: string, manifest: ShipLayerManifest, analysis: AnalysisReport): Promise<string> {
+async function privacyDraft(repository: string, manifest: ShipLayerManifest, analysis: AnalysisReport, preflight: PreflightReport): Promise<string> {
   const lines = ["# App Privacy questionnaire draft", "", "> Not legal advice. Confirm each answer in App Store Connect; do not submit this draft unreviewed.", "", "## Protected-resource permissions"];
   const unresolvedPermissions = analysis.findings.filter((finding) => finding.key.startsWith("permission:") && !manifest.permissions.some((permission) => finding.key === `permission:${permission.key}`));
   if (manifest.permissions.length) lines.push(...manifest.permissions.map((permission) => `- **${permission.key}** — ${permission.purpose || "Purpose missing"}; confirmation: ${permission.confirmation}.`));
@@ -215,10 +215,22 @@ async function privacyDraft(repository: string, manifest: ShipLayerManifest, ana
   if (manifest.permissionFlows.length) lines.push(...manifest.permissionFlows.map((item) => `- **${item.category}** — dismissible screen before prompt: ${item.dismissibleScreenBeforePrompt}; confirmation: ${item.confirmation}.`));
   if (unresolvedPermissionFlows.length) lines.push(`- UNVERIFIED: the scanner detected a runtime permission request for ${unresolvedPermissionFlows.map((finding) => finding.key.slice("permissionFlow:".length)).join(", ")} with no matching permissionFlows declaration. Reconcile before submission.`);
   if (!manifest.permissionFlows.length && !unresolvedPermissionFlows.length) lines.push("- No runtime permission-request flows detected or declared.");
-  lines.push("", "## Data categories", ...(manifest.dataProcessing.length ? manifest.dataProcessing.map((item) => `- **${item.category}** — purposes: ${item.purpose.join(", ") || "missing"}; linked to identity: ${item.linkedToIdentity}; tracking: ${item.usedForTracking}; confirmation: ${item.confirmation}.`) : [manifest.externalProcessors.length && manifest.externalProcessors.every((processor) => processor.collectionDetermination === "not-collection") ? "- No data categories declared, and every declared processor is human-confirmed NOT to constitute App Privacy collection (see below). If that holds, 'Data Not Collected' is the correct App Store Connect answer — verify each reason before relying on it." : "- No data categories declared. Confirm all collection, including processor collection."]));
+  const questionnaireState = privacyQuestionnaireState(manifest, analysis, preflight);
+  const dataCategoryLines = manifest.dataProcessing.length
+    ? [
+        ...manifest.dataProcessing.map((item) => `- **${item.category}** — purposes: ${item.purpose.join(", ") || "missing"}; linked to identity: ${item.linkedToIdentity}; tracking: ${item.usedForTracking}; confirmation: ${item.confirmation}.`),
+        "- App Store Connect records categories for the app as a whole. Do not select ‘Data Not Collected’ while any category above remains declared; a processor’s not-collection conclusion does not remove a category collected locally or by another processor."
+      ]
+    : questionnaireState.canConsiderDataNotCollected
+      ? ["- No app-wide data categories are declared. The human-confirmed inputs currently support considering ‘Data Not Collected’ in App Store Connect, subject to a final human review of the app’s local collection and every processor’s real-time-service reason."]
+      : ["- No app-wide data categories are currently declared. This is not evidence that the app collects no data: do not select ‘Data Not Collected’ until the unresolved privacy evidence and declarations below are reconciled.", ...questionnaireState.unresolved.map((reason) => `  - UNVERIFIED: ${reason}`)];
+  lines.push("", "## Data categories", ...dataCategoryLines);
   const unresolvedServices = unresolvedExternalServiceMessage(manifest, analysis);
-  if (manifest.externalProcessors.length) lines.push("", "## External processors", ...manifest.externalProcessors.map((processor) => `- **${processor.name}** (${processor.kind}) — ${processor.purpose}; data: ${processor.dataCategories.join(", ")}; ${processor.collectionDetermination === "not-collection" ? `NOT App Privacy collection (human-confirmed: ${processor.collectionDeterminationReason || "no reason recorded"}) — do not declare these categories in App Store Connect on this processor's account` : processor.collectionDetermination === "collection" ? "IS App Privacy collection — these categories must be declared in App Store Connect" : "collection determination UNANSWERED — resolve before declaring anything"}; AI-pipeline recipient: ${processor.aiPipelineRecipient}; policy: ${processor.privacyPolicyUrl}; equal protection: ${processor.protectionConfirmation}; confirmation: ${processor.confirmation}.`));
-  else if (unresolvedServices) lines.push("", "## External processors", `- ${unresolvedServices}`);
+  if (manifest.externalProcessors.length || unresolvedServices) {
+    const processorLines = manifest.externalProcessors.map(externalProcessorQuestionnaireLine);
+    if (unresolvedServices) processorLines.push(`- ${unresolvedServices}`);
+    lines.push("", "## External processors", ...processorLines);
+  }
   else lines.push("", "## External processors", "- No external processors declared. Confirm SDKs and network endpoints.");
   const aiContradiction = await aiContradictionInfo(repository, manifest, analysis);
   if (manifest.aiDataSharing.enabled) lines.push("", "## Third-party AI sharing", `- Data sent: ${manifest.aiDataSharing.dataSent.join("; ")}\n- Purpose: ${manifest.aiDataSharing.purpose}\n- Named recipients: ${manifest.aiDataSharing.processorNames.join(", ")}\n- Pre-transmission consent action: ${manifest.aiDataSharing.consent.affirmativeAction}\n- Decline path: ${manifest.aiDataSharing.consent.declinePath}\n- Reminder: no-training or Zero Data Retention controls reduce use/retention but do not mean the data was never shared.`);
@@ -226,6 +238,46 @@ async function privacyDraft(repository: string, manifest: ShipLayerManifest, ana
   else if (aiContradiction?.overriddenReasons.length) lines.push("", "## Third-party AI sharing", `- No third-party AI data sharing is declared. AI/inference endpoint evidence was human-overridden: ${aiContradiction.overriddenReasons.join("; ")}.`);
   else lines.push("", "## Third-party AI sharing", "- No third-party AI data sharing declared. Confirm this matches all source endpoints and SDKs.");
   return `${lines.join("\n")}\n`;
+}
+/**
+ * App Store Connect's privacy questionnaire is app-wide, not a separate account for each
+ * processor. This intentionally never tells a user to omit a category merely because one
+ * processor falls under Apple's real-time-service exception: the same category can still be
+ * collected locally or by another processor.
+ */
+function externalProcessorQuestionnaireLine(processor: ShipLayerManifest["externalProcessors"][number]): string {
+  const base = `- **${processor.name}** (${processor.kind}) — ${processor.purpose}; data: ${processor.dataCategories.join(", ")};`;
+  const aggregateReminder = ` App Store Connect is aggregate: keep a category declared whenever it is collected locally or by any other processor.`;
+  let determination: string;
+  if (processor.confirmation !== "confirmed") determination = ` UNVERIFIED: processor confirmation is ${processor.confirmation}; do not rely on its collection determination until a human confirms this processor.`;
+  else if (processor.collectionDetermination !== "not-collection" && processor.collectionDetermination !== "collection") determination = " UNVERIFIED: collection determination is unanswered; resolve it before using this row in the app-wide questionnaire.";
+  else if (processor.collectionDetermination === "not-collection" && !processor.collectionDeterminationReason?.trim()) determination = " UNVERIFIED: marked not-collection but no non-blank human reason records the real-time-service basis.";
+  else if (processor.collectionDetermination === "not-collection") determination = ` Human-confirmed not to be App Privacy collection for this processor: ${processor.collectionDeterminationReason!.trim()}. This processor alone adds no category disclosure requirement.${aggregateReminder}`;
+  else determination = ` Human-confirmed to be App Privacy collection for this processor. Include its categories in the app-wide declarations.${aggregateReminder}`;
+  return `${base}${determination}; AI-pipeline recipient: ${processor.aiPipelineRecipient}; policy: ${processor.privacyPolicyUrl}; equal protection: ${processor.protectionConfirmation}; confirmation: ${processor.confirmation}.`;
+}
+
+/**
+ * A missing dataProcessing array is only an absence of a declaration, never evidence of an
+ * absence of collection. Keep this predicate deliberately stricter than a preflight pass: it
+ * also observes raw privacy-manifest/source evidence so a stale or caller-supplied report cannot
+ * make the generated questionnaire sound definitive.
+ */
+function privacyQuestionnaireState(manifest: ShipLayerManifest, analysis: AnalysisReport, preflight: PreflightReport): { canConsiderDataNotCollected: boolean; unresolved: string[] } {
+  const unresolved: string[] = [];
+  if (manifest.confirmations.privacy !== "confirmed") unresolved.push(`the app-wide privacy confirmation is ${manifest.confirmations.privacy}`);
+  for (const processor of manifest.externalProcessors) {
+    if (processor.confirmation !== "confirmed") unresolved.push(`${processor.name} is a declared processor with confirmation ${processor.confirmation}`);
+    else if (processor.collectionDetermination !== "not-collection") unresolved.push(`${processor.name} has not been human-confirmed as not-collection`);
+    else if (!processor.collectionDeterminationReason?.trim()) unresolved.push(`${processor.name} has no non-blank not-collection reason`);
+    else if (processor.protectionConfirmation !== "confirmed") unresolved.push(`${processor.name}'s equal-protection confirmation is ${processor.protectionConfirmation}`);
+  }
+  const privacyManifestFindings = analysis.findings.filter((finding) => finding.key.startsWith("privacyManifestData:") || finding.key === "privacyManifestUnparsed");
+  if (privacyManifestFindings.length) unresolved.push(`source declares collected-data privacy evidence (${privacyManifestFindings.map((finding) => finding.key).join(", ")})`);
+  if (unresolvedExternalServiceMessage(manifest, analysis)) unresolved.push("network/SDK source findings have not been reconciled with confirmed processor or disposition decisions");
+  const relevantBlockers = preflight.results.filter((item) => item.severity === "block" && (item.id === "confirmation.privacy" || item.id === "source.scan-coverage" || item.id.startsWith("privacy.") || item.id.startsWith("source.external.") || item.id.startsWith("ai-sharing."))).map((item) => item.id);
+  if (relevantBlockers.length) unresolved.push(`relevant preflight blocker(s) remain: ${[...new Set(relevantBlockers)].join(", ")}`);
+  return { canConsiderDataNotCollected: manifest.dataProcessing.length === 0 && unresolved.length === 0, unresolved };
 }
 function complianceDraft(manifest: ShipLayerManifest): string { return `# Age rating and content-rights checklist\n\n> Draft only; not legal advice. ShipLayer never infers these declarations from source code.\n\n- Age-rating questionnaire: **${manifest.confirmations.ageRating}**. Complete the current App Store Connect questionnaire and record any regional ratings.\n- Content rights: **${manifest.confirmations.contentRights}**. Confirm whether the app contains, shows, or accesses third-party content, then make the App Store Connect declaration.\n`; }
 async function privacyPage(repository: string, manifest: ShipLayerManifest, analysis: AnalysisReport): Promise<string> {

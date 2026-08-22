@@ -785,10 +785,16 @@ function confirmationChecks(manifest: ShipLayerManifest, add: Add): void {
     else if (value === "confirmed" || value === "not-applicable") add(`confirmation.${key}`, "pass", `${key} declaration is ${value}.`);
     else add(`confirmation.${key}`, "block", `${key} declaration requires explicit human confirmation.`, "Confirm only after reviewing the App Store Connect/legal requirement.");
   }
-  for (const item of [...manifest.dataProcessing, ...manifest.externalProcessors]) {
+  for (const item of manifest.dataProcessing) {
     if (item.confirmation === "confirmed" || item.confirmation === "not-applicable") continue;
-    const name = "name" in item ? item.name : item.category;
-    add(`privacy.${name}`, "block", `${name} requires human privacy confirmation.`, "Confirm collection, use, tracking, identity linkage, and third-party processing.");
+    add(`privacy.${item.category}`, "block", `${item.category} requires human privacy confirmation.`, "Confirm collection, use, tracking, identity linkage, and third-party processing.");
+  }
+  // A row in externalProcessors is itself a claim that the app uses that processor. Unlike a
+  // dataProcessing row, it therefore cannot be marked "not-applicable": that value used to let
+  // a declared processor bypass both this confirmation gate and the collection-determination
+  // checks below, producing a false-green canSubmit result.
+  for (const processor of manifest.externalProcessors) if (processor.confirmation !== "confirmed") {
+    add(`privacy.${processor.name}`, "block", `${processor.name} is a declared external processor but is not human-confirmed.`, "Confirm that this processor is used and its actual data handling, or remove the row if it is not applicable to this app. A declared processor cannot use confirmation: not-applicable.");
   }
   for (const item of manifest.dataProcessing) if (item.confirmation === "confirmed" && (!item.purpose.length || item.linkedToIdentity === "unknown" || item.usedForTracking === "unknown")) add(`privacy.${item.category}.details`, "block", `${item.category} is marked confirmed but purpose, identity linkage, or tracking is still unknown.`, "Record explicit App Privacy answers before submission.");
   for (const item of manifest.externalProcessors) if (item.confirmation === "confirmed" && (!item.purpose || !item.dataCategories.length)) add(`privacy.${item.name}.details`, "block", `${item.name} is marked confirmed but its purpose or data categories are incomplete.`, "Record explicit processor data handling before submission.");
@@ -1408,7 +1414,7 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
       else add(`source.external.${findingId}`, "pass", `Source heuristic '${findingId}' has a human-confirmed processor disposition.`);
     } else add(`source.external.${findingId}`, "pass", `Source heuristic '${findingId}' has a human-confirmed non-processor disposition.`);
   }
-  for (const processor of manifest.externalProcessors.filter((item) => item.confirmation === "confirmed")) {
+  for (const processor of manifest.externalProcessors) {
     // Whether this processor's receipt of data is "collection" under Apple's App Privacy
     // definition is a legal judgment ShipLayer must route to a human, never decide itself — see
     // Apple's own definition (developer.apple.com/app-store/app-privacy-details/): data
@@ -1418,6 +1424,13 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
     // edge traffic and read-only API calls. `collectionDetermination` is optional and unset/
     // "needs-human-confirmation" by default; absence must NEVER be read as "not-collection" — it
     // blocks exactly like every other unconfirmed fact in this manifest until a human answers.
+    // Collection determinations only carry weight after the processor row itself has been
+    // confirmed. Do not turn an unconfirmed (or incorrectly not-applicable) proposal into a
+    // passing App Privacy conclusion merely because it happens to contain a determination.
+    if (processor.confirmation !== "confirmed") {
+      add(`privacy.processor.${processor.name}.collection-determination`, "block", `${processor.name}'s collection determination cannot be relied on because the declared processor is not human-confirmed.`, "Confirm the processor first, then record whether its receipt of data is App Privacy collection and, for not-collection, the real-time-service reason.");
+      continue;
+    }
     const determination = processor.collectionDetermination;
     if (determination !== "collection" && determination !== "not-collection") { add(`privacy.processor.${processor.name}.collection-determination`, "block", `${processor.name} has no human-confirmed determination of whether its receipt of data is "collection" under Apple's App Privacy definition.`, "Set externalProcessors[].collectionDetermination to 'collection' or 'not-collection', based on whether this processor retains data beyond servicing the request in real time — see references/questions.md."); continue; }
     if (determination === "not-collection") {
