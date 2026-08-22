@@ -140,9 +140,12 @@ export type AIDataSharing =
   };
 export interface ExternalServiceDecision {
   finding: string;
-  disposition: "declared-processor" | "not-an-external-processor";
-  /** Required when a display-name processor's canonical policy host is linked through a scanner
-   * runtime endpoint. This is an exact manifest identity, never a domain guess. */
+  /** `reference-only` is a human statement about this literal: it is a documentation/privacy/
+   * marketing/reference link, not a runtime processor call. ShipLayer does not prove reachability.
+   * `not-an-external-processor` remains for a real endpoint that is not third-party processing. */
+  disposition: "declared-processor" | "not-an-external-processor" | "reference-only";
+  /** Required when a display-name processor's canonical policy host is linked through a declared
+   * processor decision. This is an exact manifest identity, never a domain guess. */
   processorName?: string;
   reason: string;
   evidence: string[];

@@ -273,17 +273,19 @@ test("vendor policy clearance is exact-host only and rejects shared-host tenants
   assert.equal(mappedVendorReport.canSubmit, true, "a display-name vendor can use an exact scanner endpoint plus a named human processor decision");
 });
 
-test("a runtime endpoint cannot be both a processor attestation link and a non-processor disposition, while a policy link can", async () => {
+test("same-host non-processor decisions block structurally, while a human-confirmed reference-only policy link can coexist", async () => {
   const contradictory = await configuredNotCollectionProcessor(
     { evidence: ["Sources/CdnClient.swift"] },
     {},
     async (root) => { await writeFile(path.join(root, "Sources/CdnClient.swift"), "let endpoint = \"https://cdn.vendor-a.com/v1/realtime\"\n"); }
   );
   contradictory.manifest.externalServiceDecisions.push({ finding: "endpoint:https://cdn.vendor-a.com/v1/realtime", disposition: "not-an-external-processor", reason: "Incorrectly marked as a non-processor.", evidence: ["Sources/CdnClient.swift"], confirmation: "confirmed" });
+  assert.doesNotThrow(() => validateManifest(contradictory.manifest), "legacy same-host non-processor manifests remain readable for migration");
   const contradictoryAnalysis = await analyzeRepository(contradictory.root);
   const contradictoryReport = await preflight(contradictory.root, contradictory.manifest, false, contradictoryAnalysis);
   assert.ok(collectionDeterminationBlocked(contradictoryReport));
   assert.equal(contradictoryReport.canSubmit, false);
+  assert.match(contradictoryReport.results.find((item) => item.id === "source.external.endpoint:https://cdn.vendor-a.com/v1/realtime")?.remediation || "", /reference-only/i);
   const contradictoryPackage = await generateReleasePackage(contradictory.root, contradictory.manifest, contradictoryAnalysis, contradictoryReport, "shiplayer-release");
   const contradictoryDraft = await readFile(path.join(contradictoryPackage.directory, "privacy/questionnaire-draft.md"), "utf8");
   assert.match(contradictoryDraft, /UNVERIFIED: marked not-collection/i);
@@ -294,22 +296,27 @@ test("a runtime endpoint cannot be both a processor attestation link and a non-p
     {},
     async (root) => { await writeFile(path.join(root, "Sources/CdnClient.swift"), "let policy = \"https://cdn.vendor-a.com/privacy\"\nlet docs = \"https://cdn.vendor-a.com/docs/v1/reference\"\n"); }
   );
-  policyLink.manifest.externalServiceDecisions.push({ finding: "endpoint:https://cdn.vendor-a.com/privacy", disposition: "not-an-external-processor", reason: "Public policy link only.", evidence: ["Sources/CdnClient.swift"], confirmation: "confirmed" });
-  policyLink.manifest.externalServiceDecisions.push({ finding: "endpoint:https://cdn.vendor-a.com/docs/v1/reference", disposition: "not-an-external-processor", reason: "Public documentation link only.", evidence: ["Sources/CdnClient.swift"], confirmation: "confirmed" });
+  policyLink.manifest.externalServiceDecisions.push({ finding: "endpoint:https://cdn.vendor-a.com/privacy", disposition: "reference-only", reason: "Human confirmed this literal is the public policy link only.", evidence: ["Sources/CdnClient.swift"], confirmation: "confirmed" });
+  policyLink.manifest.externalServiceDecisions.push({ finding: "endpoint:https://cdn.vendor-a.com/docs/v1/reference", disposition: "reference-only", reason: "Human confirmed this literal is public documentation only.", evidence: ["Sources/CdnClient.swift"], confirmation: "confirmed" });
   const policyAnalysis = await analyzeRepository(policyLink.root);
   assert.equal(policyAnalysis.findings.find((finding) => finding.key === "endpoint:https://cdn.vendor-a.com/privacy")?.evidence.some((item) => item.runtimeNetworkRequest), false);
   assert.equal(policyAnalysis.findings.find((finding) => finding.key === "endpoint:https://cdn.vendor-a.com/docs/v1/reference")?.evidence.some((item) => item.runtimeNetworkRequest), false);
   const policyReport = await preflight(policyLink.root, policyLink.manifest);
-  assert.equal(policyReport.canSubmit, true, "a docs/privacy link on the same host is not a runtime processor endpoint");
+  assert.equal(policyReport.canSubmit, true, "a human-confirmed reference-only docs/privacy literal can coexist with its processor");
 });
 
-test("URLSession request syntax keeps docs-looking runtime endpoints contradictory and suppresses questionnaire guidance", async () => {
+test("same-host legacy non-processor decisions block regardless of source syntax or path", async () => {
   const requests = [
     { path: "/support/tickets", call: (url: string) => `URLSession.shared.dataTask(with: URL(string: \"${url}\")!).resume()` },
     { path: "/help/chat", call: (url: string) => `Task { _ = try? await URLSession.shared.data(from: URL(string: \"${url}\")!) }` },
     { path: "/docs/v1/upload", call: (url: string) => `URLSession.shared.uploadTask(with: URL(string: \"${url}\")!, from: Data()).resume()` },
     { path: "/legal/submit", call: (url: string) => `URLSession.shared.downloadTask(with: URL(string: \"${url}\")!).resume()` },
-    { path: "/privacy", call: (url: string) => `URLSession.shared.dataTask(with: URL(string: \"${url}\")!).resume()` }
+    { path: "/privacy", call: (url: string) => `URLSession.shared.dataTask(with: URL(string: \"${url}\")!).resume()` },
+    { path: "/indirect", call: (url: string) => `let endpoint = \"${url}\"; sendThroughWrapper(endpoint)` },
+    { path: "/collision", call: (url: string) => `let endpoint = \"${url}\"; struct URLSession { static func dataTask(_ value: String) {} }; URLSession.dataTask(endpoint)` },
+    { path: "/shadow", call: (url: string) => `const endpoint = \"${url}\"; function fetch(value: string) {}; fetch(endpoint);` },
+    { path: "/debug", call: (url: string) => `#if DEBUG\nlet endpoint = \"${url}\"\n#endif` },
+    { path: "/dead", call: (url: string) => `if false { let endpoint = \"${url}\" }` }
   ];
   for (const request of requests) {
     const endpoint = `https://cdn.vendor-a.com${request.path}`;
@@ -321,7 +328,7 @@ test("URLSession request syntax keeps docs-looking runtime endpoints contradicto
     state.manifest.externalServiceDecisions.push({ finding: `endpoint:${endpoint}`, disposition: "not-an-external-processor", reason: "Incorrectly classified despite direct request syntax.", evidence: ["Sources/CdnClient.swift"], confirmation: "confirmed" });
     const analysis = await analyzeRepository(state.root);
     const finding = analysis.findings.find((item) => item.key === `endpoint:${endpoint}`);
-    assert.ok(finding?.evidence.some((item) => item.runtimeNetworkRequest), endpoint);
+    assert.ok(finding, `${endpoint}: ${analysis.findings.filter((item) => item.key.startsWith("endpoint:")).map((item) => item.key).join(", ")}`);
     const report = await preflight(state.root, state.manifest, false, analysis);
     assert.ok(collectionDeterminationBlocked(report), endpoint);
     assert.equal(report.canSubmit, false, endpoint);
@@ -330,6 +337,20 @@ test("URLSession request syntax keeps docs-looking runtime endpoints contradicto
     assert.match(draft, /UNVERIFIED: marked not-collection/i, endpoint);
     assert.doesNotMatch(draft, /Human-confirmed not to be App Privacy collection for this processor/i, endpoint);
   }
+});
+
+test("a direct request marked reference-only warns but remains a human-authoritative disposition", async () => {
+  const endpoint = "https://cdn.vendor-a.com/privacy";
+  const state = await configuredNotCollectionProcessor(
+    { evidence: ["Sources/CdnClient.swift"] },
+    {},
+    async (root) => { await writeFile(path.join(root, "Sources/CdnClient.swift"), `import Foundation\nURLSession.shared.dataTask(with: URL(string: \"${endpoint}\")!).resume()\n`); }
+  );
+  state.manifest.externalServiceDecisions.push({ finding: `endpoint:${endpoint}`, disposition: "reference-only", reason: "Human reviewed this literal as a reference-only link.", evidence: ["Sources/CdnClient.swift"], confirmation: "confirmed" });
+  const analysis = await analyzeRepository(state.root);
+  const report = await preflight(state.root, state.manifest, false, analysis);
+  assert.equal(report.canSubmit, true);
+  assert.ok(report.results.some((item) => item.id === `source.external.endpoint:${endpoint}.runtime-reference` && item.severity === "warn"));
 });
 
 test("scanner distinguishes common JS/TS request syntax from bare policy constants", async () => {
@@ -401,7 +422,17 @@ test("ordinary manifest URLs may use benign query strings or fragments while str
     (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/bearer/sekrit-value"; },
     (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/TOKENS/%2E/sekrit-value"; },
     (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/%74okens/sekrit-value"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/%2574oken/sekrit-value"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/%2525252574oken/sekrit-value"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/to%E2%80%8Bken/sekrit-value"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/%2561ccess%2Dtoken/sekrit-value"; },
     (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/api_key//sekrit-value"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/auth-token/sekrit-value"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/client-secret/sekrit-value"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/private-key/sekrit-value"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/oauth/code/sekrit-value"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/guides/sekrit-value"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/auth/login/Aa0123456789Bcdefghijklmnop"; },
     (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/key/faq/sekrit-value"; },
     (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/password/reset/sekrit-value"; },
     (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/auth/logout/sekrit-value"; }
@@ -421,7 +452,11 @@ test("ordinary manifest URLs may use benign query strings or fragments while str
   benignPaths.externalProcessors.push(processor({ collectionDetermination: "collection", privacyPolicyUrl: "https://cdn.vendor-a.com/docs/auth/guide", evidence: [] }));
   assert.doesNotThrow(() => validateManifest(benignPaths));
 
-  for (const url of ["https://vendor-a.com/password/reset", "https://vendor-a.com/key/faq", "https://vendor-a.com/auth/guide", "https://vendor-a.com/auth/login", "https://vendor-a.com/auth/logout"]) {
+  const longPublicRoute = readyManifest();
+  longPublicRoute.contacts.supportUrl = "https://support.vendor-a.com/docs/a-very-long-public-navigation-article";
+  assert.doesNotThrow(() => validateManifest(longPublicRoute));
+
+  for (const url of ["https://vendor-a.com/password/reset", "https://vendor-a.com/password/change", "https://vendor-a.com/key/faq", "https://vendor-a.com/key/reference", "https://vendor-a.com/auth/guide", "https://vendor-a.com/auth/login", "https://vendor-a.com/auth/login/callback", "https://vendor-a.com/auth/logout"]) {
     const benignTerminalPath = readyManifest();
     benignTerminalPath.contacts.supportUrl = url;
     assert.doesNotThrow(() => validateManifest(benignTerminalPath), url);
@@ -447,6 +482,25 @@ test("scanner and generated artifacts redact chained credential-shaped endpoint 
   const analysis = await analyzeRepository(root);
   assert.doesNotMatch(JSON.stringify(analysis), new RegExp(sentinel, "i"));
   assert.ok(analysis.findings.some((finding) => finding.key === "endpoint:https://api.vendor-a.com/:redacted"));
+  const report = await preflight(root, manifest, false, analysis);
+  const generated = await generateReleasePackage(root, manifest, analysis, report, "shiplayer-release");
+  for (const file of generated.files) assert.doesNotMatch(await readFile(path.join(generated.directory, file), "utf8"), new RegExp(sentinel, "i"), file);
+});
+
+test("recursive percent decoding and invisible-character normalization redact credential paths in every artifact", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-recursive-path-redaction-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  const sentinel = "sekrit-value";
+  await writeFile(path.join(root, "worker.ts"), [
+    `fetch("https://api.vendor-a.com/%2574oken/${sentinel}");`,
+    `fetch("https://api.vendor-a.com/%2525252574oken/${sentinel}");`,
+    `fetch("https://api.vendor-a.com/to%E2%80%8Bken/${sentinel}");`,
+    `fetch("https://api.vendor-a.com/client%2Dsecret/${sentinel}");`
+  ].join("\n"));
+  const analysis = await analyzeRepository(root);
+  assert.equal(JSON.stringify(analysis).includes(sentinel), false);
+  assert.equal(analysis.findings.filter((finding) => finding.key === "endpoint:https://api.vendor-a.com/:redacted").length, 1);
   const report = await preflight(root, manifest, false, analysis);
   const generated = await generateReleasePackage(root, manifest, analysis, report, "shiplayer-release");
   for (const file of generated.files) assert.doesNotMatch(await readFile(path.join(generated.directory, file), "utf8"), new RegExp(sentinel, "i"), file);

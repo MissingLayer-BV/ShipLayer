@@ -5,15 +5,13 @@
  */
 const DIRECT_CREDENTIAL = /(?:\b(?:api[ _-]?(?:key|token)|access[ _-]?token|auth(?:orization)?[ _-]?token|client[ _-]?secret|secret|password|private[ _-]?key|bearer)\s*[:=]\s*(?:["']?)[^\s"']+|\bauthorization\s*:\s*bearer\s+[A-Za-z0-9._~+\/-]{8,}|\bbearer\s+[A-Za-z0-9._~+\/-]{8,})/i;
 const SENSITIVE_URL_PARAMETER = /(?:^|[_-])(?:api[_-]?(?:key|token)|access[_-]?token|auth(?:orization)?[_-]?token|client[_-]?secret|secret|password|private[_-]?key|bearer|credential|signature|sig|token|key|code)(?:$|[_-])/i;
-// These path markers have no normal public-navigation interpretation once they carry a following
-// segment. Do not make their safety depend on the *next* segment: `/token/login/value` is still
-// credential-shaped even though `login` alone is an ordinary public route.
-const HIGH_RISK_PATH_MARKER = /^(?:api[-_.]?(?:keys?|tokens?)|tokens?|access[-_.]?tokens?|secrets?|credentials?|signatures?|sigs?|bearers?)$/i;
-// These three words legitimately occur in public navigation, but only the listed final pairs are
-// allowed. Any additional path material is treated as a credential-shaped URL rather than guessed
-// safe from prose or a generic allowlist.
-const NAVIGATION_PATH_MARKER = /^(?:auth|password|key)$/i;
-const BENIGN_TERMINAL_PATH_PAIRS = new Set(["auth/guide", "auth/login", "auth/logout", "password/reset", "key/faq"]);
+// A URL path is not usually secret material, but these markers become credential-shaped when
+// followed by a value.  Deliberately keep `auth`, `password`, and `key` out of this set: they are
+// common public-navigation routes. They are checked only when their following material itself
+// looks like a credential. This avoids a brittle route allowlist such as auth/login/callback.
+const NAVIGATION_PATH_MARKER = new Set(["auth", "password", "key"]);
+const DEFAULT_IGNORABLE_OR_CONTROL = /[\p{Default_Ignorable_Code_Point}\p{Cf}\p{Cc}\p{Cs}]/gu;
+const MAX_PERCENT_DECODES = 4;
 
 export function containsDirectCredentialMaterial(value: string): boolean {
   return /-----BEGIN(?: [A-Z]+)? PRIVATE KEY-----/i.test(value)
@@ -50,26 +48,34 @@ export function urlContainsCredentialMaterial(url: URL): boolean {
  * scanner formatter can never reintroduce material that manifest validation would reject. */
 export function redactedCredentialPath(pathname: string): string | undefined {
   const segments = canonicalPathSegments(pathname);
+  if (segments.some(isHighSignalCredentialPathValue)) return "/:redacted";
   for (let index = 0; index < segments.length; index++) {
     const segment = segments[index];
-    if (HIGH_RISK_PATH_MARKER.test(segment) && index + 1 < segments.length) return "/:redacted";
-    if (NAVIGATION_PATH_MARKER.test(segment) && index + 1 < segments.length) {
-      const pair = `${segment}/${segments[index + 1]}`;
-      if (index + 2 >= segments.length && BENIGN_TERMINAL_PATH_PAIRS.has(pair)) continue;
-      return "/:redacted";
-    }
+    const folded = segment.toLowerCase();
+    const remaining = segments.slice(index + 1);
+    if (isStrongCredentialPathMarker(segment) && remaining.length) return "/:redacted";
+    // OAuth authorization-code routes are public until a literal code value follows `/oauth/code`.
+    if (folded === "oauth" && remaining[0]?.toLowerCase() === "code" && remaining.length > 1) return "/:redacted";
+    if (NAVIGATION_PATH_MARKER.has(folded) && remaining.some(looksLikeCredentialValue)) return "/:redacted";
   }
   return undefined;
 }
 
-/** Decode and resolve URL path structure before checking credential markers. A credential cannot
- * evade the contract with case, percent encoding, `.`/`..`, repeated separators, or a decoded
- * slash/backslash tucked inside one segment. */
+/** Separators are presentation, not a security boundary: `api_key`, `API.KEY`, `api--key`, and
+ * even `token-s` normalize to the same marker family. Match only complete marker words so normal
+ * routes such as `/key/reference` and `/authentication/guide` remain readable. */
+function isStrongCredentialPathMarker(segment: string): boolean {
+  const compact = segment.toLowerCase().replace(/-/g, "");
+  return /^(?:tokens?|accesstokens?|apitokens?|apikeys?|secrets?|clientsecrets?|credentials?|signatures?|sigs?|bearers?|authtokens?|privatekeys?|oauthcodes?)$/.test(compact);
+}
+
+/** Decode repeatedly (within a small bound), fold Unicode compatibility characters, and discard
+ * invisible formatting/control characters before marker matching. This closes double-encoding and
+ * zero-width bypasses without treating ordinary, readable navigation paths as credentials. */
 function canonicalPathSegments(pathname: string): string[] {
   const segments: string[] = [];
-  for (const rawSegment of pathname.split(/[\\/]+/)) {
-    let decoded: string;
-    try { decoded = decodeURIComponent(rawSegment).normalize("NFKC").trim().toLowerCase(); } catch { throw new Error("invalid encoded URL path"); }
+  for (const rawSegment of decodeToStable(pathname).split(/[\\/]+/)) {
+    const decoded = canonicalPathPart(rawSegment);
     for (const segment of decoded.split(/[\\/]+/)) {
       if (!segment || segment === ".") continue;
       if (segment === "..") { segments.pop(); continue; }
@@ -77,4 +83,45 @@ function canonicalPathSegments(pathname: string): string[] {
     }
   }
   return segments;
+}
+
+function decodeToStable(value: string): string {
+  let decoded = value;
+  for (let attempt = 0; attempt < MAX_PERCENT_DECODES; attempt++) {
+    let next: string;
+    try { next = decodeURIComponent(decoded); } catch { throw new Error("invalid encoded URL path"); }
+    if (next === decoded) return decoded;
+    decoded = next;
+  }
+  // Do not accept a value whose normalization still has another encoded layer: accepting it
+  // would turn the iteration bound into an evasion primitive. Callers fail closed/redact on this.
+  try { if (decodeURIComponent(decoded) !== decoded) throw new Error("excessively encoded URL path"); }
+  catch (error) { throw error instanceof Error ? error : new Error("invalid encoded URL path"); }
+  return decoded;
+}
+
+function canonicalPathPart(value: string): string {
+  return value
+    .normalize("NFKC")
+    .replace(DEFAULT_IGNORABLE_OR_CONTROL, "")
+    .trim()
+    .replace(/[\s._-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/** High-confidence values only. This is not a claim that every opaque URL segment is a secret;
+ * it is the narrow condition under which an ordinary auth/password/key navigation route is
+ * redacted rather than preserved in a generated artifact. */
+function isHighSignalCredentialPathValue(segment: string): boolean {
+  if (/(?:^|-)(?:secret|sekrit)(?:-|$)/i.test(segment)) return true;
+  if (/^(?:sk|pk|rk|ghp|github-pat)-[a-z0-9_-]{8,}$/i.test(segment)) return true;
+  // Opaque high-entropy material is never helpful in a release artifact. Require mixed classes
+  // rather than treating an ordinary long article slug as credential material.
+  return /^(?=.{24,}$)(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[a-zA-Z0-9_-]+$/.test(segment);
+}
+
+function looksLikeCredentialValue(segment: string): boolean {
+  if (isHighSignalCredentialPathValue(segment)) return true;
+  if (/(?:^|-)(?:secret|sekrit|token|api-key|access-token|client-secret|private-key|credential|signature|bearer)(?:-|$)/i.test(segment)) return true;
+  return false;
 }

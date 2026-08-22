@@ -645,12 +645,13 @@
         "disposition": {
           "enum": [
             "declared-processor",
-            "not-an-external-processor"
+            "not-an-external-processor",
+            "reference-only"
           ]
         },
         "processorName": {
           "$ref": "#/$defs/nonEmpty",
-          "description": "For a declared-processor disposition, the exact externalProcessors[].name the human linked to this scanner finding."
+          "description": "For a declared-processor disposition, the exact externalProcessors[].name the human linked to this scanner finding. A reference-only disposition is a human-confirmed documentation/privacy/marketing/reference literal, not a reachability determination."
         },
         "reason": {
           "$ref": "#/$defs/nonEmpty"

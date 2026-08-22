@@ -134,12 +134,15 @@ turned out to be a plain provider policy or docs link, not an API call — see
 > actually sends data there, or is it just a link (e.g. to a policy page) that never fires an
 > API call? If it sends data, what does it send and why?
 
-"It's just a link, nothing is ever sent there" → an `externalServiceDecisions` entry with
-`disposition: "not-an-external-processor"` and a `reason` saying so — **that exact string**;
-`"not-a-processor"` is not a valid value and fails schema validation. "It sends data" → declare
-the processor (name, purpose from Apple's fixed list, data categories, policy URL) and link the
-decision to it (`disposition: "declared-processor"`). Never leave the finding undeclared — it
-blocks either way until there's a confirmed disposition.
+"It's just a policy/docs/support/marketing link, nothing is ever sent there" → an
+`externalServiceDecisions` entry with `disposition: "reference-only"` and a reason. This is a
+human confirmation about that one literal; ShipLayer does **not** prove source reachability. "It
+sends data" → declare the processor (name, purpose from Apple's fixed list, data categories,
+policy URL) and link the decision to it (`disposition: "declared-processor"`).
+`"not-an-external-processor"` is reserved for an endpoint that is genuinely not third-party
+processing. If its exact host is declared by an external processor, it is a contradiction and
+blocks; migrate an old docs-link decision to `reference-only` rather than silently reinterpreting
+it. Never leave the finding undeclared — it blocks until there is a confirmed disposition.
 
 **Declaring the processor is not the last question about it.** A confirmed `externalProcessors[]`
 row with `dataCategories` set immediately needs its own `collectionDetermination` answer (next
@@ -201,10 +204,12 @@ confirmations are confidential and cannot safely clear this v0.1 gate: keep them
 release manifest and leave the row pending or record `collection` until a safe evidence model
 exists. Ordinary support/privacy URLs elsewhere in the manifest may have benign queries/fragments;
 this strict URL form (including no credential-shaped path segment followed by a value) applies only
-to structured attestation evidence. If a scanner runtime/API endpoint is used to map a display-name
-processor to the policy host, its confirmed `externalServiceDecision` must declare that exact
-processor and share its source evidence; it cannot also be confirmed `not-an-external-processor`.
-A separate docs/privacy URL on the same host may legitimately have that non-processor disposition.
+to structured attestation evidence. A source finding on the exact host declared by an external
+processor must not use `not-an-external-processor`, whatever its pathname or apparent call syntax.
+For a literal that a human has checked is merely policy/docs/support/marketing/reference, use
+`reference-only`; this coexists with the processor but does not claim ShipLayer proved the literal
+is unreachable. Use `declared-processor` when the human links it to actual processing, with
+matching source evidence.
 
 The exact observable fact is deliberately a literal field: **does this processor and every
 downstream recipient avoid retaining the transmitted data beyond real-time servicing of the
