@@ -460,7 +460,7 @@ test("prepare emits a manually-installed workflow_dispatch-only capture workflow
   assert.equal(inputs.xcodegen_spec.type, "choice");
   assert.equal(inputs.xcodegen_spec.default, "project.yml");
   assert.deepEqual(inputs.xcodegen_spec.options, ["project.yml"]);
-  const jobs = workflow.jobs as Record<string, { "runs-on": string; "timeout-minutes": number; steps: Array<{ name: string; run?: string; env?: Record<string, string>; with?: Record<string, unknown> }> }>;
+  const jobs = workflow.jobs as Record<string, { "runs-on": string; "timeout-minutes": number; steps: Array<{ name: string; run?: string; env?: Record<string, string>; with?: Record<string, unknown>; if?: string }> }>;
   const job = Object.values(jobs)[0];
   assert.equal(job["runs-on"], "macos-latest");
   assert.ok(typeof job["timeout-minutes"] === "number" && job["timeout-minutes"] > 0);
@@ -478,11 +478,14 @@ test("prepare emits a manually-installed workflow_dispatch-only capture workflow
   // annotation, and the current (non-"--legacy") xcresulttool invocation must be tried first.
   const uploadScreens = job.steps.find((step) => step.name === "Upload extracted screenshots");
   assert.equal(uploadScreens?.with?.["if-no-files-found"], "error");
+  assert.equal(uploadScreens?.if, "always() && steps.extract.outputs.found == 'true'");
   const extractStep = job.steps.find((step) => step.name.includes("Extract screenshot attachments"));
   const runText = extractStep?.run || "";
   const currentIndex = runText.indexOf("xcresulttool export attachments --path");
   const legacyIndex = runText.indexOf("--legacy");
   assert.ok(currentIndex >= 0 && legacyIndex > currentIndex, "the current xcresulttool syntax must be tried before --legacy");
+  assert.match(runText, /-iname '\*\.png'/, "manifest.json alone must not count as a screenshot");
+  assert.match(runText, /exit 1/, "zero extracted screenshot images must fail loudly");
   const template = await readFile(path.join(pkg.directory, "screenshots/ui-test-harness-template.swift"), "utf8");
   assert.ok(template.includes("keepScreenshot(named:"));
   assert.ok(template.includes("XCTAttachment(screenshot: XCUIScreen.main.screenshot())"));
