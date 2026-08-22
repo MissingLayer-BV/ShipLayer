@@ -3,15 +3,20 @@ import { lstat, mkdir, readFile, realpath, rename, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { stringify } from "yaml";
 import { copyFileTree, ensureDirectory, resolveContained, safeRelativePath, stableJson, writeBinary, writeText } from "./fs.js";
-import type { AnalysisReport, LocaleCopy, PreflightReport, ShipLayerManifest } from "./types.js";
-import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, externalServiceFindings, MONETIZATION_CONTRADICTION_FINDING, resolveContradictionOverride, storekitPurchaseEvidence } from "./evidence.js";
+import type { AnalysisReport, Finding, LocaleCopy, PreflightReport, ShipLayerManifest } from "./types.js";
+import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, MONETIZATION_CONTRADICTION_FINDING, resolveContradictionOverride, storekitPurchaseEvidence } from "./evidence.js";
 import { detectScreenshotHarness } from "./scanner.js";
 import { buildMarketingSlideEntries, DEFAULT_MARKETING_FINAL_DIR, DEFAULT_OUTPUT_DIRECTORY, EXPORT_MJS, frameForFamily, renderPackageJson, renderReadme, renderSlideHtml, renderSlidesManifestJson, STRIP_ALPHA_MJS } from "./marketing.js";
+import { assessNotCollectionAttestation, notCollectionAttestationIssueMessage } from "./collection-attestation.js";
+import { assessNotCollectionEvidence } from "./not-collection-evidence.js";
+import { assessExternalServiceReadiness } from "./external-service-assessment.js";
+import { validateManifest } from "./manifest.js";
+import { containsCredentialUrlMaterial, containsDirectCredentialMaterial } from "./secrets.js";
 
 export interface PreparedPackage { directory: string; files: string[] }
 const RESERVED_OUTPUT_ROOTS = new Set([".git", ".github", ".shiplayer-staging", "node_modules", "pods", "carthage", "deriveddata", "build", ".build", "dist", ".swiftpm", "vendor", "release", "shiplayer.yml"]);
 export async function generateReleasePackage(repository: string, manifest: ShipLayerManifest, analysis: AnalysisReport, preflight: PreflightReport, outputDirectory: string): Promise<PreparedPackage> {
-  assertManifestPaths(manifest); const outputRelative = safeRelativePath(outputDirectory, "--out"); assertOutputPath(outputRelative); assertOutputDoesNotCollide(manifest, outputRelative); assertFinalOutputDirMatchesOut(manifest, outputRelative); const out = await resolveContained(repository, outputRelative, "--out"); await ensureOutputParent(repository, outputRelative); await assertManagedDestination(out); const stage = await createStage(repository); const files: string[] = []; const emit = async (relativePath: string, contents: string): Promise<void> => { assertNoSecretOutput(contents, relativePath); await writeText(path.join(stage, relativePath), contents); files.push(relativePath); }; // Deliberately narrow: this can ONLY read from ShipLayer's own bundled assets/device-frames/
+  validateManifest(manifest); assertManifestPaths(manifest); const outputRelative = safeRelativePath(outputDirectory, "--out"); assertOutputPath(outputRelative); assertOutputDoesNotCollide(manifest, outputRelative); assertFinalOutputDirMatchesOut(manifest, outputRelative); const out = await resolveContained(repository, outputRelative, "--out"); await ensureOutputParent(repository, outputRelative); await assertManagedDestination(out); const stage = await createStage(repository); const files: string[] = []; const emit = async (relativePath: string, contents: string): Promise<void> => { assertNoSecretOutput(contents, relativePath); await writeText(path.join(stage, relativePath), contents); files.push(relativePath); }; // Deliberately narrow: this can ONLY read from ShipLayer's own bundled assets/device-frames/
   // directory (never an arbitrary Buffer a caller could pass in), which is why it skips the
   // secret-text scan emit() applies to every generated string -- there is no future binary-emit
   // call site that could smuggle untrusted content through it, unlike a general emitBinary(path,
@@ -27,7 +32,7 @@ export async function generateReleasePackage(repository: string, manifest: ShipL
   const packagePreflight = { ...preflight, repository: "." };
   await emit("reports/analysis.json", stableJson(packageAnalysis)); await emit("reports/preflight.json", stableJson(packagePreflight)); await emit("reports/preflight.md", preflightMarkdown(packagePreflight));
   for (const [locale, copy] of Object.entries(manifest.metadata.localizations)) await emit(`metadata/${locale}.json`, stableJson(localeMetadataJson(locale, copy)));
-  await emit("privacy/questionnaire-draft.md", await privacyDraft(repository, manifest, analysis)); await emit("privacy/evidence-matrix.json", stableJson({ disclaimer: "Draft only. Apple privacy declarations require human confirmation and must include third-party processing. No-retention/no-training controls do not mean data was not shared.", permissions: manifest.permissions, permissionFlows: manifest.permissionFlows, dataProcessing: manifest.dataProcessing, externalProcessors: manifest.externalProcessors, aiDataSharing: manifest.aiDataSharing, externalServiceDecisions: manifest.externalServiceDecisions, sourceContradictionOverrides: manifest.sourceContradictionOverrides }));
+  await emit("privacy/questionnaire-draft.md", await privacyDraft(repository, manifest, analysis, preflight)); await emit("privacy/evidence-matrix.json", stableJson({ disclaimer: "Draft only. Apple privacy declarations require human confirmation and must include third-party processing. No-retention/no-training controls do not mean data was not shared.", permissions: manifest.permissions, permissionFlows: manifest.permissionFlows, dataProcessing: manifest.dataProcessing, externalProcessors: manifest.externalProcessors, aiDataSharing: manifest.aiDataSharing, externalServiceDecisions: manifest.externalServiceDecisions, sourceContradictionOverrides: manifest.sourceContradictionOverrides }));
   await emit("compliance/age-rating-and-content-rights.md", complianceDraft(manifest));
   await emit("legal/privacy-policy-draft.html", await privacyPage(repository, manifest, analysis)); await emit("legal/support-page-draft.html", await supportPage(repository, manifest, analysis)); await emit("legal/terms-of-use-draft.md", await termsOfUseDraft(repository, manifest, analysis));
   await emit("review/app-review-notes.md", await appReviewNotes(repository, manifest, analysis)); await emit("review/physical-device-recording-script.md", recordingScript(manifest, analysis));
@@ -175,7 +180,7 @@ function assertFinalOutputDirNotReserved(finalOutputDir: string): void {
   if (reserved) throw new Error(`screenshots.finalOutputDir cannot use reserved or source-control path '${reserved}'. Choose a location that does not overlap a VCS/build/dependency directory.`);
 }
 function assertManifestPaths(manifest: ShipLayerManifest): void { safeRelativePath(manifest.screenshots.rawOutputDir, "screenshots.rawOutputDir"); if (manifest.screenshots.marketingProjectPath) safeRelativePath(manifest.screenshots.marketingProjectPath, "screenshots.marketingProjectPath"); if (manifest.screenshots.finalOutputDir) { safeRelativePath(manifest.screenshots.finalOutputDir, "screenshots.finalOutputDir"); assertFinalOutputDirNotReserved(manifest.screenshots.finalOutputDir); } if (manifest.monetization.type === "non-consumables" || manifest.monetization.type === "subscriptions") for (const product of manifest.monetization.products) safeRelativePath(product.reviewScreenshot, `review screenshot for ${product.productId}`); }
-function assertNoSecretOutput(contents: string, label: string): void { if (/-----BEGIN(?: [A-Z]+)? PRIVATE KEY-----/i.test(contents) || /\b(?:api[ _-]?key|access[ _-]?token|auth[ _-]?token|secret|password|private[ _-]?key)\s*[:=]\s*\S+/i.test(contents) || /\bsk-[A-Za-z0-9_-]{16,}\b/.test(contents)) throw new Error(`Refusing to generate ${label} because it appears to contain credential material.`); }
+function assertNoSecretOutput(contents: string, label: string): void { if (containsDirectCredentialMaterial(contents) || containsCredentialUrlMaterial(contents)) throw new Error(`Refusing to generate ${label} because it appears to contain credential material.`); }
 
 // --- shared "did the scan contradict this declaration" helpers, used by every generated ------
 // artifact below that would otherwise assert a confident absence it never actually checked.
@@ -204,7 +209,7 @@ async function aiContradictionInfo(repository: string, manifest: ShipLayerManife
   return { unresolvedEndpoints, overriddenReasons };
 }
 
-async function privacyDraft(repository: string, manifest: ShipLayerManifest, analysis: AnalysisReport): Promise<string> {
+async function privacyDraft(repository: string, manifest: ShipLayerManifest, analysis: AnalysisReport, preflight: PreflightReport): Promise<string> {
   const lines = ["# App Privacy questionnaire draft", "", "> Not legal advice. Confirm each answer in App Store Connect; do not submit this draft unreviewed.", "", "## Protected-resource permissions"];
   const unresolvedPermissions = analysis.findings.filter((finding) => finding.key.startsWith("permission:") && !manifest.permissions.some((permission) => finding.key === `permission:${permission.key}`));
   if (manifest.permissions.length) lines.push(...manifest.permissions.map((permission) => `- **${permission.key}** — ${permission.purpose || "Purpose missing"}; confirmation: ${permission.confirmation}.`));
@@ -215,10 +220,24 @@ async function privacyDraft(repository: string, manifest: ShipLayerManifest, ana
   if (manifest.permissionFlows.length) lines.push(...manifest.permissionFlows.map((item) => `- **${item.category}** — dismissible screen before prompt: ${item.dismissibleScreenBeforePrompt}; confirmation: ${item.confirmation}.`));
   if (unresolvedPermissionFlows.length) lines.push(`- UNVERIFIED: the scanner detected a runtime permission request for ${unresolvedPermissionFlows.map((finding) => finding.key.slice("permissionFlow:".length)).join(", ")} with no matching permissionFlows declaration. Reconcile before submission.`);
   if (!manifest.permissionFlows.length && !unresolvedPermissionFlows.length) lines.push("- No runtime permission-request flows detected or declared.");
-  lines.push("", "## Data categories", ...(manifest.dataProcessing.length ? manifest.dataProcessing.map((item) => `- **${item.category}** — purposes: ${item.purpose.join(", ") || "missing"}; linked to identity: ${item.linkedToIdentity}; tracking: ${item.usedForTracking}; confirmation: ${item.confirmation}.`) : ["- No data categories declared. Confirm all collection, including processor collection."]));
-  const unresolvedServices = unresolvedExternalServiceMessage(manifest, analysis);
-  if (manifest.externalProcessors.length) lines.push("", "## External processors", ...manifest.externalProcessors.map((processor) => `- **${processor.name}** (${processor.kind}) — ${processor.purpose}; data: ${processor.dataCategories.join(", ")}; AI-pipeline recipient: ${processor.aiPipelineRecipient}; policy: ${processor.privacyPolicyUrl}; equal protection: ${processor.protectionConfirmation}; confirmation: ${processor.confirmation}.`));
-  else if (unresolvedServices) lines.push("", "## External processors", `- ${unresolvedServices}`);
+  const questionnaireState = await privacyQuestionnaireState(repository, manifest, analysis, preflight);
+  const dataCategoryLines = manifest.dataProcessing.length
+    ? [
+        ...manifest.dataProcessing.map(dataProcessingQuestionnaireLine),
+        "- App Store Connect records categories for the app as a whole. Do not select ‘Data Not Collected’ while any category above remains declared; a processor’s not-collection conclusion does not remove a category collected locally or by another processor."
+      ]
+    : [
+        "- No app-wide data categories are currently declared. This is not evidence that the app collects no data.",
+        "- This draft intentionally does not recommend selecting ‘Data Not Collected’. A human must make the final aggregate App Store Connect answer after reviewing local collection, source evidence, and every processor's structured attestation.",
+        ...questionnaireState.unresolved.map((reason) => `  - UNVERIFIED: ${reason}`)
+      ];
+  lines.push("", "## Data categories", ...dataCategoryLines);
+  const unresolvedServices = await unresolvedExternalServiceMessage(repository, manifest, analysis);
+  if (manifest.externalProcessors.length || unresolvedServices) {
+    const processorLines = await Promise.all(manifest.externalProcessors.map((processor) => externalProcessorQuestionnaireLine(repository, processor, manifest, analysis, preflight)));
+    if (unresolvedServices) processorLines.push(`- ${unresolvedServices}`);
+    lines.push("", "## External processors", ...processorLines);
+  }
   else lines.push("", "## External processors", "- No external processors declared. Confirm SDKs and network endpoints.");
   const aiContradiction = await aiContradictionInfo(repository, manifest, analysis);
   if (manifest.aiDataSharing.enabled) lines.push("", "## Third-party AI sharing", `- Data sent: ${manifest.aiDataSharing.dataSent.join("; ")}\n- Purpose: ${manifest.aiDataSharing.purpose}\n- Named recipients: ${manifest.aiDataSharing.processorNames.join(", ")}\n- Pre-transmission consent action: ${manifest.aiDataSharing.consent.affirmativeAction}\n- Decline path: ${manifest.aiDataSharing.consent.declinePath}\n- Reminder: no-training or Zero Data Retention controls reduce use/retention but do not mean the data was never shared.`);
@@ -227,6 +246,81 @@ async function privacyDraft(repository: string, manifest: ShipLayerManifest, ana
   else lines.push("", "## Third-party AI sharing", "- No third-party AI data sharing declared. Confirm this matches all source endpoints and SDKs.");
   return `${lines.join("\n")}\n`;
 }
+/**
+ * App Store Connect's privacy questionnaire is app-wide, not a separate account for each
+ * processor. This intentionally never tells a user to omit a category merely because one
+ * processor falls under Apple's real-time-service exception: the same category can still be
+ * collected locally or by another processor.
+ */
+async function externalProcessorQuestionnaireLine(repository: string, processor: ShipLayerManifest["externalProcessors"][number], manifest: ShipLayerManifest, analysis: AnalysisReport, preflight: PreflightReport): Promise<string> {
+  const base = `- **${processor.name}** (${processor.kind}) — ${processor.purpose}; data: ${processor.dataCategories.join(", ")};`;
+  const aggregateReminder = ` App Store Connect is aggregate: keep a category declared whenever it is collected locally or by any other processor.`;
+  let determination: string;
+  if (processor.confirmation !== "confirmed") determination = ` UNVERIFIED: processor confirmation is ${processor.confirmation}; do not rely on its collection determination until a human confirms this processor.`;
+  else if (processor.collectionDetermination !== "not-collection" && processor.collectionDetermination !== "collection") determination = " UNVERIFIED: collection determination is unanswered; resolve it before using this row in the app-wide questionnaire.";
+  else if (processor.collectionDetermination === "not-collection") {
+    const attestation = processor.notCollectionAttestation;
+    const assessment = assessNotCollectionAttestation(attestation);
+    const evidenceAssessment = assessNotCollectionEvidence(manifest, analysis, processor);
+    const preflightPass = preflight.results.some((item) => item.id === `privacy.processor.${processor.name}.collection-determination` && item.severity === "pass");
+    // The source disposition predicate is asynchronous because it verifies the decision's
+    // actual repository evidence. Use that same predicate before this prose can sound
+    // authoritative; an unrelated source uncertainty is deliberately conservative here.
+    const sourceBlock = Boolean(await unresolvedExternalServiceMessage(repository, manifest, analysis))
+      || evidenceAssessment.relevantFindingIds.some((findingId) => preflight.results.some((item) => item.id === `source.external.${findingId}` && item.severity === "block"));
+    if (assessment.issue || !attestation) determination = ` UNVERIFIED: marked not-collection but ${notCollectionAttestationIssueMessage(assessment.issue || "missing")}. Free-form audit notes cannot clear this.`;
+    else if (evidenceAssessment.issue || !preflightPass || sourceBlock) determination = " UNVERIFIED: marked not-collection, but its structured attestation, evidence linkage, or relevant source reconciliation is not ready in preflight. Do not use this row to support an app-wide questionnaire answer.";
+    else {
+      const auditNote = processor.collectionDeterminationReason ? ` Audit note (not semantically validated by ShipLayer): ${JSON.stringify(processor.collectionDeterminationReason)}.` : "";
+      determination = ` Human-confirmed not to be App Privacy collection for this processor, based on a structured real-time-service attestation (${attestation.basis}; ${notCollectionEvidenceSummary(attestation.evidence)}). ShipLayer verified the evidence linkage only; it did not infer or prove retention behavior from code or policy text. This processor alone adds no category disclosure requirement.${aggregateReminder}${auditNote}`;
+    }
+  }
+  else determination = ` Human-confirmed to be App Privacy collection for this processor. Include its categories in the app-wide declarations.${aggregateReminder}`;
+  return `${base}${determination}; AI-pipeline recipient: ${processor.aiPipelineRecipient}; policy: ${processor.privacyPolicyUrl}; equal protection: ${processor.protectionConfirmation}; confirmation: ${processor.confirmation}.`;
+}
+
+function dataProcessingQuestionnaireLine(item: ShipLayerManifest["dataProcessing"][number]): string {
+  const details = `purposes: ${item.purpose.join(", ") || "missing"}; linked to identity: ${item.linkedToIdentity}; tracking: ${item.usedForTracking}; confirmation: ${item.confirmation}.`;
+  if (item.confirmation !== "confirmed") return `- **${item.category}** — UNVERIFIED: declared App Privacy category is not human-confirmed; ${details}`;
+  if (!item.purpose.length || item.linkedToIdentity === "unknown" || item.usedForTracking === "unknown") return `- **${item.category}** — UNVERIFIED: declared App Privacy category has incomplete purpose, identity-linkage, or tracking answers; ${details}`;
+  return `- **${item.category}** — ${details}`;
+}
+
+/**
+ * A missing dataProcessing array is only an absence of a declaration, never evidence of an
+ * absence of collection. This state deliberately observes raw privacy-manifest/source evidence
+ * as well as preflight, so a stale or caller-supplied report cannot make the generated
+ * questionnaire sound definitive.
+ */
+async function privacyQuestionnaireState(repository: string, manifest: ShipLayerManifest, analysis: AnalysisReport, preflight: PreflightReport): Promise<{ unresolved: string[] }> {
+  const unresolved: string[] = [];
+  if (manifest.confirmations.privacy !== "confirmed") unresolved.push(`the app-wide privacy confirmation is ${manifest.confirmations.privacy}`);
+  for (const processor of manifest.externalProcessors) {
+    if (processor.confirmation !== "confirmed") unresolved.push(`${processor.name} is a declared processor with confirmation ${processor.confirmation}`);
+    else if (processor.collectionDetermination !== "not-collection") unresolved.push(`${processor.name} has not been human-confirmed as not-collection`);
+    else {
+      const assessment = assessNotCollectionAttestation(processor.notCollectionAttestation);
+      if (assessment.issue) unresolved.push(`${processor.name}'s structured not-collection attestation is unresolved: ${notCollectionAttestationIssueMessage(assessment.issue)}`);
+      else {
+        const evidenceAssessment = assessNotCollectionEvidence(manifest, analysis, processor);
+        if (evidenceAssessment.issue) unresolved.push(`${processor.name}'s structured not-collection evidence linkage is unresolved: ${evidenceAssessment.issue}`);
+        else if (processor.protectionConfirmation !== "confirmed") unresolved.push(`${processor.name}'s equal-protection confirmation is ${processor.protectionConfirmation}`);
+      }
+    }
+  }
+  const privacyManifestFindings = analysis.findings.filter((finding) => finding.key.startsWith("privacyManifestData:") || finding.key === "privacyManifestUnparsed");
+  if (privacyManifestFindings.length) unresolved.push(`source declares collected-data privacy evidence (${privacyManifestFindings.map((finding) => finding.key).join(", ")})`);
+  if (await unresolvedExternalServiceMessage(repository, manifest, analysis)) unresolved.push("network/SDK source findings have not been reconciled with confirmed processor or disposition decisions");
+  const relevantBlockers = preflight.results.filter((item) => item.severity === "block" && (item.id === "confirmation.privacy" || item.id === "source.scan-coverage" || item.id.startsWith("privacy.") || item.id.startsWith("source.external.") || item.id.startsWith("ai-sharing."))).map((item) => item.id);
+  if (relevantBlockers.length) unresolved.push(`relevant preflight blocker(s) remain: ${[...new Set(relevantBlockers)].join(", ")}`);
+  return { unresolved };
+}
+
+function notCollectionEvidenceSummary(evidence: NonNullable<ShipLayerManifest["externalProcessors"][number]["notCollectionAttestation"]>["evidence"]): string {
+  if (evidence.kind === "repo-path") return "legacy repository evidence (which cannot clear readiness)";
+  if (evidence.kind === "public-url") return `public evidence ${evidence.url}`;
+  return "the processor privacy-policy URL";
+}
 function complianceDraft(manifest: ShipLayerManifest): string { return `# Age rating and content-rights checklist\n\n> Draft only; not legal advice. ShipLayer never infers these declarations from source code.\n\n- Age-rating questionnaire: **${manifest.confirmations.ageRating}**. Complete the current App Store Connect questionnaire and record any regional ratings.\n- Content rights: **${manifest.confirmations.contentRights}**. Confirm whether the app contains, shows, or accesses third-party content, then make the App Store Connect declaration.\n`; }
 async function privacyPage(repository: string, manifest: ShipLayerManifest, analysis: AnalysisReport): Promise<string> {
   const app = escapeHtml(manifest.app.name || "This app"); const permissions = manifest.permissions.filter((item) => item.confirmation === "confirmed"); const processors = manifest.externalProcessors.filter((item) => item.confirmation === "confirmed");
@@ -234,24 +328,31 @@ async function privacyPage(repository: string, manifest: ShipLayerManifest, anal
   const ai = manifest.aiDataSharing.enabled ? `<h2>Optional third-party AI processing</h2><p>After an in-app disclosure and explicit permission, the app sends ${escapeHtml(manifest.aiDataSharing.dataSent.join("; "))} to ${escapeHtml(manifest.aiDataSharing.processorNames.join(", "))} for ${escapeHtml(manifest.aiDataSharing.purpose)}. Users can decline via ${escapeHtml(manifest.aiDataSharing.consent.declinePath)}.</p><p>Explain actual collection/transmission, retention and deletion, consent withdrawal, international transfers, and how every processor provides the same or equal protection. Do not claim that Zero Data Retention or no-training means no sharing occurred.</p>` : aiContradiction?.unresolvedEndpoints.length ? `<h2>Optional third-party AI processing</h2><p><strong>UNVERIFIED:</strong> no AI data sharing is declared, but the scan detected a call to ${escapeHtml(aiContradiction.unresolvedEndpoints.join(", "))} shaped like an AI/inference API. This must be reconciled before publishing.</p>` : "";
   const unresolvedPermissions = analysis.findings.filter((finding) => finding.key.startsWith("permission:") && !manifest.permissions.some((permission) => finding.key === `permission:${permission.key}` && permission.confirmation === "confirmed"));
   const permissionsHtml = permissions.map((item) => `<li>${escapeHtml(item.key)}: ${escapeHtml(item.purpose || "purpose to be confirmed")}.</li>`).join("") || (unresolvedPermissions.length ? `<li>UNVERIFIED: the scanner detected ${escapeHtml(unresolvedPermissions.map((finding) => finding.key.slice("permission:".length)).join(", "))} with no confirmed manifest permission.</li>` : "<li>No confirmed permissions are listed.</li>");
-  const noProcessorsClaim = unresolvedExternalServiceHtml(manifest, analysis, "<li>No confirmed third-party processors are listed.</li>");
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${app} Privacy Policy</title></head><body><main><h1>${app} Privacy Policy</h1><p><strong>Draft generated by ShipLayer.</strong> Publish only after legal review and confirmation of every statement.</p><h2>Information handled by the app</h2><ul>${manifest.dataProcessing.filter((item) => item.confirmation === "confirmed").map((item) => `<li>${escapeHtml(item.category)}: used for ${escapeHtml(item.purpose.join(", ") || "the app's functionality")}.</li>`).join("") || "<li>Confirm and describe data handling before publishing.</li>"}</ul><h2>Device permissions</h2><ul>${permissionsHtml}</ul><h2>Service providers</h2><ul>${processors.map((item) => `<li>${escapeHtml(item.name)} (${escapeHtml(item.kind)}): ${escapeHtml(item.purpose)}. Policy: <a href="${escapeHtml(item.privacyPolicyUrl)}">${escapeHtml(item.privacyPolicyUrl)}</a>.</li>`).join("") || noProcessorsClaim}</ul>${ai}<h2>Contact</h2><p>${manifest.contacts.supportEmail ? `Contact <a href="mailto:${escapeHtml(manifest.contacts.supportEmail)}">${escapeHtml(manifest.contacts.supportEmail)}</a>.` : "Add a support contact before publishing."}</p></main></body></html>`;
+  const unresolvedServices = await unresolvedExternalServiceMessage(repository, manifest, analysis);
+  const processorItems = processors.map((item) => `<li>${escapeHtml(item.name)} (${escapeHtml(item.kind)}): ${escapeHtml(item.purpose)}. Policy: <a href="${escapeHtml(item.privacyPolicyUrl)}">${escapeHtml(item.privacyPolicyUrl)}</a>.</li>`).join("");
+  // A confirmed row does not make a separate source inconsistency disappear. Keep the policy
+  // draft honest in both cases instead of falling back to a "no processors" assertion.
+  const serviceProviderItems = processorItems
+    ? `${processorItems}${unresolvedServices ? `<li>${escapeHtml(unresolvedServices)}</li>` : ""}`
+    : (unresolvedServices ? `<li>${escapeHtml(unresolvedServices)}</li>` : "<li>No confirmed third-party processors are listed.</li>");
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${app} Privacy Policy</title></head><body><main><h1>${app} Privacy Policy</h1><p><strong>Draft generated by ShipLayer.</strong> Publish only after legal review and confirmation of every statement.</p><h2>Information handled by the app</h2><ul>${manifest.dataProcessing.filter((item) => item.confirmation === "confirmed").map((item) => `<li>${escapeHtml(item.category)}: used for ${escapeHtml(item.purpose.join(", ") || "the app's functionality")}.</li>`).join("") || "<li>Confirm and describe data handling before publishing.</li>"}</ul><h2>Device permissions</h2><ul>${permissionsHtml}</ul><h2>Service providers</h2><ul>${serviceProviderItems}</ul>${ai}<h2>Contact</h2><p>${manifest.contacts.supportEmail ? `Contact <a href="mailto:${escapeHtml(manifest.contacts.supportEmail)}">${escapeHtml(manifest.contacts.supportEmail)}</a>.` : "Add a support contact before publishing."}</p></main></body></html>`;
 }
-/**
- * Never let a generated artifact assert "none/no confirmed X" when the scanner detected source
- * evidence that has not been reconciled with a confirmed manifest disposition. Returns the
- * caller's clean-bill-of-health `<li>` HTML only when there is genuinely nothing unresolved;
- * otherwise a `<li>` naming the unresolved finding(s), escaped for HTML.
- */
-function unresolvedExternalServiceHtml(manifest: ShipLayerManifest, analysis: AnalysisReport, cleanFallbackHtml: string): string {
-  const message = unresolvedExternalServiceMessage(manifest, analysis);
-  return message ? `<li>${escapeHtml(message)}</li>` : cleanFallbackHtml;
+/** Returns plain text for any source finding that lacks a usable, evidence-linked disposition. */
+async function unresolvedExternalServiceMessage(repository: string, manifest: ShipLayerManifest, analysis: AnalysisReport): Promise<string | undefined> {
+  const readiness = await assessExternalServiceReadiness(repository, manifest, analysis);
+  const unresolved = readiness.findings.filter(({ assessment }) => !assessment.usable).map(({ finding }) => unresolvedExternalServiceLabel(finding));
+  if (!unresolved.length && !readiness.staleReferenceOnly.length) return undefined;
+  const current = unresolved.length ? ` the scanner detected ${unresolved.length} network/SDK finding(s) without a usable confirmed disposition or matching source evidence: ${unresolved.join(", ")}.` : "";
+  const stale = readiness.staleReferenceOnly.length ? " A reference-only decision does not match any current scanner HTTP(S) endpoint finding." : "";
+  return `UNVERIFIED:${current}${stale} Remove or update stale reference-only decisions and confirm each current source finding before submission.`;
 }
-/** Same check as unresolvedExternalServiceHtml, returning plain text (or undefined if clean) for Markdown/plain-text artifacts. */
-function unresolvedExternalServiceMessage(manifest: ShipLayerManifest, analysis: AnalysisReport): string | undefined {
-  const unresolved = externalServiceFindings(analysis).filter((finding) => !manifest.externalServiceDecisions.some((decision) => decision.finding === externalFindingId(finding) && decision.confirmation === "confirmed"));
-  if (!unresolved.length) return undefined;
-  return `UNVERIFIED: the scanner detected ${unresolved.length} network/SDK finding(s) not yet reconciled with a confirmed processor or disposition: ${unresolved.map((finding) => externalFindingId(finding)).join(", ")}. Confirm each before submission.`;
+
+/** Show only a scanner-normalized endpoint host, never a URL path, query, fragment, or value
+ * that might contain credentials. SDK findings already contain a fixed scanner identifier. */
+function unresolvedExternalServiceLabel(finding: Finding): string {
+  if (!finding.key.startsWith("endpoint:")) return finding.key;
+  try { return new URL(endpointFindingUrl(finding)).hostname; }
+  catch { return "an invalid endpoint literal"; }
 }
 async function supportPage(repository: string, manifest: ShipLayerManifest, analysis: AnalysisReport): Promise<string> { const app = escapeHtml(manifest.app.name || "This app"); const restore = await restoreText(repository, manifest, analysis); return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${app} Support</title></head><body><main><h1>${app} Support</h1><p><strong>Draft generated by ShipLayer. Review before publishing.</strong></p><p>For help with ${app}, contact ${manifest.contacts.supportEmail ? `<a href="mailto:${escapeHtml(manifest.contacts.supportEmail)}">${escapeHtml(manifest.contacts.supportEmail)}</a>` : "the support email to be added"}.</p><h2>Purchases</h2><p>${escapeHtml(restore)}</p></main></body></html>`; }
 async function termsOfUseDraft(repository: string, manifest: ShipLayerManifest, analysis: AnalysisReport): Promise<string> {
@@ -265,13 +366,16 @@ async function termsOfUseDraft(repository: string, manifest: ShipLayerManifest, 
 }
 export async function appReviewNotes(repository: string, manifest: ShipLayerManifest, analysis: AnalysisReport): Promise<string> {
   const confirmedProcessors = manifest.externalProcessors.filter((processor) => processor.confirmation === "confirmed");
-  const unresolvedServices = unresolvedExternalServiceMessage(manifest, analysis);
+  const unresolvedServices = await unresolvedExternalServiceMessage(repository, manifest, analysis);
   const externalServicesLines = confirmedProcessors.map((processor) => `- ${processor.name}: ${processor.purpose}.`);
   if (unresolvedServices) externalServicesLines.push(`- ${unresolvedServices}`);
   else if (!externalServicesLines.length) externalServicesLines.push("- No confirmed external processors are listed. Confirm this is accurate before submission.");
   const monetizationLine = await monetizationText(repository, manifest, analysis);
   const lines = [`# ${manifest.app.name || "App"} — App Review Notes`, "", "> Draft only. Verify every statement and enter actual demo credentials in App Store Connect's secure review fields, not this file.", "", "## Access", manifest.review.demoAccount?.required ? `A demo account is required. Configure the reviewer username/password in App Store Connect secure fields. ${manifest.review.demoAccount.setupInstructions || "Setup instructions are missing."}` : "No account, registration, or login is required.", "", "## Setup", ...(manifest.review.sampleData?.length ? manifest.review.sampleData.map((sample) => `- ${sample}`) : ["- Use the normal first-run flow. Add sample content as described in the recording script."]), "", "## External services", ...externalServicesLines, ...(manifest.aiDataSharing.enabled ? ["", "## Third-party AI consent", `Before transmission the app states that it sends ${manifest.aiDataSharing.dataSent.join("; ")} to ${manifest.aiDataSharing.processorNames.join(", ")} for ${manifest.aiDataSharing.purpose}. The affirmative action is “${manifest.aiDataSharing.consent.affirmativeAction}”; the non-AI path is ${manifest.aiDataSharing.consent.declinePath}.`] : []), "", "## Monetization", monetizationLine, "", "## Recording scenarios", ...manifest.review.recordingScenarios.map((scenario, index) => `${index + 1}. ${scenario.title}: ${scenario.steps.join(" → ")}`)];
-  if (manifest.review.notes) lines.push("", "## Additional notes", manifest.review.notes); return `${lines.join("\n")}\n`;
+  if (manifest.review.notes) lines.push("", "## Additional notes", manifest.review.notes);
+  const rendered = `${lines.join("\n")}\n`;
+  assertNoSecretOutput(rendered, "app-review-notes.md");
+  return rendered;
 }
 function recordingScript(manifest: ShipLayerManifest, analysis: AnalysisReport): string {
   const scenarios = manifest.review.recordingScenarios.length ? manifest.review.recordingScenarios : manifest.screenshots.scenarios;

@@ -6,6 +6,9 @@ export interface Evidence {
   excerpt?: string;
   confidence: Confidence;
   kind: "project-setting" | "plist" | "entitlement" | "privacy-manifest" | "source-heuristic" | "asset" | "storekit" | "manifest";
+  /** A bounded syntax match found this URL literal inside a recognizable network-request call.
+   * It is evidence of source intent only, never proof that the request is reachable at runtime. */
+  runtimeNetworkRequest?: boolean;
 }
 
 export interface Finding {
@@ -55,7 +58,60 @@ export interface ExternalProcessor {
   protectionConfirmation: Confirmation;
   confirmation: Confirmation;
   evidence?: string[];
+  /**
+   * Whether this processor's receipt of data is "collection" under Apple's App Privacy
+   * definition: "transmitting data off the device in a way that allows you and/or your
+   * third-party partners to access it for a period longer than what is necessary to service the
+   * transmitted request in real time" (developer.apple.com/app-store/app-privacy-details/). Data
+   * sent only to service a request in real time and not retained beyond that — Apple's own
+   * examples are an auth token or IP address on a server call, or data discarded immediately
+   * after servicing the request — falls OUTSIDE that definition and is not "collection" at all;
+   * that covers most CDN edge traffic and read-only API calls. This is a legal judgment ShipLayer
+   * must route to a human, never decide itself: optional and unanswered
+   * ("needs-human-confirmation") by default, and an absent value is treated identically to
+   * "needs-human-confirmation" — it must NEVER be read as "not-collection". Only "collection"
+   * requires a matching dataProcessing row per category. "not-collection" additionally requires
+   * a structured, human-confirmed attestation below. ShipLayer deliberately does not infer that
+   * fact from prose in any language.
+   */
+  collectionDetermination?: "collection" | "not-collection" | "needs-human-confirmation";
+  /**
+   * Required when collectionDetermination is "not-collection". This records the observable
+   * real-time-service fact, its human confirmation, and a non-secret evidence reference. An
+   * absent/pending/false attestation must block; free-form prose never substitutes for it.
+   */
+  notCollectionAttestation?: NotCollectionAttestation;
+  /**
+   * Optional legacy/audit note for a human reviewer. ShipLayer never semantically validates this
+   * text and it cannot satisfy or override notCollectionAttestation.
+   */
+  collectionDeterminationReason?: string;
 }
+
+export interface NotCollectionAttestation {
+  /** True only when a human has verified that the transmitted data is not retained beyond the
+   * time necessary to service the request in real time, including by processor logs/databases and
+   * downstream recipients. False or pending is not a not-collection clearance. */
+  dataNotRetainedBeyondRealTimeService: boolean | "needs-human-confirmation";
+  /** How the human established the observable fact; this is a classification of evidence, not a
+   * claim ShipLayer derives from text. v0.1 clears only exact-host canonical vendor-documentation
+   * evidence. Legacy first-party implementation, confidential contract, and written-confirmation
+   * bases fail closed because repository/source text cannot prove runtime retention behavior. */
+  basis: "first-party-implementation" | "vendor-documentation" | "contract-dpa" | "written-vendor-confirmation" | "needs-human-confirmation";
+  /** A safe reference to the checked evidence. The preflight gate verifies only exact
+   * hostname/policy-route linkage, never retention semantics or document content. */
+  evidence: NotCollectionEvidence;
+  /** Literal human confirmation of this attestation. not-applicable never clears a declared row. */
+  confirmation: Confirmation;
+}
+
+export type NotCollectionEvidence =
+  /** Legacy-compatible only: repo paths never clear readiness because source text cannot prove
+   * runtime reachability or retention. Migrate to processor-privacy-policy. */
+  | { kind: "repo-path"; path: string }
+  /** Legacy-compatible shape: v0.1 never lets an arbitrary public URL clear readiness. */
+  | { kind: "public-url"; url: string }
+  | { kind: "processor-privacy-policy" };
 
 export type AIDataSharing =
   | { enabled: false }
@@ -84,7 +140,14 @@ export type AIDataSharing =
   };
 export interface ExternalServiceDecision {
   finding: string;
-  disposition: "declared-processor" | "not-an-external-processor";
+  /** `reference-only` is a human statement about a scanner HTTP(S) URL literal only: it is a
+   * documentation/privacy/marketing/reference link, not a runtime processor call. It cannot
+   * classify an SDK/import/entitlement. ShipLayer does not prove reachability.
+   * `not-an-external-processor` remains for a real endpoint that is not third-party processing. */
+  disposition: "declared-processor" | "not-an-external-processor" | "reference-only";
+  /** Required when a display-name processor's canonical policy host is linked through a declared
+   * processor decision. This is an exact manifest identity, never a domain guess. */
+  processorName?: string;
   reason: string;
   evidence: string[];
   confirmation: Confirmation;

@@ -504,8 +504,59 @@
           "items": {
             "$ref": "#/$defs/repoPath"
           }
+        },
+        "collectionDetermination": {
+          "enum": ["collection", "not-collection", "needs-human-confirmation"],
+          "description": "Human-confirmed: does this processor's receipt of data constitute 'collection' under Apple's App Privacy definition, or does it fall under Apple's real-time-service exception (transmitted only to service the request, not retained)? Optional; absent or 'needs-human-confirmation' blocks until answered and is never read as 'not-collection'."
+        },
+        "notCollectionAttestation": {
+          "$ref": "#/$defs/notCollectionAttestation",
+          "description": "Required by preflight for a not-collection determination. Structured human attestation and evidence; free-form notes never substitute for this fact."
+        },
+        "collectionDeterminationReason": {
+          "$ref": "#/$defs/nonEmpty",
+          "description": "Optional human audit note. ShipLayer does not semantically validate this prose and it cannot satisfy a not-collection attestation."
         }
       }
+    },
+    "notCollectionAttestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dataNotRetainedBeyondRealTimeService", "basis", "evidence", "confirmation"],
+      "properties": {
+        "dataNotRetainedBeyondRealTimeService": {
+          "anyOf": [{ "type": "boolean" }, { "const": "needs-human-confirmation" }],
+          "description": "Human-observed Apple-definition fact: transmitted data is not retained beyond servicing the request in real time. Only true may support not-collection."
+        },
+        "basis": {
+          "enum": ["first-party-implementation", "vendor-documentation", "contract-dpa", "written-vendor-confirmation", "needs-human-confirmation"],
+          "description": "Preflight clears only vendor-documentation with the exact processor-privacy-policy URL on an exact linked host and a canonical privacy/data-protection/data-collection/retention/DPA route. Legacy first-party repository evidence, contract-dpa, and written-vendor-confirmation remain fail-closed in v0.1 because they cannot safely prove runtime retention behavior without storing confidential material."
+        },
+        "evidence": { "$ref": "#/$defs/notCollectionEvidence", "description": "Preflight verifies exact-host/policy-route linkage only; it never proves retention semantics from a document. Legacy repo-path evidence is accepted only to give a safe migration blocker and never clears readiness." },
+        "confirmation": { "$ref": "#/$defs/confirmation" }
+      }
+    },
+    "notCollectionEvidence": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "path"],
+          "properties": { "kind": { "const": "repo-path" }, "path": { "$ref": "#/$defs/repoPath", "description": "Legacy-compatible only; cannot clear a not-collection determination. Migrate to processor-privacy-policy." } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "url"],
+          "properties": { "kind": { "const": "public-url" }, "url": { "$ref": "#/$defs/url", "description": "Legacy-compatible only: v0.1 rejects arbitrary public URLs as not-collection clearance." } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": { "kind": { "const": "processor-privacy-policy" } }
+        }
+      ]
     },
     "aiDataSharingDisabled": {
       "type": "object",
@@ -594,8 +645,13 @@
         "disposition": {
           "enum": [
             "declared-processor",
-            "not-an-external-processor"
+            "not-an-external-processor",
+            "reference-only"
           ]
+        },
+        "processorName": {
+          "$ref": "#/$defs/nonEmpty",
+          "description": "For a declared-processor disposition, the exact externalProcessors[].name the human linked to this scanner finding. A reference-only disposition is a human-confirmed documentation/privacy/marketing/reference literal, not a reachability determination."
         },
         "reason": {
           "$ref": "#/$defs/nonEmpty"
@@ -610,7 +666,13 @@
         "confirmation": {
           "$ref": "#/$defs/confirmation"
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "disposition": { "const": "reference-only" } }, "required": ["disposition"] },
+          "then": { "properties": { "finding": { "pattern": "^endpoint:https?://" } } }
+        }
+      ]
     },
     "sourceContradictionOverride": {
       "type": "object",

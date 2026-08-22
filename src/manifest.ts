@@ -6,6 +6,8 @@ import { realpath } from "node:fs/promises";
 import { readText, safeRelativePath } from "./fs.js";
 import schema from "./schema.json" with { type: "json" };
 import type { ShipLayerManifest } from "./types.js";
+import { assessPublicEvidenceUrl } from "./collection-attestation.js";
+import { containsCredentialUrlMaterial, containsDirectCredentialMaterial } from "./secrets.js";
 
 const ajv = new Ajv2020({ allErrors: true, strict: false });
 const validateSchema = ajv.compile(schema);
@@ -72,7 +74,18 @@ export function validateManifest(candidate: unknown): asserts candidate is ShipL
   requireHttpsUrl("contacts.supportUrl", manifest.contacts.supportUrl);
   requireHttpsUrl("contacts.marketingUrl", manifest.contacts.marketingUrl);
   requireHttpsUrl("contacts.privacyUrl", manifest.contacts.privacyUrl);
-  for (const processor of manifest.externalProcessors) requireHttpsUrl(`external processor ${processor.name} privacyPolicyUrl`, processor.privacyPolicyUrl);
+  for (const processor of manifest.externalProcessors) {
+    requireHttpsUrl(`external processor ${processor.name} privacyPolicyUrl`, processor.privacyPolicyUrl);
+    const attestation = processor.notCollectionAttestation;
+    const evidence = attestation?.evidence;
+    if (evidence?.kind === "repo-path") try { safeRelativePath(evidence.path, `not-collection evidence for ${processor.name}`); } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
+    if (evidence?.kind === "public-url" && assessPublicEvidenceUrl(evidence.url).issue) errors.push(`not-collection public evidence for ${processor.name} must be a credential-safe public HTTPS URL without a query string or fragment`);
+    // `init` deliberately preserves a scanner's unconfirmed endpoint/policy proposal so a human
+    // can correct it. Only a completed vendor-documentation attestation treats this URL as
+    // evidence; all other policy forms are stopped at preflight before they can clear readiness.
+    const completedVendorEvidence = evidence?.kind === "processor-privacy-policy" && attestation?.basis === "vendor-documentation" && attestation.confirmation === "confirmed" && attestation.dataNotRetainedBeyondRealTimeService === true;
+    if (completedVendorEvidence && assessPublicEvidenceUrl(processor.privacyPolicyUrl).issue) errors.push(`not-collection processor privacy-policy evidence for ${processor.name} must be a credential-safe public HTTPS URL without a query string or fragment`);
+  }
   for (const locale of manifest.app.locales) if (!APPLE_LOCALES.has(locale)) errors.push(`app.locales contains unsupported App Store localization '${locale}'`);
   const validateLocalizationMap = (label: string, localizations: Record<string, unknown>): void => {
     for (const locale of Object.keys(localizations)) {
@@ -159,8 +172,8 @@ export function validateManifest(candidate: unknown): asserts candidate is ShipL
 
 function collectSecrets(value: unknown, location: string, errors: string[]): void {
   if (typeof value === "string") {
-    const directCredential = /\b(?:api[ _-]?key|access[ _-]?token|auth[ _-]?token|secret|password|private[ _-]?key)\s*[:=]\s*\S+/i;
-    if (/-----BEGIN(?: [A-Z]+)? PRIVATE KEY-----/i.test(value) || directCredential.test(value) || /\bsk-[A-Za-z0-9_-]{16,}\b/.test(value)) errors.push(`${location || "manifest"} appears to contain credential material; use an environment-variable reference instead`);
+    if (containsDirectCredentialMaterial(value)) errors.push(`${location || "manifest"} appears to contain credential material; use an environment-variable reference instead`);
+    if (containsCredentialUrlMaterial(value)) errors.push(`${location || "manifest"} contains a URL with credential material; use a canonical public reference without credentials`);
     return;
   }
   if (Array.isArray(value)) { value.forEach((item, index) => collectSecrets(item, `${location}[${index}]`, errors)); return; }
