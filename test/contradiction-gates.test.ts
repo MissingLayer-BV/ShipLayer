@@ -207,7 +207,7 @@ test("init carries detected endpoints, StoreKit evidence, and signing configurat
   assert.equal(manifest.monetization.type, "free");
   const output = JSON.parse(run.stdout) as { unresolvedQuestions: string[] };
   assert.ok(output.unresolvedQuestions.some((question) => question.includes("StoreKit purchase evidence") && question.includes("Sources/Paywall.swift")));
-  assert.ok(output.unresolvedQuestions.some((question) => question.includes("notCollectionAttestation.basis") && question.includes("data is not retained beyond servicing the request in real time")));
+  assert.ok(output.unresolvedQuestions.some((question) => question.includes("basis: vendor-documentation") && question.includes("data is not retained beyond servicing the request in real time")));
 
   // And critically: `check` immediately blocks on this contradiction rather than passing quietly.
   const checkRun = spawnSync("./node_modules/.bin/tsx", ["src/index.ts", "check", root, "--json"], { cwd: path.resolve("."), encoding: "utf8" });

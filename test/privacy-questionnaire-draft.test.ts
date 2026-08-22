@@ -10,7 +10,7 @@ import type { ExternalProcessor, NotCollectionAttestation, ShipLayerManifest } f
 import { readyManifest, writeReadyAssets } from "./helpers.js";
 
 function attestation(overrides: Partial<NotCollectionAttestation> = {}): NotCollectionAttestation {
-  return { dataNotRetainedBeyondRealTimeService: true, basis: "first-party-implementation", evidence: { kind: "repo-path", path: "Sources/ProcessorClient.swift" }, confirmation: "confirmed", ...overrides };
+  return { dataNotRetainedBeyondRealTimeService: true, basis: "vendor-documentation", evidence: { kind: "processor-privacy-policy" }, confirmation: "confirmed", ...overrides };
 }
 
 function processor(name: string, dataCategories: string[], overrides: Partial<ExternalProcessor> = {}): ExternalProcessor {
@@ -30,12 +30,7 @@ function processor(name: string, dataCategories: string[], overrides: Partial<Ex
 
 async function questionnaire(root: string, manifest: ShipLayerManifest): Promise<{ draft: string; report: Awaited<ReturnType<typeof preflight>> }> {
   await mkdir(path.join(root, "Sources"), { recursive: true });
-  const firstParty = manifest.externalProcessors.find((item) => item.notCollectionAttestation?.basis === "first-party-implementation" && item.notCollectionAttestation.evidence.kind === "repo-path" && item.notCollectionAttestation.evidence.path === "Sources/ProcessorClient.swift");
-  if (firstParty) {
-    const endpoint = `https://${firstParty.name}/v1/realtime`;
-    await writeFile(path.join(root, "Sources/ProcessorClient.swift"), `let processorEndpoint = "${endpoint}"\n`);
-    if (!manifest.externalServiceDecisions.some((item) => item.finding === `endpoint:${endpoint}`)) manifest.externalServiceDecisions.push({ finding: `endpoint:${endpoint}`, disposition: "declared-processor", processorName: firstParty.name, reason: "Human confirmed this runtime endpoint belongs to the declared processor.", evidence: ["Sources/ProcessorClient.swift"], confirmation: "confirmed" });
-  } else await writeFile(path.join(root, "Sources/ProcessorClient.swift"), "struct ProcessorClient { func send() {} }\n");
+  await writeFile(path.join(root, "Sources/ProcessorClient.swift"), "struct ProcessorClient { func send() {} }\n");
   const analysis = await analyzeRepository(root);
   const report = await preflight(root, manifest, false, analysis);
   const generated = await generateReleasePackage(root, manifest, analysis, report, "shiplayer-release");
@@ -107,11 +102,11 @@ test("questionnaire and preflight reject missing attestation, unconfirmed proces
     const root = await mkdtemp(path.join(tmpdir(), "shiplayer-questionnaire-unresolved-"));
     const manifest = readyManifest();
     await writeReadyAssets(root, manifest);
-    manifest.externalProcessors = [processor("telemetry.example.com", ["Product Interaction"], entry.overrides)];
+    manifest.externalProcessors = [processor("telemetry.vendor-a.com", ["Product Interaction"], entry.overrides)];
 
     const { draft, report } = await questionnaire(root, manifest);
     assert.equal(report.canSubmit, false, entry.label);
-    assert.ok(hasBlock(report, "privacy.processor.telemetry.example.com.collection-determination"), entry.label);
+    assert.ok(hasBlock(report, "privacy.processor.telemetry.vendor-a.com.collection-determination"), entry.label);
     assert.match(draft, /This is not evidence that the app collects no data/, entry.label);
     assert.match(draft, entry.expectedDraft, entry.label);
     assert.match(draft, /intentionally does not recommend selecting .Data Not Collected./, entry.label);

@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { preflight } from "../src/preflight.js";
@@ -16,8 +16,8 @@ import type { NotCollectionAttestation, ShipLayerManifest } from "../src/types.j
 function attestation(overrides: Partial<NotCollectionAttestation> = {}): NotCollectionAttestation {
   return {
     dataNotRetainedBeyondRealTimeService: true,
-    basis: "first-party-implementation",
-    evidence: { kind: "repo-path", path: "Sources/CdnClient.swift" },
+    basis: "vendor-documentation",
+    evidence: { kind: "processor-privacy-policy" },
     confirmation: "confirmed",
     ...overrides
   };
@@ -77,11 +77,9 @@ async function configuredNotCollectionProcessor(
   await writeReadyAssets(root, manifest);
   await mkdir(path.join(root, "Sources"), { recursive: true });
   const item = processor({ collectionDetermination: "not-collection", notCollectionAttestation: attestation(attestationOverrides), ...processorOverrides });
-  const firstParty = item.notCollectionAttestation?.basis === "first-party-implementation";
-  await writeFile(path.join(root, "Sources/CdnClient.swift"), firstParty ? `let processorEndpoint = "${endpointForProcessor(item)}"\n` : "struct CdnClient { func fetch() {} }\n");
+  await writeFile(path.join(root, "Sources/CdnClient.swift"), "struct CdnClient { func fetch() {} }\n");
   if (setup) await setup(root);
   manifest.externalProcessors.push(item);
-  if (firstParty) linkScannerEndpoint(manifest, item, "Sources/CdnClient.swift");
   return { root, manifest, report: await preflight(root, manifest) };
 }
 
@@ -168,55 +166,42 @@ test("vendor documentation clears only through a domain-linked canonical process
   assert.ok(report.results.some((item) => item.id === "privacy.processor.api.vendor-a.com.collection-determination" && item.severity === "pass"));
 });
 
-test("first-party implementation evidence must be scanner-correlated rather than manifest-self-certified", async () => {
-  const cases: Array<{ label: string; path: string; processorEvidence: string[]; setup?: (root: string) => Promise<void> }> = [
-    { label: "generic project manifest", path: "project.yml", processorEvidence: ["project.yml"] },
-    { label: "README", path: "README.md", processorEvidence: ["README.md"], setup: async (root) => { await writeFile(path.join(root, "README.md"), "Vendor integration notes\n"); } },
-    { label: "dotenv credential file", path: ".env", processorEvidence: [".env"], setup: async (root) => { await writeFile(path.join(root, ".env"), "API_TOKEN=not-for-manifest\n"); } },
-    { label: "self-listed unrelated source", path: "Sources/Unrelated.swift", processorEvidence: ["Sources/Unrelated.swift"], setup: async (root) => { await writeFile(path.join(root, "Sources/Unrelated.swift"), "let unrelatedEndpoint = \"https://other.vendor-a.com/v1/events\"\n"); } },
-    { label: "nonexistent source", path: "Sources/Missing.swift", processorEvidence: ["Sources/Missing.swift"] },
-    { label: "symlink source", path: "Sources/Linked.swift", processorEvidence: ["Sources/Linked.swift"], setup: async (root) => { await symlink("CdnClient.swift", path.join(root, "Sources/Linked.swift")); } }
+test("legacy repository evidence always fails closed, including unused and dead source literals", async () => {
+  const cases: Array<{ label: string; source: string }> = [
+    { label: "bare unused URL", source: "let unused = \"https://cdn.vendor-a.com/v1/realtime\"\n" },
+    { label: "DEBUG-only URL", source: "#if DEBUG\nlet endpoint = \"https://cdn.vendor-a.com/v1/realtime\"\n#endif\n" },
+    { label: "if false URL", source: "if false { let endpoint = \"https://cdn.vendor-a.com/v1/realtime\" }\n" },
+    { label: "self-listed source", source: "let endpoint = \"https://cdn.vendor-a.com/v1/realtime\"\n" }
   ];
   for (const entry of cases) {
-    const { report } = await configuredNotCollectionProcessor({ evidence: entry.processorEvidence }, { evidence: { kind: "repo-path", path: entry.path } }, entry.setup);
+    const { report } = await configuredNotCollectionProcessor(
+      { evidence: ["Sources/CdnClient.swift"] },
+      { basis: "first-party-implementation", evidence: { kind: "repo-path", path: "Sources/CdnClient.swift" } },
+      async (root) => { await writeFile(path.join(root, "Sources/CdnClient.swift"), entry.source); }
+    );
     assert.ok(collectionDeterminationBlocked(report), entry.label);
     assert.equal(report.canSubmit, false, entry.label);
+    assert.match(report.results.find((item) => item.id.endsWith("collection-determination"))?.message || "", /repository\/source evidence is legacy/i, entry.label);
   }
 
   const traversal = readyManifest();
-  traversal.externalProcessors.push(processor({ evidence: ["../outside.swift"], collectionDetermination: "not-collection", notCollectionAttestation: attestation({ evidence: { kind: "repo-path", path: "../outside.swift" } }) }));
+  traversal.externalProcessors.push(processor({ evidence: ["../outside.swift"], collectionDetermination: "not-collection", notCollectionAttestation: attestation({ basis: "first-party-implementation", evidence: { kind: "repo-path", path: "../outside.swift" } }) }));
   assert.throws(() => validateManifest(traversal), /Invalid shiplayer/);
 });
 
-test("first-party evidence needs a scanner endpoint match, rejects secrets, and can use an exact human decision for a display-name processor", async () => {
-  const selfListed = await configuredNotCollectionProcessor(
-    { evidence: ["Sources/Unrelated.swift"] },
-    { evidence: { kind: "repo-path", path: "Sources/Unrelated.swift" } },
-    async (root) => { await writeFile(path.join(root, "Sources/Unrelated.swift"), "let unrelatedEndpoint = \"https://other.vendor-a.com/v1/events\"\n"); }
-  );
-  assert.ok(collectionDeterminationBlocked(selfListed.report), "adding the same unrelated path to both manifest fields cannot self-certify it");
-
-  const secretBearing = await configuredNotCollectionProcessor(
-    {},
-    {},
-    async (root) => { await writeFile(path.join(root, "Sources/CdnClient.swift"), "let apiToken = \"sekrit-value\"\nlet endpoint = \"https://cdn.vendor-a.com/v1/realtime\"\n"); }
-  );
-  assert.ok(collectionDeterminationBlocked(secretBearing.report));
-  assert.doesNotMatch(JSON.stringify(secretBearing.report), /sekrit-value/i);
-
-  const unrelatedSecret = await configuredNotCollectionProcessor(
-    { evidence: ["Sources/Unrelated.swift"] },
-    { evidence: { kind: "repo-path", path: "Sources/Unrelated.swift" } },
-    async (root) => { await writeFile(path.join(root, "Sources/Unrelated.swift"), "let apiToken = \"unrelated-sekrit\"\nlet unrelatedEndpoint = \"https://other.vendor-a.com/v1/events\"\n"); }
-  );
-  assert.ok(collectionDeterminationBlocked(unrelatedSecret.report));
-  assert.doesNotMatch(JSON.stringify(unrelatedSecret.report), /unrelated-sekrit/i);
-
-  const displayName = await configuredNotCollectionProcessor(
-    { name: "Vendor Edge", privacyPolicyUrl: "https://edge.vendor-a.com/privacy", evidence: ["Sources/CdnClient.swift"] },
-    {}
-  );
-  assert.equal(displayName.report.canSubmit, true, "a confirmed externalServiceDecision can exactly map scanner evidence to a display-name processor");
+test("secret-bearing Swift source is never attestation evidence and never leaks", async () => {
+  for (const source of ["let header = \"Authorization: Bearer bearer-sekrit\"\n", "let header = \"Bearer bare-sekrit\"\n"]) {
+    const { root, manifest, report } = await configuredNotCollectionProcessor(
+      { evidence: ["Sources/CdnClient.swift"] },
+      { basis: "first-party-implementation", evidence: { kind: "repo-path", path: "Sources/CdnClient.swift" } },
+      async (directory) => { await writeFile(path.join(directory, "Sources/CdnClient.swift"), source); }
+    );
+    assert.ok(collectionDeterminationBlocked(report));
+    assert.doesNotMatch(JSON.stringify(report), /(?:bearer|bare)-sekrit/i);
+    const analysis = await analyzeRepository(root);
+    const generated = await generateReleasePackage(root, manifest, analysis, report, "shiplayer-release");
+    assert.doesNotMatch(await readFile(path.join(generated.directory, "privacy/questionnaire-draft.md"), "utf8"), /(?:bearer|bare)-sekrit/i);
+  }
 });
 
 test("basis and evidence compatibility fails closed, including arbitrary public links and confidential bases", async () => {
@@ -288,6 +273,49 @@ test("vendor policy clearance is exact-host only and rejects shared-host tenants
   assert.equal(mappedVendorReport.canSubmit, true, "a display-name vendor can use an exact scanner endpoint plus a named human processor decision");
 });
 
+test("a runtime endpoint cannot be both a processor attestation link and a non-processor disposition, while a policy link can", async () => {
+  const contradictory = await configuredNotCollectionProcessor(
+    { evidence: ["Sources/CdnClient.swift"] },
+    {},
+    async (root) => { await writeFile(path.join(root, "Sources/CdnClient.swift"), "let endpoint = \"https://cdn.vendor-a.com/v1/realtime\"\n"); }
+  );
+  contradictory.manifest.externalServiceDecisions.push({ finding: "endpoint:https://cdn.vendor-a.com/v1/realtime", disposition: "not-an-external-processor", reason: "Incorrectly marked as a non-processor.", evidence: ["Sources/CdnClient.swift"], confirmation: "confirmed" });
+  const contradictoryAnalysis = await analyzeRepository(contradictory.root);
+  const contradictoryReport = await preflight(contradictory.root, contradictory.manifest, false, contradictoryAnalysis);
+  assert.ok(collectionDeterminationBlocked(contradictoryReport));
+  assert.equal(contradictoryReport.canSubmit, false);
+  const contradictoryPackage = await generateReleasePackage(contradictory.root, contradictory.manifest, contradictoryAnalysis, contradictoryReport, "shiplayer-release");
+  const contradictoryDraft = await readFile(path.join(contradictoryPackage.directory, "privacy/questionnaire-draft.md"), "utf8");
+  assert.match(contradictoryDraft, /UNVERIFIED: marked not-collection/i);
+  assert.doesNotMatch(contradictoryDraft, /Human-confirmed not to be App Privacy collection for this processor/i);
+
+  const policyLink = await configuredNotCollectionProcessor(
+    { evidence: ["Sources/CdnClient.swift"] },
+    {},
+    async (root) => { await writeFile(path.join(root, "Sources/CdnClient.swift"), "let policy = \"https://cdn.vendor-a.com/privacy\"\n"); }
+  );
+  policyLink.manifest.externalServiceDecisions.push({ finding: "endpoint:https://cdn.vendor-a.com/privacy", disposition: "not-an-external-processor", reason: "Public policy link only.", evidence: ["Sources/CdnClient.swift"], confirmation: "confirmed" });
+  const policyReport = await preflight(policyLink.root, policyLink.manifest);
+  assert.equal(policyReport.canSubmit, true, "a docs/privacy link on the same host is not a runtime processor endpoint");
+});
+
+test("questionnaire guidance agrees with source linkage blocks for display-name processors", async () => {
+  const state = await configuredNotCollectionProcessor(
+    { name: "Vendor Edge", privacyPolicyUrl: "https://edge.vendor-a.com/privacy", evidence: [] },
+    {},
+    async (root) => { await writeFile(path.join(root, "Sources/CdnClient.swift"), "let endpoint = \"https://edge.vendor-a.com/v1/realtime\"\n"); }
+  );
+  state.manifest.externalServiceDecisions.push({ finding: "endpoint:https://edge.vendor-a.com/v1/realtime", disposition: "declared-processor", processorName: "Vendor Edge", reason: "Human mapped the runtime endpoint.", evidence: ["Sources/CdnClient.swift"], confirmation: "confirmed" });
+  const analysis = await analyzeRepository(state.root);
+  const report = await preflight(state.root, state.manifest, false, analysis);
+  assert.ok(report.results.some((item) => item.id === "source.external.endpoint:https://edge.vendor-a.com/v1/realtime" && item.severity === "block"));
+  assert.ok(collectionDeterminationBlocked(report));
+  const generated = await generateReleasePackage(state.root, state.manifest, analysis, report, "shiplayer-release");
+  const draft = await readFile(path.join(generated.directory, "privacy/questionnaire-draft.md"), "utf8");
+  assert.match(draft, /UNVERIFIED: marked not-collection/i);
+  assert.doesNotMatch(draft, /This processor alone adds no category disclosure requirement/i);
+});
+
 test("ordinary manifest URLs may use benign query strings or fragments while structured evidence remains strict", () => {
   const manifest = readyManifest();
   manifest.contacts.supportUrl = "https://support.vendor-a.com/help?lang=en";
@@ -310,6 +338,26 @@ test("ordinary manifest URLs may use benign query strings or fragments while str
     assert.doesNotMatch(String(error), /sekrit/i);
     return true;
   });
+
+  const pathSecretCases: Array<(candidate: ShipLayerManifest) => void> = [
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/token/sekrit-value"; },
+    (candidate) => { candidate.contacts.privacyUrl = "https://vendor-a.com/access-token/sekrit-value"; },
+    (candidate) => { candidate.externalProcessors.push(processor({ collectionDetermination: "collection", privacyPolicyUrl: "https://cdn.vendor-a.com/api-key/sekrit-value", evidence: [] })); }
+  ];
+  for (const setPathSecret of pathSecretCases) {
+    const pathSecret = readyManifest();
+    setPathSecret(pathSecret);
+    assert.throws(() => validateManifest(pathSecret), (error: unknown) => {
+      assert.doesNotMatch(String(error), /sekrit/i);
+      return true;
+    });
+  }
+
+  const benignPaths = readyManifest();
+  benignPaths.contacts.supportUrl = "https://support.vendor-a.com/help/token";
+  benignPaths.contacts.privacyUrl = "https://vendor-a.com/auth/login?lang=en#retention";
+  benignPaths.externalProcessors.push(processor({ collectionDetermination: "collection", privacyPolicyUrl: "https://cdn.vendor-a.com/docs/auth/guide", evidence: [] }));
+  assert.doesNotThrow(() => validateManifest(benignPaths));
 
   const strict = readyManifest();
   strict.externalProcessors.push(processor({

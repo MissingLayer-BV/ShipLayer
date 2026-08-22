@@ -530,9 +530,9 @@
         },
         "basis": {
           "enum": ["first-party-implementation", "vendor-documentation", "contract-dpa", "written-vendor-confirmation", "needs-human-confirmation"],
-          "description": "Preflight clears only scanner-correlated first-party runtime source/config evidence, or vendor-documentation with the exact processor-privacy-policy URL on an exact linked host and a canonical privacy/data-protection/data-collection/retention/DPA route. contract-dpa and written-vendor-confirmation remain fail-closed in v0.1 to avoid storing confidential evidence."
+          "description": "Preflight clears only vendor-documentation with the exact processor-privacy-policy URL on an exact linked host and a canonical privacy/data-protection/data-collection/retention/DPA route. Legacy first-party repository evidence, contract-dpa, and written-vendor-confirmation remain fail-closed in v0.1 because they cannot safely prove runtime retention behavior without storing confidential material."
         },
-        "evidence": { "$ref": "#/$defs/notCollectionEvidence", "description": "Preflight verifies scanner/path or exact-host/policy-route linkage only; it never proves retention semantics from a document." },
+        "evidence": { "$ref": "#/$defs/notCollectionEvidence", "description": "Preflight verifies exact-host/policy-route linkage only; it never proves retention semantics from a document. Legacy repo-path evidence is accepted only to give a safe migration blocker and never clears readiness." },
         "confirmation": { "$ref": "#/$defs/confirmation" }
       }
     },
@@ -542,7 +542,7 @@
           "type": "object",
           "additionalProperties": false,
           "required": ["kind", "path"],
-          "properties": { "kind": { "const": "repo-path" }, "path": { "$ref": "#/$defs/repoPath" } }
+          "properties": { "kind": { "const": "repo-path" }, "path": { "$ref": "#/$defs/repoPath", "description": "Legacy-compatible only; cannot clear a not-collection determination. Migrate to processor-privacy-policy." } }
         },
         {
           "type": "object",

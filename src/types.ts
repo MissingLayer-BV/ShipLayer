@@ -91,18 +91,20 @@ export interface NotCollectionAttestation {
    * downstream recipients. False or pending is not a not-collection clearance. */
   dataNotRetainedBeyondRealTimeService: boolean | "needs-human-confirmation";
   /** How the human established the observable fact; this is a classification of evidence, not a
-   * claim ShipLayer derives from text. v0.1 clears only scanner-correlated first-party
-   * implementation and exact-host canonical vendor-documentation evidence; confidential
-   * contract/written-confirmation bases fail closed. */
+   * claim ShipLayer derives from text. v0.1 clears only exact-host canonical vendor-documentation
+   * evidence. Legacy first-party implementation, confidential contract, and written-confirmation
+   * bases fail closed because repository/source text cannot prove runtime retention behavior. */
   basis: "first-party-implementation" | "vendor-documentation" | "contract-dpa" | "written-vendor-confirmation" | "needs-human-confirmation";
-  /** A safe reference to the checked evidence. The preflight gate verifies only scanner/path or
-   * exact-host/policy-route linkage, never retention semantics or document content. */
+  /** A safe reference to the checked evidence. The preflight gate verifies only exact
+   * hostname/policy-route linkage, never retention semantics or document content. */
   evidence: NotCollectionEvidence;
   /** Literal human confirmation of this attestation. not-applicable never clears a declared row. */
   confirmation: Confirmation;
 }
 
 export type NotCollectionEvidence =
+  /** Legacy-compatible only: repo paths never clear readiness because source text cannot prove
+   * runtime reachability or retention. Migrate to processor-privacy-policy. */
   | { kind: "repo-path"; path: string }
   /** Legacy-compatible shape: v0.1 never lets an arbitrary public URL clear readiness. */
   | { kind: "public-url"; url: string }
@@ -136,8 +138,8 @@ export type AIDataSharing =
 export interface ExternalServiceDecision {
   finding: string;
   disposition: "declared-processor" | "not-an-external-processor";
-  /** Required by the first-party not-collection evidence gate when a display-name processor is
-   * linked to a scanner endpoint. This is an exact manifest identity, never a domain guess. */
+  /** Required when a display-name processor's canonical policy host is linked through a scanner
+   * runtime endpoint. This is an exact manifest identity, never a domain guess. */
   processorName?: string;
   reason: string;
   evidence: string[];
