@@ -92,7 +92,9 @@ function manifestFromAnalysis(report: AnalysisReport, harness: DetectedScreensho
   // Detected external endpoints/SDKs become needs-human-confirmation processor proposals — never a
   // confirmed disposition — so `check` still blocks until a human fills in the real purpose, data
   // categories, and privacy-policy URL (or records this finding is not an external processor).
-  manifest.externalProcessors.push(...externalProcessorProposals(report));
+  const processorProposals = externalProcessorProposals(report);
+  manifest.externalProcessors.push(...processorProposals);
+  for (const processor of processorProposals) report.unresolvedQuestions.push(`Detected possible external processor '${processor.name}' (${(processor.evidence || []).join(", ") || "source evidence path unavailable"}). Confirm whether it is actually used; then confirm its purpose, categories, policy URL, and protection. For the separate App Privacy collection determination, do not infer retention from the endpoint or a vendor claim: if a human determines it is not collection, they must personally attest that transmitted data is not retained beyond servicing the request in real time, choose a checked notCollectionAttestation.basis, cite non-secret evidence (repo path, public URL, or processor policy), and set both the attestation and processor confirmation to confirmed. Otherwise record collection or leave the proposal pending.`);
   // The monetization schema cannot represent "possibly has IAP" without fabricating product IDs
   // and price points a human hasn't chosen, so `monetization.type` stays "free" here. The
   // `monetization.source-contradiction` preflight blocker (see src/preflight.ts) is the real
@@ -138,7 +140,7 @@ function externalProcessorProposals(report: AnalysisReport): ShipLayerManifest["
       record(name, "other", `https://unconfirmed.invalid/${encodeURIComponent(name)}`, finding);
     }
   }
-  return [...byName.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([name, entry]) => ({ name, kind: entry.kind, aiPipelineRecipient: false, purpose: "Other Purposes", dataCategories: ["Other Data"], privacyPolicyUrl: entry.privacyPolicyUrl, protectionConfirmation: "needs-human-confirmation", confirmation: "needs-human-confirmation", collectionDetermination: "needs-human-confirmation", evidence: [...entry.evidence].sort() }));
+  return [...byName.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([name, entry]) => ({ name, kind: entry.kind, aiPipelineRecipient: false, purpose: "Other Purposes", dataCategories: ["Other Data"], privacyPolicyUrl: entry.privacyPolicyUrl, protectionConfirmation: "needs-human-confirmation", confirmation: "needs-human-confirmation", collectionDetermination: "needs-human-confirmation", notCollectionAttestation: { dataNotRetainedBeyondRealTimeService: "needs-human-confirmation", basis: "needs-human-confirmation", evidence: { kind: "processor-privacy-policy" }, confirmation: "needs-human-confirmation" }, evidence: [...entry.evidence].sort() }));
 }
 /** A synthesized https://<host>/ guess is only usable when it is itself a schema-valid URL (the
  * schema's URL pattern requires a dotted hostname); a single-label host such as "localhost" or an

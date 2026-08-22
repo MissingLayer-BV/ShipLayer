@@ -172,14 +172,34 @@ marketing description:
 >    agreement for a stated retention/logging policy, or ask them directly. "I assume not" does
 >    not count as an answer here.
 
-"Nothing is retained past servicing the request" (confirmed from the vendor's documented
-no-logging/edge-only behavior, or your own backend's code) → `collectionDetermination:
-"not-collection"`, with `collectionDeterminationReason` stating the concrete, checked basis (not
-"I think so") — this clears `privacy.processor.<name>.collection-determination` and, for this
-processor, no `dataProcessing[]` row is required at all. "Yes, it's retained" (or you cannot find
-or confirm a real no-retention basis) → `collectionDetermination: "collection"` — this now
-requires a matching confirmed `dataProcessing[]` row for every one of that processor's
-`dataCategories` (see "Data collection and tracking" below).
+"Nothing is retained past servicing the request" only after a human has checked a real source
+(the vendor's documentation, contract/DPA, written confirmation, or your own implementation) →
+`collectionDetermination: "not-collection"` **and** this explicit structured attestation:
+
+```yaml
+notCollectionAttestation:
+  dataNotRetainedBeyondRealTimeService: true
+  basis: vendor-documentation # or first-party-implementation, contract-dpa, written-vendor-confirmation
+  evidence:
+    kind: public-url # or repo-path, processor-privacy-policy
+    url: https://vendor.example/privacy/retention
+  confirmation: confirmed
+```
+
+For `repo-path`, use an existing contained regular file and `path`; for
+`processor-privacy-policy`, use only `kind: processor-privacy-policy` and make sure the row's
+public `privacyPolicyUrl` is the checked evidence. The evidence reference must be non-secret.
+The exact observable fact is deliberately a literal field: **does this processor and every
+downstream recipient avoid retaining the transmitted data beyond real-time servicing of the
+request?** Do not set it to `true` on an assumption, from a generic no-training/ZDR claim, or to
+clear a blocker. `collectionDeterminationReason`, if retained, is an optional audit note only;
+ShipLayer does not parse or validate it as semantic proof in any language. A missing, pending,
+false, or unconfirmed attestation blocks safely.
+
+"Yes, it's retained" (or you cannot find and personally confirm the observable no-retention
+fact) → `collectionDetermination: "collection"` — this now requires a matching confirmed
+`dataProcessing[]` row for every one of that processor's `dataCategories` (see "Data collection
+and tracking" below).
 
 **Never record either answer to make the blocker disappear rather than because it's true.**
 Guessing `not-collection` when you don't actually know is the exact failure this field exists to

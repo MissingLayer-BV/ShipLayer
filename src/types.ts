@@ -67,15 +67,42 @@ export interface ExternalProcessor {
    * must route to a human, never decide itself: optional and unanswered
    * ("needs-human-confirmation") by default, and an absent value is treated identically to
    * "needs-human-confirmation" — it must NEVER be read as "not-collection". Only "collection"
-   * requires a matching dataProcessing row per category; "not-collection" requires
-   * collectionDeterminationReason instead.
+   * requires a matching dataProcessing row per category. "not-collection" additionally requires
+   * a structured, human-confirmed attestation below. ShipLayer deliberately does not infer that
+   * fact from prose in any language.
    */
   collectionDetermination?: "collection" | "not-collection" | "needs-human-confirmation";
-  /** Required (non-empty) when collectionDetermination is "not-collection": the human-authored,
-   * observable basis for why this processor's receipt of data falls under Apple's real-time-
-   * service exception — what is sent, and why it is not retained beyond servicing the request. */
+  /**
+   * Required when collectionDetermination is "not-collection". This records the observable
+   * real-time-service fact, its human confirmation, and a non-secret evidence reference. An
+   * absent/pending/false attestation must block; free-form prose never substitutes for it.
+   */
+  notCollectionAttestation?: NotCollectionAttestation;
+  /**
+   * Optional legacy/audit note for a human reviewer. ShipLayer never semantically validates this
+   * text and it cannot satisfy or override notCollectionAttestation.
+   */
   collectionDeterminationReason?: string;
 }
+
+export interface NotCollectionAttestation {
+  /** True only when a human has verified that the transmitted data is not retained beyond the
+   * time necessary to service the request in real time, including by processor logs/databases and
+   * downstream recipients. False or pending is not a not-collection clearance. */
+  dataNotRetainedBeyondRealTimeService: boolean | "needs-human-confirmation";
+  /** How the human established the observable fact; this is a classification of evidence, not a
+   * claim ShipLayer derives from text. */
+  basis: "first-party-implementation" | "vendor-documentation" | "contract-dpa" | "written-vendor-confirmation" | "needs-human-confirmation";
+  /** A safe reference to the checked evidence. Public URLs must not carry credentials. */
+  evidence: NotCollectionEvidence;
+  /** Literal human confirmation of this attestation. not-applicable never clears a declared row. */
+  confirmation: Confirmation;
+}
+
+export type NotCollectionEvidence =
+  | { kind: "repo-path"; path: string }
+  | { kind: "public-url"; url: string }
+  | { kind: "processor-privacy-policy" };
 
 export type AIDataSharing =
   | { enabled: false }

@@ -1,54 +1,24 @@
-// Regression tests for issue #22: a confirmed externalProcessors[] row with dataCategories always
-// demanded a matching confirmed App Privacy dataProcessing row, with no way to record that the
-// processor's receipt of data does not meet Apple's own definition of "collection" (data
-// transmitted only to service the request in real time and not retained). The only exits were
-// declaring collection that may not be true, or a permanent blocker.
-//
-// externalProcessors[].collectionDetermination is a human-confirmed, three-state field
-// ("collection" | "not-collection" | "needs-human-confirmation") that is optional and unanswered
-// by default, so absence must block exactly like every other unconfirmed fact — never silently
-// read as "not-collection".
+// A not-collection determination is safety-critical: prose is audit-only, while readiness rests
+// on an explicit human attestation of Apple's observable real-time-service fact and evidence.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { preflight } from "../src/preflight.js";
-import { assessCollectionDeterminationReason } from "../src/privacy.js";
+import { validateManifest } from "../src/manifest.js";
 import { readyManifest, writeReadyAssets } from "./helpers.js";
-import type { ShipLayerManifest } from "../src/types.js";
+import type { NotCollectionAttestation, ShipLayerManifest } from "../src/types.js";
 
-const INVALID_NOT_COLLECTION_REASONS = [
-  "TODO",
-  "I think so",
-  "x",
-  "Request logs are retained forever.",
-  "Requests are stored for 30 days.",
-  "Logs are enabled.",
-  "The processor keeps a permanent request log.",
-  "No cache; requests are stored for 30 days.",
-  "ＴＯＤＯ request",
-  "T.O.D.O request",
-  "T O D O request",
-  "T\u200BODO request",
-  "T\u0000ODO request",
-  "I-think-so request",
-  "I_think_so request",
-  "N/A request",
-  "unknown request",
-  "x request"
-];
-
-const VALID_NOT_COLLECTION_REASONS = [
-  "No data retention.",
-  "Nothing is persisted.",
-  "No records are kept.",
-  "Ephemeral in-memory only.",
-  "Keine Anfrageprotokolle.",
-  "Aucune journalisation des requêtes.",
-  "The response appears only in memory and is discarded immediately.",
-  "No request logs."
-];
+function attestation(overrides: Partial<NotCollectionAttestation> = {}): NotCollectionAttestation {
+  return {
+    dataNotRetainedBeyondRealTimeService: true,
+    basis: "vendor-documentation",
+    evidence: { kind: "repo-path", path: "project.yml" },
+    confirmation: "confirmed",
+    ...overrides
+  };
+}
 
 function processor(overrides: Partial<ShipLayerManifest["externalProcessors"][number]> = {}): ShipLayerManifest["externalProcessors"][number] {
   return {
@@ -64,77 +34,85 @@ function processor(overrides: Partial<ShipLayerManifest["externalProcessors"][nu
   };
 }
 
-test("a confirmed external processor with no collectionDetermination blocks until answered, and does not also demand a dataProcessing row while unanswered", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-collection-absent-"));
+async function reportFor(overrides: Partial<ShipLayerManifest["externalProcessors"][number]>): Promise<Awaited<ReturnType<typeof preflight>>> {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-collection-attestation-"));
   const manifest = readyManifest();
   await writeReadyAssets(root, manifest);
-  manifest.externalProcessors.push(processor());
-  const report = await preflight(root, manifest);
-  assert.ok(report.results.some((item) => item.id === "privacy.processor.cdn.example.com.collection-determination" && item.severity === "block"));
+  manifest.externalProcessors.push(processor(overrides));
+  return preflight(root, manifest);
+}
+
+function hasCollectionBlock(report: Awaited<ReturnType<typeof preflight>>): boolean {
+  return report.results.some((item) => item.id === "privacy.processor.cdn.example.com.collection-determination" && item.severity === "block");
+}
+
+test("a confirmed external processor with no collectionDetermination blocks until answered, and does not also demand a dataProcessing row while unanswered", async () => {
+  const report = await reportFor({});
+  assert.ok(hasCollectionBlock(report));
   assert.equal(report.results.filter((item) => item.id === "privacy.processor.cdn.example.com.Product Interaction").length, 0);
 });
 
-test("collectionDetermination explicitly 'needs-human-confirmation' blocks identically to an absent value", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-collection-explicit-unconfirmed-"));
-  const manifest = readyManifest();
-  await writeReadyAssets(root, manifest);
-  manifest.externalProcessors.push(processor({ collectionDetermination: "needs-human-confirmation" }));
-  const report = await preflight(root, manifest);
-  assert.ok(report.results.some((item) => item.id === "privacy.processor.cdn.example.com.collection-determination" && item.severity === "block"));
+test("collectionDetermination explicitly needs-human-confirmation blocks identically to absent", async () => {
+  assert.ok(hasCollectionBlock(await reportFor({ collectionDetermination: "needs-human-confirmation" })));
 });
 
-test("collectionDetermination 'not-collection' with a reason clears the category blocker without a dataProcessing row", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-collection-not-"));
-  const manifest = readyManifest();
-  await writeReadyAssets(root, manifest);
-  manifest.externalProcessors.push(processor({ collectionDetermination: "not-collection", collectionDeterminationReason: "Edge CDN cache; upstream logs are not retained beyond the request per the vendor's published no-logging policy." }));
-  const report = await preflight(root, manifest);
+test("a complete structured attestation clears the category blocker without a dataProcessing row", async () => {
+  const report = await reportFor({ collectionDetermination: "not-collection", notCollectionAttestation: attestation() });
   assert.ok(report.results.some((item) => item.id === "privacy.processor.cdn.example.com.collection-determination" && item.severity === "pass"));
   assert.equal(report.results.filter((item) => item.id === "privacy.processor.cdn.example.com.Product Interaction").length, 0);
+  assert.equal(report.canSubmit, true);
 });
 
-test("collectionDetermination 'not-collection' without a reason still blocks (cannot clear by omission)", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-collection-not-noreason-"));
-  const manifest = readyManifest();
-  await writeReadyAssets(root, manifest);
-  manifest.externalProcessors.push(processor({ collectionDetermination: "not-collection" }));
-  const report = await preflight(root, manifest);
-  assert.ok(report.results.some((item) => item.id === "privacy.processor.cdn.example.com.collection-determination" && item.severity === "block"));
-});
-
-test("collectionDetermination 'not-collection' with a whitespace-only reason still blocks", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-collection-not-blankreason-"));
-  const manifest = readyManifest();
-  await writeReadyAssets(root, manifest);
-  manifest.externalProcessors.push(processor({ collectionDetermination: "not-collection", collectionDeterminationReason: "   " }));
-  const report = await preflight(root, manifest);
-  assert.ok(report.results.some((item) => item.id === "privacy.processor.cdn.example.com.collection-determination" && item.severity === "block"));
-});
-
-test("not-collection reason assessment normalizes placeholder/uncertainty variants, rejects contradictions, and accepts non-English or concise factual text", () => {
-  for (const reason of INVALID_NOT_COLLECTION_REASONS) assert.notEqual(assessCollectionDeterminationReason(reason).issue, undefined, reason);
-  for (const reason of VALID_NOT_COLLECTION_REASONS) assert.equal(assessCollectionDeterminationReason(reason).issue, undefined, reason);
-});
-
-test("preflight rejects weak or contradictory not-collection reasons but accepts the full valid corpus", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-collection-reason-quality-"));
-  const manifest = readyManifest();
-  await writeReadyAssets(root, manifest);
-  manifest.externalProcessors.push(processor({ collectionDetermination: "not-collection" }));
-
-  for (const reason of INVALID_NOT_COLLECTION_REASONS) {
-    manifest.externalProcessors[0].collectionDeterminationReason = reason;
+test("legacy not-collection notes remain schema-compatible but block safely without the new attestation", async () => {
+  const contradictoryAndArbitraryNotes = [
+    "The server logs every request.",
+    "Logging is enabled.",
+    "Request data is held for 30 days.",
+    "A copy is maintained for 30 days.",
+    "Request history is preserved indefinitely.",
+    "The system records every request.",
+    "Request data is written to disk.",
+    "The storage period is 30 days.",
+    "No cache, data stored for 30 days.",
+    "Keine Anfrageprotokolle.",
+    "Aucune journalisation des requêtes.",
+    "ＴＯＤＯ request",
+    "Vendor X has a policy.",
+    "nothing to do with storage"
+  ];
+  for (const collectionDeterminationReason of contradictoryAndArbitraryNotes) {
+    const manifest = readyManifest();
+    manifest.externalProcessors.push(processor({ collectionDetermination: "not-collection", collectionDeterminationReason }));
+    assert.doesNotThrow(() => validateManifest(manifest), collectionDeterminationReason);
+    const root = await mkdtemp(path.join(tmpdir(), "shiplayer-legacy-note-"));
+    await writeReadyAssets(root, manifest);
     const report = await preflight(root, manifest);
-    assert.ok(report.results.some((item) => item.id === "privacy.processor.cdn.example.com.collection-determination" && item.severity === "block"), reason);
-    assert.equal(report.canSubmit, false, reason);
+    assert.ok(hasCollectionBlock(report), collectionDeterminationReason);
+    assert.equal(report.canSubmit, false, collectionDeterminationReason);
   }
+});
 
-  for (const reason of VALID_NOT_COLLECTION_REASONS) {
-    manifest.externalProcessors[0].collectionDeterminationReason = reason;
-    const report = await preflight(root, manifest);
-    assert.ok(report.results.some((item) => item.id === "privacy.processor.cdn.example.com.collection-determination" && item.severity === "pass"), reason);
-    assert.equal(report.summary.block, 0, `${reason}: ${report.results.filter((item) => item.severity === "block").map((item) => item.message).join("; ")}`);
-    assert.equal(report.canSubmit, true, reason);
+test("every incomplete, false, unconfirmed, or unusable structured attestation blocks", async () => {
+  const cases: Array<{ label: string; value?: NotCollectionAttestation }> = [
+    { label: "absent" },
+    { label: "pending observable fact", value: attestation({ dataNotRetainedBeyondRealTimeService: "needs-human-confirmation" }) },
+    { label: "false observable fact", value: attestation({ dataNotRetainedBeyondRealTimeService: false }) },
+    { label: "pending evidence basis", value: attestation({ basis: "needs-human-confirmation" }) },
+    { label: "needs-human-confirmation attestation", value: attestation({ confirmation: "needs-human-confirmation" }) },
+    { label: "not-applicable attestation", value: attestation({ confirmation: "not-applicable" }) },
+    { label: "missing repository evidence", value: attestation({ evidence: { kind: "repo-path", path: "missing-proof.md" } }) }
+  ];
+  for (const entry of cases) {
+    const report = await reportFor({ collectionDetermination: "not-collection", notCollectionAttestation: entry.value });
+    assert.ok(hasCollectionBlock(report), entry.label);
+    assert.equal(report.canSubmit, false, entry.label);
+  }
+});
+
+test("public URL and processor-policy evidence are supported only with the literal human attestation", async () => {
+  for (const evidence of [{ kind: "public-url", url: "https://vendor.example/privacy/retention" }, { kind: "processor-privacy-policy" }] as const) {
+    const report = await reportFor({ collectionDetermination: "not-collection", notCollectionAttestation: attestation({ evidence }) });
+    assert.equal(report.canSubmit, true, evidence.kind);
   }
 });
 
@@ -154,23 +132,17 @@ test("a declared dataProcessing row requires literal confirmation and known iden
   assert.equal(report.canSubmit, false);
 });
 
-test("collectionDetermination 'collection' with a matching confirmed dataProcessing row passes both checks", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-collection-yes-matched-"));
+test("collection requires a matching confirmed dataProcessing row", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-collection-yes-"));
   const manifest = readyManifest();
   await writeReadyAssets(root, manifest);
   manifest.externalProcessors.push(processor({ collectionDetermination: "collection" }));
   manifest.dataProcessing.push({ category: "Product Interaction", purpose: ["App Functionality"], linkedToIdentity: false, usedForTracking: false, confirmation: "confirmed" });
-  const report = await preflight(root, manifest);
-  assert.ok(report.results.some((item) => item.id === "privacy.processor.cdn.example.com.collection-determination" && item.severity === "pass"));
+  let report = await preflight(root, manifest);
+  assert.equal(report.canSubmit, true);
   assert.ok(report.results.some((item) => item.id === "privacy.processor.cdn.example.com.Product Interaction" && item.severity === "pass"));
-});
 
-test("collectionDetermination 'collection' without a matching dataProcessing row still demands it (a real collection determination is not itself the clearance)", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-collection-yes-unmatched-"));
-  const manifest = readyManifest();
-  await writeReadyAssets(root, manifest);
-  manifest.externalProcessors.push(processor({ collectionDetermination: "collection" }));
-  const report = await preflight(root, manifest);
-  assert.ok(report.results.some((item) => item.id === "privacy.processor.cdn.example.com.collection-determination" && item.severity === "pass"));
+  manifest.dataProcessing = [];
+  report = await preflight(root, manifest);
   assert.ok(report.results.some((item) => item.id === "privacy.processor.cdn.example.com.Product Interaction" && item.severity === "block"));
 });

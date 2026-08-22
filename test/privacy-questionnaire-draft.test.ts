@@ -6,8 +6,12 @@ import path from "node:path";
 import { generateReleasePackage } from "../src/generator.js";
 import { preflight } from "../src/preflight.js";
 import { analyzeRepository } from "../src/scanner.js";
-import type { ExternalProcessor, ShipLayerManifest } from "../src/types.js";
+import type { ExternalProcessor, NotCollectionAttestation, ShipLayerManifest } from "../src/types.js";
 import { readyManifest, writeReadyAssets } from "./helpers.js";
+
+function attestation(overrides: Partial<NotCollectionAttestation> = {}): NotCollectionAttestation {
+  return { dataNotRetainedBeyondRealTimeService: true, basis: "vendor-documentation", evidence: { kind: "repo-path", path: "project.yml" }, confirmation: "confirmed", ...overrides };
+}
 
 function processor(name: string, dataCategories: string[], overrides: Partial<ExternalProcessor> = {}): ExternalProcessor {
   return {
@@ -34,62 +38,60 @@ function hasBlock(report: Awaited<ReturnType<typeof preflight>>, id: string): bo
   return report.results.some((item) => item.id === id && item.severity === "block");
 }
 
-const INVALID_NOT_COLLECTION_REASONS = [
-  "TODO",
-  "I think so",
-  "x",
-  "Request logs are retained forever.",
-  "Requests are stored for 30 days.",
-  "Logs are enabled.",
-  "The processor keeps a permanent request log.",
-  "No cache; requests are stored for 30 days.",
-  "ＴＯＤＯ request",
-  "T.O.D.O request",
-  "T O D O request",
-  "T\u200BODO request",
-  "T\u0000ODO request",
-  "I-think-so request",
-  "I_think_so request",
-  "N/A request",
-  "unknown request",
-  "x request"
-];
-
-const VALID_NOT_COLLECTION_REASONS = [
-  "No data retention.",
-  "Nothing is persisted.",
-  "No records are kept.",
-  "Ephemeral in-memory only.",
+const ARBITRARY_AUDIT_NOTES = [
+  "The server logs every request.",
+  "Logging is enabled.",
+  "Request data is held for 30 days.",
+  "A copy is maintained for 30 days.",
+  "Request history is preserved indefinitely.",
+  "The system records every request.",
+  "Request data is written to disk.",
+  "The storage period is 30 days.",
+  "Les requêtes sont conservées pendant 30 jours.",
+  "No cache, data stored for 30 days.",
+  "No logs but data retained forever.",
+  "not only stored",
+  "It is not false that requests are stored.",
   "Keine Anfrageprotokolle.",
   "Aucune journalisation des requêtes.",
-  "The response appears only in memory and is discarded immediately.",
-  "No request logs."
+  "No data retention.",
+  "Nothing is persisted.",
+  "Ephemeral in-memory only.",
+  "Requests are temporarily cached then deleted immediately.",
+  "Logging is disabled.",
+  "The processor doesn't retain raw request data.",
+  "Neither request data nor responses are retained.",
+  "No raw data retained.",
+  "ＴＯＤＯ request",
+  "Vendor X has a policy.",
+  "nothing to do with storage"
 ];
 
-test("questionnaire permits only conditional Data Not Collected guidance for fully confirmed not-collection processors", async () => {
+test("all structured not-collection rows are aggregate-aware without a global Data Not Collected recommendation", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-questionnaire-all-not-"));
   const manifest = readyManifest();
   await writeReadyAssets(root, manifest);
   manifest.externalProcessors = [
-    processor("cdn.example.com", ["Product Interaction"], { collectionDetermination: "not-collection", collectionDeterminationReason: "The CDN only serves the request in real time and does not retain the transmitted data." }),
-    processor("api.example.com", ["Email Address"], { collectionDetermination: "not-collection", collectionDeterminationReason: "The API discards the request data immediately after servicing the request." })
+    processor("cdn.example.com", ["Product Interaction"], { collectionDetermination: "not-collection", notCollectionAttestation: attestation() }),
+    processor("api.example.com", ["Email Address"], { collectionDetermination: "not-collection", notCollectionAttestation: attestation({ evidence: { kind: "processor-privacy-policy" } }) })
   ];
 
   const { draft, report } = await questionnaire(root, manifest);
   assert.equal(report.summary.block, 0, report.results.filter((item) => item.severity === "block").map((item) => item.message).join("; "));
   assert.equal(report.canSubmit, true);
-  assert.match(draft, /support considering .Data Not Collected./);
+  assert.match(draft, /intentionally does not recommend selecting .Data Not Collected./);
+  assert.match(draft, /structured real-time-service attestation/);
   assert.match(draft, /This processor alone adds no category disclosure requirement/);
   assert.match(draft, /App Store Connect is aggregate/);
   assert.doesNotMatch(draft, /do not declare these categories/i);
 });
 
-test("questionnaire and preflight reject invalid, unconfirmed, not-applicable, and unanswered processor determinations", async () => {
+test("questionnaire and preflight reject missing attestation, unconfirmed processor, not-applicable processor, and unanswered determination", async () => {
   const cases: Array<{ label: string; overrides: Partial<ExternalProcessor>; expectedDraft: RegExp }> = [
-    { label: "missing reason", overrides: { collectionDetermination: "not-collection" }, expectedDraft: /no non-blank human reason/ },
-    { label: "whitespace-only reason", overrides: { collectionDetermination: "not-collection", collectionDeterminationReason: "   " }, expectedDraft: /no non-blank human reason/ },
-    { label: "needs-human-confirmation processor", overrides: { confirmation: "needs-human-confirmation", collectionDetermination: "not-collection", collectionDeterminationReason: "A proposed real-time service reason." }, expectedDraft: /processor confirmation is needs-human-confirmation/ },
-    { label: "not-applicable processor", overrides: { confirmation: "not-applicable", collectionDetermination: "not-collection" }, expectedDraft: /processor confirmation is not-applicable/ },
+    { label: "missing attestation", overrides: { collectionDetermination: "not-collection" }, expectedDraft: /structured real-time-service attestation is missing/ },
+    { label: "pending observable fact", overrides: { collectionDetermination: "not-collection", notCollectionAttestation: attestation({ dataNotRetainedBeyondRealTimeService: "needs-human-confirmation" }) }, expectedDraft: /does not explicitly confirm that transmitted data is not retained/ },
+    { label: "needs-human-confirmation processor", overrides: { confirmation: "needs-human-confirmation", collectionDetermination: "not-collection", notCollectionAttestation: attestation() }, expectedDraft: /processor confirmation is needs-human-confirmation/ },
+    { label: "not-applicable processor", overrides: { confirmation: "not-applicable", collectionDetermination: "not-collection", notCollectionAttestation: attestation() }, expectedDraft: /processor confirmation is not-applicable/ },
     { label: "absent determination", overrides: {}, expectedDraft: /collection determination is unanswered/ }
   ];
 
@@ -104,11 +106,11 @@ test("questionnaire and preflight reject invalid, unconfirmed, not-applicable, a
     assert.ok(hasBlock(report, "privacy.processor.telemetry.example.com.collection-determination"), entry.label);
     assert.match(draft, /This is not evidence that the app collects no data/, entry.label);
     assert.match(draft, entry.expectedDraft, entry.label);
-    assert.doesNotMatch(draft, /support considering .Data Not Collected./, entry.label);
+    assert.match(draft, /intentionally does not recommend selecting .Data Not Collected./, entry.label);
   }
 });
 
-test("all-collection rows require and preserve the app-wide data category declaration", async () => {
+test("all collection rows require and preserve the app-wide data category declaration", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-questionnaire-all-collection-"));
   const manifest = readyManifest();
   await writeReadyAssets(root, manifest);
@@ -119,7 +121,7 @@ test("all-collection rows require and preserve the app-wide data category declar
   assert.equal(report.summary.block, 0, report.results.filter((item) => item.severity === "block").map((item) => item.message).join("; "));
   assert.match(draft, /Human-confirmed to be App Privacy collection for this processor/);
   assert.match(draft, /Do not select .Data Not Collected. while any category above remains declared/);
-  assert.doesNotMatch(draft, /support considering .Data Not Collected./);
+  assert.doesNotMatch(draft, /do not declare these categories/i);
 });
 
 test("mixed, shared, and locally collected categories stay aggregate-aware", async () => {
@@ -128,7 +130,7 @@ test("mixed, shared, and locally collected categories stay aggregate-aware", asy
   await writeReadyAssets(root, manifest);
   manifest.externalProcessors = [
     processor("analytics.example.com", ["Product Interaction"], { collectionDetermination: "collection" }),
-    processor("cdn.example.com", ["Product Interaction"], { collectionDetermination: "not-collection", collectionDeterminationReason: "The CDN serves the request in real time and discards transmitted data immediately." })
+    processor("cdn.example.com", ["Product Interaction"], { collectionDetermination: "not-collection", notCollectionAttestation: attestation() })
   ];
   // Product Interaction is shared by both processors; Email Address is collected locally.
   manifest.dataProcessing = [
@@ -145,7 +147,7 @@ test("mixed, shared, and locally collected categories stay aggregate-aware", asy
   assert.doesNotMatch(draft, /do not declare these categories/i);
 });
 
-test("PrivacyInfo source evidence with no dataProcessing declaration prevents a Data Not Collected claim", async () => {
+test("PrivacyInfo source evidence with no dataProcessing declaration is explicitly unresolved", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-questionnaire-privacy-manifest-"));
   const manifest = readyManifest();
   await writeReadyAssets(root, manifest);
@@ -160,15 +162,15 @@ test("PrivacyInfo source evidence with no dataProcessing declaration prevents a 
   assert.ok(hasBlock(report, "privacy.manifest.Product Interaction"));
   assert.equal(report.canSubmit, false);
   assert.match(draft, /source declares collected-data privacy evidence .*privacyManifestData:Product Interaction/);
-  assert.match(draft, /do not select .Data Not Collected./);
+  assert.match(draft, /intentionally does not recommend selecting .Data Not Collected./);
 });
 
-test("unreconciled endpoints and an unconfirmed app-wide privacy declaration prevent a Data Not Collected claim", async () => {
+test("unreconciled endpoints and an unconfirmed app-wide privacy declaration remain explicit even with a valid attestation", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-questionnaire-endpoint-"));
   const manifest = readyManifest();
   await writeReadyAssets(root, manifest);
   manifest.confirmations.privacy = "needs-human-confirmation";
-  manifest.externalProcessors = [processor("cdn.example.com", ["Product Interaction"], { collectionDetermination: "not-collection", collectionDeterminationReason: "The CDN serves the request in real time and discards transmitted data immediately." })];
+  manifest.externalProcessors = [processor("cdn.example.com", ["Product Interaction"], { collectionDetermination: "not-collection", notCollectionAttestation: attestation() })];
   await mkdir(path.join(root, "Sources"), { recursive: true });
   await writeFile(path.join(root, "Sources/Telemetry.swift"), `let telemetry = "https://telemetry.example.com/v1/events"\n`);
 
@@ -179,7 +181,6 @@ test("unreconciled endpoints and an unconfirmed app-wide privacy declaration pre
   assert.match(draft, /the app-wide privacy confirmation is needs-human-confirmation/);
   assert.match(draft, /network\/SDK source findings have not been reconciled/);
   assert.match(draft, /UNVERIFIED: the scanner detected 1 network\/SDK finding/);
-  assert.doesNotMatch(draft, /support considering .Data Not Collected./);
 });
 
 test("an unconfirmed dataProcessing row is explicitly unresolved in the questionnaire and blocks submit", async () => {
@@ -196,26 +197,25 @@ test("an unconfirmed dataProcessing row is explicitly unresolved in the question
   assert.match(draft, /Do not select .Data Not Collected. while any category above remains declared/);
 });
 
-test("questionnaire applies the full not-collection reason corpus consistently with preflight", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-questionnaire-reason-quality-"));
+test("arbitrary audit prose cannot affect readiness, while a valid structured attestation works regardless of its language", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-questionnaire-audit-prose-"));
   const manifest = readyManifest();
   await writeReadyAssets(root, manifest);
   manifest.externalProcessors = [processor("cdn.example.com", ["Product Interaction"], { collectionDetermination: "not-collection" })];
 
-  for (const reason of INVALID_NOT_COLLECTION_REASONS) {
-    manifest.externalProcessors[0].collectionDeterminationReason = reason;
-    const generated = await questionnaire(root, manifest);
-    assert.ok(hasBlock(generated.report, "privacy.processor.cdn.example.com.collection-determination"), reason);
-    assert.equal(generated.report.canSubmit, false, reason);
-    assert.match(generated.draft, /UNVERIFIED: marked not-collection but the reason (?:is a placeholder|is uncertain|affirmatively describes retention)/, reason);
-    assert.doesNotMatch(generated.draft, /Human-confirmed not to be App Privacy collection/, reason);
-  }
+  for (const collectionDeterminationReason of ARBITRARY_AUDIT_NOTES) {
+    manifest.externalProcessors[0].collectionDeterminationReason = collectionDeterminationReason;
+    manifest.externalProcessors[0].notCollectionAttestation = undefined;
+    let generated = await questionnaire(root, manifest);
+    assert.ok(hasBlock(generated.report, "privacy.processor.cdn.example.com.collection-determination"), collectionDeterminationReason);
+    assert.equal(generated.report.canSubmit, false, collectionDeterminationReason);
+    assert.match(generated.draft, /structured real-time-service attestation is missing/, collectionDeterminationReason);
 
-  for (const reason of VALID_NOT_COLLECTION_REASONS) {
-    manifest.externalProcessors[0].collectionDeterminationReason = reason;
-    const generated = await questionnaire(root, manifest);
-    assert.equal(generated.report.summary.block, 0, `${reason}: ${generated.report.results.filter((item) => item.severity === "block").map((item) => item.message).join("; ")}`);
-    assert.equal(generated.report.canSubmit, true, reason);
-    assert.match(generated.draft, /Human-confirmed not to be App Privacy collection for this processor/, reason);
+    manifest.externalProcessors[0].notCollectionAttestation = attestation();
+    generated = await questionnaire(root, manifest);
+    assert.equal(generated.report.summary.block, 0, `${collectionDeterminationReason}: ${generated.report.results.filter((item) => item.severity === "block").map((item) => item.message).join("; ")}`);
+    assert.equal(generated.report.canSubmit, true, collectionDeterminationReason);
+    assert.match(generated.draft, /Human-confirmed not to be App Privacy collection for this processor/, collectionDeterminationReason);
+    assert.match(generated.draft, /Audit note \(not semantically validated by ShipLayer\)/, collectionDeterminationReason);
   }
 });

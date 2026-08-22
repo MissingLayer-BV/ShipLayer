@@ -509,11 +509,53 @@
           "enum": ["collection", "not-collection", "needs-human-confirmation"],
           "description": "Human-confirmed: does this processor's receipt of data constitute 'collection' under Apple's App Privacy definition, or does it fall under Apple's real-time-service exception (transmitted only to service the request, not retained)? Optional; absent or 'needs-human-confirmation' blocks until answered and is never read as 'not-collection'."
         },
+        "notCollectionAttestation": {
+          "$ref": "#/$defs/notCollectionAttestation",
+          "description": "Required by preflight for a not-collection determination. Structured human attestation and evidence; free-form notes never substitute for this fact."
+        },
         "collectionDeterminationReason": {
           "$ref": "#/$defs/nonEmpty",
-          "description": "Required when collectionDetermination is 'not-collection': why this processor's receipt of data is not retained beyond servicing the request."
+          "description": "Optional human audit note. ShipLayer does not semantically validate this prose and it cannot satisfy a not-collection attestation."
         }
       }
+    },
+    "notCollectionAttestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dataNotRetainedBeyondRealTimeService", "basis", "evidence", "confirmation"],
+      "properties": {
+        "dataNotRetainedBeyondRealTimeService": {
+          "anyOf": [{ "type": "boolean" }, { "const": "needs-human-confirmation" }],
+          "description": "Human-observed Apple-definition fact: transmitted data is not retained beyond servicing the request in real time. Only true may support not-collection."
+        },
+        "basis": {
+          "enum": ["first-party-implementation", "vendor-documentation", "contract-dpa", "written-vendor-confirmation", "needs-human-confirmation"]
+        },
+        "evidence": { "$ref": "#/$defs/notCollectionEvidence" },
+        "confirmation": { "$ref": "#/$defs/confirmation" }
+      }
+    },
+    "notCollectionEvidence": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "path"],
+          "properties": { "kind": { "const": "repo-path" }, "path": { "$ref": "#/$defs/repoPath" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "url"],
+          "properties": { "kind": { "const": "public-url" }, "url": { "$ref": "#/$defs/url" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": { "kind": { "const": "processor-privacy-policy" } }
+        }
+      ]
     },
     "aiDataSharingDisabled": {
       "type": "object",

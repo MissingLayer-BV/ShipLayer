@@ -9,7 +9,7 @@ import { validateAscPrivateKey } from "./asc.js";
 import { appReviewNotes } from "./generator.js";
 import { DEFAULT_MARKETING_FINAL_DIR } from "./marketing.js";
 import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, isLoopbackOrPrivateEndpoint, isNonProductionSourcePath, MONETIZATION_CONTRADICTION_FINDING, PURCHASE_UNAVAILABLE_CONTRADICTION_FINDING, productionEvidenceOnly, resolveContradictionOverride, storekitPurchaseEvidence, stripCodeComments } from "./evidence.js";
-import { assessCollectionDeterminationReason, collectionDeterminationReasonIssueMessage } from "./privacy.js";
+import { assessNotCollectionAttestation, notCollectionAttestationIssueMessage } from "./collection-attestation.js";
 
 // Apple requires ONE uniform size per required display class, and the classes are not
 // interchangeable: a 6.5-inch capture does not satisfy the 6.9-inch slot. Each display class is
@@ -1428,15 +1428,25 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
     // confirmed. Do not turn an unconfirmed (or incorrectly not-applicable) proposal into a
     // passing App Privacy conclusion merely because it happens to contain a determination.
     if (processor.confirmation !== "confirmed") {
-      add(`privacy.processor.${processor.name}.collection-determination`, "block", `${processor.name}'s collection determination cannot be relied on because the declared processor is not human-confirmed.`, "Confirm the processor first, then record whether its receipt of data is App Privacy collection and, for not-collection, the real-time-service reason.");
+      add(`privacy.processor.${processor.name}.collection-determination`, "block", `${processor.name}'s collection determination cannot be relied on because the declared processor is not human-confirmed.`, "Confirm the processor first, then record whether its receipt of data is App Privacy collection and, for not-collection, the structured real-time-service attestation and evidence.");
       continue;
     }
     const determination = processor.collectionDetermination;
     if (determination !== "collection" && determination !== "not-collection") { add(`privacy.processor.${processor.name}.collection-determination`, "block", `${processor.name} has no human-confirmed determination of whether its receipt of data is "collection" under Apple's App Privacy definition.`, "Set externalProcessors[].collectionDetermination to 'collection' or 'not-collection', based on whether this processor retains data beyond servicing the request in real time — see references/questions.md."); continue; }
     if (determination === "not-collection") {
-      const reason = assessCollectionDeterminationReason(processor.collectionDeterminationReason);
-      if (reason.issue) { add(`privacy.processor.${processor.name}.collection-determination`, "block", `${processor.name} is declared 'not-collection' but ${collectionDeterminationReasonIssueMessage(reason.issue)}.`, "Record a concrete, checked basis describing what happens to the request after service (for example, documented no request logs or immediate discard). Do not use a placeholder or an uncertain statement."); continue; }
-      add(`privacy.processor.${processor.name}.collection-determination`, "pass", `${processor.name} is human-confirmed not to constitute "collection" under Apple's App Privacy definition: ${reason.normalized}`);
+      const attestation = processor.notCollectionAttestation;
+      const assessment = assessNotCollectionAttestation(attestation);
+      if (assessment.issue || !attestation) { add(`privacy.processor.${processor.name}.collection-determination`, "block", `${processor.name} is declared 'not-collection' but ${notCollectionAttestationIssueMessage(assessment.issue || "missing")}.`, "Record a literal human-confirmed real-time-service attestation (dataNotRetainedBeyondRealTimeService: true), a checked evidence basis, and a non-secret evidence reference. Free-form audit notes cannot clear this blocker."); continue; }
+      const evidence = attestation.evidence;
+      if (evidence.kind === "repo-path") {
+        const valid = await validEvidencePaths(repository, [evidence.path]);
+        if (!valid.has(evidence.path)) { add(`privacy.processor.${processor.name}.collection-determination`, "block", `${processor.name}'s structured not-collection attestation cites a missing, symlinked, or out-of-repository evidence path.`, "Reference an existing contained regular file, a public HTTPS document, or the processor privacy-policy URL."); continue; }
+      } else if (evidence.kind === "public-url" && !isSafePublicHttpsUrl(evidence.url)) {
+        add(`privacy.processor.${processor.name}.collection-determination`, "block", `${processor.name}'s structured not-collection attestation needs a safe public HTTPS evidence URL.`, "Use a public HTTPS documentation URL with no credentials, or cite a contained evidence file or the processor privacy-policy URL."); continue;
+      } else if (evidence.kind === "processor-privacy-policy" && !isSafePublicHttpsUrl(processor.privacyPolicyUrl)) {
+        add(`privacy.processor.${processor.name}.collection-determination`, "block", `${processor.name}'s structured not-collection attestation references an invalid processor privacy-policy URL.`, "Record the processor's public HTTPS privacy-policy URL before relying on it as evidence."); continue;
+      }
+      add(`privacy.processor.${processor.name}.collection-determination`, "pass", `${processor.name} is human-confirmed not to constitute "collection" under Apple's App Privacy definition, based on a structured real-time-service attestation (${attestation.basis}; ${notCollectionEvidenceLabel(attestation.evidence)}). ShipLayer does not infer this conclusion from audit-note prose.`);
       continue; // a confirmed non-collection processor makes no App Privacy claim, so no dataProcessing row can or should be demanded for it
     }
     add(`privacy.processor.${processor.name}.collection-determination`, "pass", `${processor.name} is human-confirmed to constitute "collection" under Apple's App Privacy definition.`);
@@ -1482,6 +1492,16 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
   const manifestIds = new Set(manifest.monetization.type === "subscriptions" || manifest.monetization.type === "non-consumables" ? manifest.monetization.products.map((product) => product.productId) : []);
   for (const id of sourceIds) if (!manifestIds.has(id)) add(`storekit.${id}`, "block", `StoreKit product ${id} is missing from monetization manifest.`);
   for (const id of manifestIds) if (sourceIds.size && !sourceIds.has(id)) add(`manifest.${id}`, "block", `Manifest product ${id} is absent from StoreKit evidence.`);
+}
+
+function isSafePublicHttpsUrl(value: string): boolean {
+  try { const url = new URL(value); return url.protocol === "https:" && Boolean(url.hostname) && !url.username && !url.password; } catch { return false; }
+}
+
+function notCollectionEvidenceLabel(evidence: NonNullable<ShipLayerManifest["externalProcessors"][number]["notCollectionAttestation"]>["evidence"]): string {
+  if (evidence.kind === "repo-path") return `repository evidence ${evidence.path}`;
+  if (evidence.kind === "public-url") return `public evidence ${evidence.url}`;
+  return "the processor privacy-policy URL";
 }
 
 function stringValues(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : typeof value === "string" ? [value] : []; }

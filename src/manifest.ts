@@ -72,7 +72,12 @@ export function validateManifest(candidate: unknown): asserts candidate is ShipL
   requireHttpsUrl("contacts.supportUrl", manifest.contacts.supportUrl);
   requireHttpsUrl("contacts.marketingUrl", manifest.contacts.marketingUrl);
   requireHttpsUrl("contacts.privacyUrl", manifest.contacts.privacyUrl);
-  for (const processor of manifest.externalProcessors) requireHttpsUrl(`external processor ${processor.name} privacyPolicyUrl`, processor.privacyPolicyUrl);
+  for (const processor of manifest.externalProcessors) {
+    requireHttpsUrl(`external processor ${processor.name} privacyPolicyUrl`, processor.privacyPolicyUrl);
+    const evidence = processor.notCollectionAttestation?.evidence;
+    if (evidence?.kind === "repo-path") try { safeRelativePath(evidence.path, `not-collection evidence for ${processor.name}`); } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
+    if (evidence?.kind === "public-url") requireHttpsUrl(`not-collection public evidence for ${processor.name}`, evidence.url);
+  }
   for (const locale of manifest.app.locales) if (!APPLE_LOCALES.has(locale)) errors.push(`app.locales contains unsupported App Store localization '${locale}'`);
   const validateLocalizationMap = (label: string, localizations: Record<string, unknown>): void => {
     for (const locale of Object.keys(localizations)) {
