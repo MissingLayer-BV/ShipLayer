@@ -1,6 +1,6 @@
 import { canonicalHostForComparison } from "./collection-attestation.js";
-import { endpointFindingUrl, externalFindingId, validEvidencePaths } from "./evidence.js";
-import type { ExternalProcessor, Finding, ShipLayerManifest } from "./types.js";
+import { endpointFindingUrl, externalFindingId, externalServiceFindings, validEvidencePaths } from "./evidence.js";
+import type { AnalysisReport, ExternalProcessor, Finding, ShipLayerManifest } from "./types.js";
 
 export interface ExternalServiceDecisionAssessment {
   issue?: string;
@@ -8,6 +8,25 @@ export interface ExternalServiceDecisionAssessment {
   decision?: ShipLayerManifest["externalServiceDecisions"][number];
   /** True only when the selected decision can support source readiness and generated prose. */
   usable: boolean;
+}
+
+export interface ExternalServiceReadinessAssessment {
+  findings: Array<{ finding: Finding; assessment: ExternalServiceDecisionAssessment }>;
+  /** `reference-only` is an assertion about a concrete scanner literal, never a free-standing
+   * manifest exemption. Other stale disposition kinds retain their existing compatibility. */
+  staleReferenceOnly: ShipLayerManifest["externalServiceDecisions"][number][];
+}
+
+/** Assess all scanner source findings and reference-only declarations together. Keeping this in
+ * one module prevents generated prose from ignoring a stale reference-only row that preflight
+ * correctly blocks. */
+export async function assessExternalServiceReadiness(repository: string, manifest: ShipLayerManifest, analysis: AnalysisReport): Promise<ExternalServiceReadinessAssessment> {
+  const findings = externalServiceFindings(analysis);
+  const currentFindingIds = new Set(findings.map(externalFindingId));
+  return {
+    findings: await Promise.all(findings.map(async (finding) => ({ finding, assessment: await assessExternalServiceDecision(repository, manifest, finding) }))),
+    staleReferenceOnly: manifest.externalServiceDecisions.filter((decision) => decision.disposition === "reference-only" && !currentFindingIds.has(decision.finding))
+  };
 }
 
 /**

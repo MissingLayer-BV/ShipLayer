@@ -11,7 +11,7 @@ import { DEFAULT_MARKETING_FINAL_DIR } from "./marketing.js";
 import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, isLoopbackOrPrivateEndpoint, isNonProductionSourcePath, MONETIZATION_CONTRADICTION_FINDING, PURCHASE_UNAVAILABLE_CONTRADICTION_FINDING, productionEvidenceOnly, resolveContradictionOverride, storekitPurchaseEvidence, stripCodeComments } from "./evidence.js";
 import { assessNotCollectionAttestation, notCollectionAttestationIssueMessage } from "./collection-attestation.js";
 import { assessNotCollectionEvidence } from "./not-collection-evidence.js";
-import { assessExternalServiceDecision } from "./external-service-assessment.js";
+import { assessExternalServiceReadiness } from "./external-service-assessment.js";
 
 // Apple requires ONE uniform size per required display class, and the classes are not
 // interchangeable: a 6.5-inch capture does not satisfy the 6.9-inch slot. Each display class is
@@ -1397,7 +1397,8 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
     else add(`source.permission.${key}.evidence`, "pass", `${key} manifest evidence matches source evidence.`);
   }
   for (const permission of manifest.permissions) if (!report.findings.some((finding) => finding.key === `permission:${permission.key}`) && !(permission.evidence || []).length) add(`manifest.permission.${permission.key}`, "warn", `${permission.key} has no scanner evidence or manifest evidence path.`, "Verify the purpose string and add source evidence if this permission is used.");
-  for (const finding of report.findings.filter((item) => item.key.startsWith("thirdPartySdkCandidate:") || item.key.startsWith("endpoint:"))) {
+  const externalReadiness = await assessExternalServiceReadiness(repository, manifest, report);
+  for (const { finding, assessment } of externalReadiness.findings) {
     const findingId = externalFindingId(finding);
     if (finding.key.startsWith("endpoint:http://") && !isLoopbackOrPrivateEndpoint(finding.key.slice("endpoint:".length))) {
       const insecureEndpointId = `source.insecure-endpoint.${findingId}`;
@@ -1406,7 +1407,6 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
       if (insecureOverride) add(insecureEndpointId, "warn", `Source declares insecure HTTP endpoint ${String(finding.value)}, but this is human-overridden: ${insecureOverride.reason}`, "Re-verify this override whenever the source or manifest changes.");
       else add(insecureEndpointId, "block", `Source declares insecure HTTP endpoint ${String(finding.value)}.`, `Use HTTPS or document an App Transport Security exception, or add a confirmed sourceContradictionOverride naming '${insecureEndpointId}' with a reason and evidence that intersects this finding's source.`);
     }
-    const assessment = await assessExternalServiceDecision(repository, manifest, finding);
     if (!assessment.usable || !assessment.decision) { add(`source.external.${findingId}`, "block", `Source heuristic '${findingId}' is unresolved: ${assessment.issue || "its disposition cannot be used"}.`, assessment.remediation); continue; }
     const decision = assessment.decision;
     if (decision.disposition === "reference-only") {
@@ -1414,6 +1414,9 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
       add(`source.external.${findingId}`, "pass", `Source heuristic '${findingId}' has a human-confirmed reference-only disposition.`);
     } else if (decision.disposition === "declared-processor") add(`source.external.${findingId}`, "pass", `Source heuristic '${findingId}' has a human-confirmed processor disposition.`);
     else add(`source.external.${findingId}`, "pass", `Source heuristic '${findingId}' has a human-confirmed non-processor disposition.`);
+  }
+  for (const _decision of externalReadiness.staleReferenceOnly) {
+    add("source.external.stale-reference-only", "block", "A reference-only decision does not match a current scanner HTTP(S) endpoint finding.", "Remove the stale reference-only decision or update it to the exact current scanner endpoint finding with matching source evidence. ShipLayer cannot treat an unbound reference-only declaration as resolved.");
   }
   for (const processor of manifest.externalProcessors) {
     // Whether this processor's receipt of data is "collection" under Apple's App Privacy

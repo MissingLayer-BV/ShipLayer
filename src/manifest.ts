@@ -7,7 +7,7 @@ import { readText, safeRelativePath } from "./fs.js";
 import schema from "./schema.json" with { type: "json" };
 import type { ShipLayerManifest } from "./types.js";
 import { assessPublicEvidenceUrl } from "./collection-attestation.js";
-import { containsDirectCredentialMaterial, urlContainsCredentialMaterial } from "./secrets.js";
+import { containsCredentialUrlMaterial, containsDirectCredentialMaterial } from "./secrets.js";
 
 const ajv = new Ajv2020({ allErrors: true, strict: false });
 const validateSchema = ajv.compile(schema);
@@ -173,10 +173,7 @@ export function validateManifest(candidate: unknown): asserts candidate is ShipL
 function collectSecrets(value: unknown, location: string, errors: string[]): void {
   if (typeof value === "string") {
     if (containsDirectCredentialMaterial(value)) errors.push(`${location || "manifest"} appears to contain credential material; use an environment-variable reference instead`);
-    try {
-      const url = new URL(value);
-      if ((url.protocol === "https:" || url.protocol === "http:") && urlContainsCredentialMaterial(url)) errors.push(`${location || "manifest"} URL appears to contain credential material; use a canonical public reference without credentials`);
-    } catch { /* non-URL fields are handled by their own schema rules */ }
+    if (containsCredentialUrlMaterial(value)) errors.push(`${location || "manifest"} contains a URL with credential material; use a canonical public reference without credentials`);
     return;
   }
   if (Array.isArray(value)) { value.forEach((item, index) => collectSecrets(item, `${location}[${index}]`, errors)); return; }

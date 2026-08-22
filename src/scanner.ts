@@ -3,7 +3,7 @@ import { parse } from "yaml";
 import { readText, relative, walkRepository } from "./fs.js";
 import type { AnalysisReport, Evidence, Finding } from "./types.js";
 import { isXCUITestSourcePath, stripCodeComments } from "./evidence.js";
-import { redactedCredentialPath } from "./secrets.js";
+import { redactedCredentialPath, urlContainsCredentialMaterial } from "./secrets.js";
 
 const PERMISSION_KEYS = ["NSCameraUsageDescription", "NSPhotoLibraryUsageDescription", "NSPhotoLibraryAddUsageDescription", "NSMicrophoneUsageDescription", "NSLocationWhenInUseUsageDescription", "NSUserTrackingUsageDescription", "NSContactsUsageDescription", "NSFaceIDUsageDescription"];
 const APPLE_FRAMEWORKS = new Set(["URLSession", "StoreKit", "UserNotifications", "Photos", "AVFoundation", "CoreLocation", "Contacts"]);
@@ -64,7 +64,13 @@ export async function analyzeRepository(repository: string): Promise<AnalysisRep
     if (["bundleId", "version", "build", "deploymentTarget", "deviceFamily", "encryption"].includes(key) && /\$\([^)]*\)/.test(normalized)) return;
     const finalSegment = normalized.split(".").at(-1) || "";
     const detectedKey = key === "endpoint" ? `endpoint:${normalized}` : key === "bundleId" && /(?:ui)?tests$/i.test(finalSegment) ? "testBundleId" : key;
-    (settings[detectedKey] ||= []).push({ value: normalized, evidence });
+    // Every endpoint ingestion route (source, Info.plist, and build settings) must retain the
+    // same sanitized value in its evidence excerpt. Keeping a raw build-setting/XML excerpt
+    // would otherwise leak a credential even though the finding key is normalized.
+    const safeEvidence = key === "endpoint" && evidence.excerpt
+      ? { ...evidence, excerpt: `Endpoint: ${normalized}` }
+      : evidence;
+    (settings[detectedKey] ||= []).push({ value: normalized, evidence: safeEvidence });
   };
   const scanText = async (file: string): Promise<void> => {
     const content = await readText(file); const source = relative(root, file);
@@ -492,7 +498,10 @@ function normalizeEndpoint(value: string): string {
     // identity without persisting credentials or opaque customer data.
     const parameterNames = [...new Set([...url.searchParams.keys()])].sort();
     const query = parameterNames.length ? `?${parameterNames.map((name) => encodeURIComponent(name)).join("&")}` : "";
-    const safePath = redactedCredentialPath(url.pathname) || url.pathname;
+    // Userinfo and credential-bearing query/fragment values make the entire literal sensitive,
+    // even when no path marker identifies which segment holds the value. Do not preserve a raw
+    // path merely because the credential happened to be carried elsewhere in the same URL.
+    const safePath = redactedCredentialPath(url.pathname) || (urlContainsCredentialMaterial(url) ? "/:redacted" : url.pathname);
     return `${url.protocol.toLowerCase()}//${url.host.toLowerCase()}${safePath}${query}`;
   } catch { return ""; }
 }

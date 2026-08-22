@@ -7,7 +7,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { preflight } from "../src/preflight.js";
-import { generateReleasePackage } from "../src/generator.js";
+import { appReviewNotes, generateReleasePackage } from "../src/generator.js";
 import { validateManifest } from "../src/manifest.js";
 import { analyzeRepository } from "../src/scanner.js";
 import { readyManifest, writeReadyAssets } from "./helpers.js";
@@ -442,50 +442,45 @@ test("ordinary manifest URLs may use benign query strings or fragments while str
   assert.doesNotThrow(() => validateManifest(manifest));
 
   const credentialedOrdinaryUrl = readyManifest();
-  credentialedOrdinaryUrl.contacts.supportUrl = "https://support.vendor-a.com/help?token=sekrit";
+  credentialedOrdinaryUrl.contacts.supportUrl = "https://support.vendor-a.com/help?token=abc123";
   assert.throws(() => validateManifest(credentialedOrdinaryUrl), (error: unknown) => {
-    assert.doesNotMatch(String(error), /sekrit/i);
+    assert.doesNotMatch(String(error), /abc123/i);
     return true;
   });
-  credentialedOrdinaryUrl.contacts.supportUrl = "https://support.vendor-a.com/help#access_token=sekrit";
+  credentialedOrdinaryUrl.contacts.supportUrl = "https://support.vendor-a.com/help#access_token=abc123";
   assert.throws(() => validateManifest(credentialedOrdinaryUrl), (error: unknown) => {
-    assert.doesNotMatch(String(error), /sekrit/i);
+    assert.doesNotMatch(String(error), /abc123/i);
     return true;
   });
 
   const pathSecretCases: Array<(candidate: ShipLayerManifest) => void> = [
-    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/token/sekrit-value"; },
-    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/token/login/sekrit-value"; },
-    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/tokens/sekrit-value"; },
-    (candidate) => { candidate.contacts.privacyUrl = "https://vendor-a.com/access-token/sekrit-value"; },
-    (candidate) => { candidate.externalProcessors.push(processor({ collectionDetermination: "collection", privacyPolicyUrl: "https://cdn.vendor-a.com/api-key/sekrit-value", evidence: [] })); },
-    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/secret/sekrit-value"; },
-    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/credentials/sekrit-value"; },
-    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/signature/sekrit-value"; },
-    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/sig/sekrit-value"; },
-    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/bearer/sekrit-value"; },
-    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/TOKENS/%2E/sekrit-value"; },
-    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/%74okens/sekrit-value"; },
-    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/%2574oken/sekrit-value"; },
-    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/%2525252574oken/sekrit-value"; },
-    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/to%E2%80%8Bken/sekrit-value"; },
-    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/%2561ccess%2Dtoken/sekrit-value"; },
-    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/api_key//sekrit-value"; },
-    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/auth-token/sekrit-value"; },
-    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/client-secret/sekrit-value"; },
-    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/private-key/sekrit-value"; },
-    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/oauth/code/sekrit-value"; },
-    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/guides/sekrit-value"; },
-    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/auth/login/Aa0123456789Bcdefghijklmnop"; },
-    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/key/faq/sekrit-value"; },
-    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/password/reset/sekrit-value"; },
-    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/auth/logout/sekrit-value"; }
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/token/abc123"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/token/login/abc123"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/tokens/abc123"; },
+    (candidate) => { candidate.contacts.privacyUrl = "https://vendor-a.com/access-token/abc123"; },
+    (candidate) => { candidate.externalProcessors.push(processor({ collectionDetermination: "collection", privacyPolicyUrl: "https://cdn.vendor-a.com/api-key/abc123", evidence: [] })); },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/secret/abc123"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/credentials/abc123"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/signature/abc123"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/sig/abc123"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/bearer/abc123"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/TOKENS/%2E/abc123"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/%74okens/abc123"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/%2574oken/abc123"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/%2525252574oken/abc123"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/to%E2%80%8Bken/abc123"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/%2561ccess%2Dtoken/abc123"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/api_key//abc123"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/auth-token/abc123"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/client-secret/abc123"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/private-key/abc123"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/oauth/code/abc123"; }
   ];
   for (const setPathSecret of pathSecretCases) {
     const pathSecret = readyManifest();
     setPathSecret(pathSecret);
     assert.throws(() => validateManifest(pathSecret), (error: unknown) => {
-      assert.doesNotMatch(String(error), /sekrit/i);
+      assert.doesNotMatch(String(error), /abc123/i);
       return true;
     });
   }
@@ -517,22 +512,29 @@ test("ordinary manifest URLs may use benign query strings or fragments while str
   assert.throws(() => validateManifest(strict), /credential-safe public HTTPS URL/);
 });
 
-test("credential URL normalization catches split and encoded markers without blocking documentation routes", async () => {
+test("credential URL grammar redacts exact marker/value paths and rejects normalized query and fragment names", async () => {
   const invalidPaths = [
-    "/api/key/value",
-    "/private/key/value",
-    "/authorization/code/value",
-    "/oauth2/code/value",
-    "/api%2Bkey/value",
-    "/client%2Dsecret/value",
-    "/access_token/value"
+    "/api/key/abc123",
+    "/docs/api/key/abc123",
+    "/token/abc123",
+    "/credentials/deadbeef",
+    "/private/key/0123456789abcdef0123456789abcdef",
+    "/authorization/code/0123456789abcdef0123456789abcdef",
+    "/oauth2/code/0123456789abcdef0123456789abcdef",
+    "/signature/abc123",
+    "/sig/abc123",
+    "/bearer/abc123",
+    "/api%2Bkey/abc123",
+    "/api‐key/abc123",
+    "/client:secret/abc123",
+    "/access~token/abc123"
   ];
   for (const pathname of invalidPaths) {
     const manifest = readyManifest();
     manifest.contacts.supportUrl = `https://support.vendor-a.com${pathname}`;
     assert.throws(() => validateManifest(manifest), /credential material/i, pathname);
   }
-  for (const suffix of ["?to%E2%80%8Bken=value", "?%2574oken=value", "?authorization%2Fcode=value", "#api%2Bkey=value", "#client%2Dsecret=value"]) {
+  for (const suffix of ["?code=abc123", "?auth_code=abc123", "?to%E2%80%8Bken=abc123", "?%2574oken=abc123", "?authorization%2Fcode=abc123", "#CODE=abc123", "#api%2Bkey=abc123", "#client%2Dsecret=abc123"]) {
     const manifest = readyManifest();
     manifest.contacts.supportUrl = `https://support.vendor-a.com/help${suffix}`;
     assert.throws(() => validateManifest(manifest), /credential material/i, suffix);
@@ -542,6 +544,10 @@ test("credential URL normalization catches split and encoded markers without blo
     "/docs/api-key/rotation",
     "/signature/verification",
     "/oauth/code/examples",
+    "/events/secret-santa-2026",
+    "/docs/client-secret-rotation",
+    "/docs/github-pat-configuration",
+    "/security/secret-management-guide",
     "/auth/login/callback",
     "/password/change",
     "/password/reset",
@@ -556,21 +562,83 @@ test("credential URL normalization catches split and encoded markers without blo
 
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-neutral-url-redaction-"));
   await writeFile(path.join(root, "worker.ts"), [
-    "fetch('https://api.vendor-a.com/api/key/value');",
-    "fetch('https://api.vendor-a.com/oauth2/code/value');",
-    "fetch('https://api.vendor-a.com/path?to%E2%80%8Bken=value');"
+    "fetch('HTTPS://api.vendor-a.com/api/key/abc123');",
+    "fetch('https://api.vendor-a.com/oauth2/code/deadbeef');",
+    "fetch('https://api.vendor-a.com/path?to%E2%80%8Bken=abc123');"
   ].join("\n"));
   const analysis = await analyzeRepository(root);
   const serialized = JSON.stringify(analysis);
-  assert.doesNotMatch(serialized, /(?:api\/key\/value|oauth2\/code\/value|to%E2%80%8Bken=value)/i);
+  assert.doesNotMatch(serialized, /(?:api\/key\/abc123|oauth2\/code\/deadbeef|to%E2%80%8Bken=abc123)/i);
   assert.ok(analysis.findings.some((finding) => finding.key === "endpoint:https://api.vendor-a.com/:redacted"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  const report = await preflight(root, manifest, false, analysis);
+  const generated = await generateReleasePackage(root, manifest, analysis, report, "shiplayer-release");
+  for (const file of generated.files) assert.doesNotMatch(await readFile(path.join(generated.directory, file), "utf8"), /(?:abc123|deadbeef)/i, file);
+});
+
+test("mixed-case embedded credential URLs are rejected before manifest or App Review notes can echo them", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-embedded-credential-url-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  const analysis = await analyzeRepository(root);
+  const cleanReport = await preflight(root, manifest, false, analysis);
+  manifest.review.notes = "Reviewer context: HTTPS://support.vendor-a.com/api/key/abc123 is not a public support link.";
+  assert.throws(() => validateManifest(manifest), (error: unknown) => {
+    assert.doesNotMatch(String(error), /abc123/i);
+    return true;
+  });
+  await assert.rejects(() => appReviewNotes(root, manifest, analysis), (error: unknown) => {
+    assert.doesNotMatch(String(error), /abc123/i);
+    return true;
+  });
+  await assert.rejects(() => generateReleasePackage(root, manifest, analysis, cleanReport, "shiplayer-release"), (error: unknown) => {
+    assert.doesNotMatch(String(error), /abc123/i);
+    return true;
+  });
+});
+
+test("reference-only decisions must bind to a current scanner endpoint and duplicate bindings remain unresolved", async () => {
+  for (const finding of ["endpoint:https://docs.vendor.com/privacy", "endpoint:https://"]) {
+    const root = await mkdtemp(path.join(tmpdir(), "shiplayer-stale-reference-only-"));
+    const manifest = readyManifest();
+    await writeReadyAssets(root, manifest);
+    await mkdir(path.join(root, "Sources"), { recursive: true });
+    await writeFile(path.join(root, "Sources/Docs.swift"), "let label = \"Privacy\"\n");
+    manifest.externalServiceDecisions.push({ finding, disposition: "reference-only", reason: "Human reviewed a former documentation URL.", evidence: ["Sources/Docs.swift"], confirmation: "confirmed" });
+    assert.doesNotThrow(() => validateManifest(manifest), finding);
+    const analysis = await analyzeRepository(root);
+    const report = await preflight(root, manifest, false, analysis);
+    assert.equal(report.canSubmit, false, finding);
+    assert.ok(report.results.some((item) => item.id === "source.external.stale-reference-only" && item.severity === "block"), finding);
+    assert.match(report.results.find((item) => item.id === "source.external.stale-reference-only")?.remediation || "", /Remove the stale|update it/i);
+    const generated = await generateReleasePackage(root, manifest, analysis, report, "shiplayer-release");
+    const draft = await readFile(path.join(generated.directory, "privacy/questionnaire-draft.md"), "utf8");
+    const privacyPolicy = await readFile(path.join(generated.directory, "legal/privacy-policy-draft.html"), "utf8");
+    for (const artifact of [draft, privacyPolicy]) {
+      assert.match(artifact, /UNVERIFIED:/i, finding);
+      assert.doesNotMatch(artifact, /No confirmed third-party processors are listed/i, finding);
+    }
+  }
+
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-duplicate-reference-only-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  await mkdir(path.join(root, "Sources"), { recursive: true });
+  await writeFile(path.join(root, "Sources/Docs.swift"), "let docs = \"https://docs.vendor.com/privacy\"\n");
+  const decision = { finding: "endpoint:https://docs.vendor.com/privacy", disposition: "reference-only" as const, reason: "Human confirmed this is a documentation literal.", evidence: ["Sources/Docs.swift"], confirmation: "confirmed" as const };
+  manifest.externalServiceDecisions.push(decision, { ...decision });
+  const analysis = await analyzeRepository(root);
+  const report = await preflight(root, manifest, false, analysis);
+  assert.equal(report.canSubmit, false);
+  assert.match(report.results.find((item) => item.id === "source.external.endpoint:https://docs.vendor.com/privacy")?.message || "", /single unambiguous/i);
 });
 
 test("scanner and generated artifacts redact chained credential-shaped endpoint paths", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-path-redaction-"));
   const manifest = readyManifest();
   await writeReadyAssets(root, manifest);
-  const sentinel = "sekrit-value";
+  const sentinel = "abc123";
   await writeFile(path.join(root, "worker.ts"), `fetch(\"https://api.vendor-a.com/token/login/${sentinel}\");`);
   const analysis = await analyzeRepository(root);
   assert.doesNotMatch(JSON.stringify(analysis), new RegExp(sentinel, "i"));
@@ -584,7 +652,7 @@ test("recursive percent decoding and invisible-character normalization redact cr
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-recursive-path-redaction-"));
   const manifest = readyManifest();
   await writeReadyAssets(root, manifest);
-  const sentinel = "sekrit-value";
+  const sentinel = "abc123";
   await writeFile(path.join(root, "worker.ts"), [
     `fetch("https://api.vendor-a.com/%2574oken/${sentinel}");`,
     `fetch("https://api.vendor-a.com/%2525252574oken/${sentinel}");`,
