@@ -4,11 +4,9 @@
  * "password reset" or a benign URL query like `?lang=en`.
  */
 const DIRECT_CREDENTIAL = /(?:\b(?:api[ _-]?(?:key|token)|access[ _-]?token|auth(?:orization)?[ _-]?token|client[ _-]?secret|secret|password|private[ _-]?key|bearer)\s*[:=]\s*(?:["']?)[^\s"']+|\bauthorization\s*:\s*bearer\s+[A-Za-z0-9._~+\/-]{8,}|\bbearer\s+[A-Za-z0-9._~+\/-]{8,})/i;
-const SENSITIVE_URL_PARAMETER = /(?:^|[_-])(?:api[_-]?(?:key|token)|access[_-]?token|auth(?:orization)?[_-]?token|client[_-]?secret|secret|password|private[_-]?key|bearer|credential|signature|sig|token|key|code)(?:$|[_-])/i;
-// A URL path is not usually secret material, but these markers become credential-shaped when
-// followed by a value.  Deliberately keep `auth`, `password`, and `key` out of this set: they are
-// common public-navigation routes. They are checked only when their following material itself
-// looks like a credential. This avoids a brittle route allowlist such as auth/login/callback.
+// A URL path is not usually secret material. A marker is unsafe only when it is followed by a
+// credential-shaped value/context; terminology alone is normal in documentation and navigation.
+// This deliberately avoids a route allowlist such as auth/login/callback.
 const NAVIGATION_PATH_MARKER = new Set(["auth", "password", "key"]);
 const DEFAULT_IGNORABLE_OR_CONTROL = /[\p{Default_Ignorable_Code_Point}\p{Cf}\p{Cc}\p{Cs}]/gu;
 const MAX_PERCENT_DECODES = 4;
@@ -35,10 +33,10 @@ export function urlContainsCredentialMaterial(url: URL): boolean {
   if (url.username || url.password) return true;
   if (containsDirectCredentialMaterial(`${url.search}\n${url.hash}`)) return true;
   try {
-    // A scanner deliberately retains query *names* for endpoint identity while
-    // discarding values. A bare `?api_key` therefore is not credential material
-    // by itself; reject it only when the sensitive-looking key carries a value.
-    if ([url.search, url.hash.replace(/^#/, "")].some((component) => [...new URLSearchParams(component).entries()].some(([key, value]) => SENSITIVE_URL_PARAMETER.test(key) && value.trim().length > 0))) return true;
+    // A scanner retains query *names* for endpoint identity while discarding values. A bare
+    // `?api_key` is therefore not credential material by itself; reject it only when the
+    // normalized credential-shaped key carries a value. Key normalization matches path handling.
+    if ([url.search, url.hash.replace(/^#/, "")].some(hasCredentialParameterValue)) return true;
     return Boolean(redactedCredentialPath(url.pathname));
   } catch { return true; }
 }
@@ -48,25 +46,40 @@ export function urlContainsCredentialMaterial(url: URL): boolean {
  * scanner formatter can never reintroduce material that manifest validation would reject. */
 export function redactedCredentialPath(pathname: string): string | undefined {
   const segments = canonicalPathSegments(pathname);
-  if (segments.some(isHighSignalCredentialPathValue)) return "/:redacted";
   for (let index = 0; index < segments.length; index++) {
-    const segment = segments[index];
-    const folded = segment.toLowerCase();
-    const remaining = segments.slice(index + 1);
-    if (isStrongCredentialPathMarker(segment) && remaining.length) return "/:redacted";
-    // OAuth authorization-code routes are public until a literal code value follows `/oauth/code`.
-    if (folded === "oauth" && remaining[0]?.toLowerCase() === "code" && remaining.length > 1) return "/:redacted";
-    if (NAVIGATION_PATH_MARKER.has(folded) && remaining.some(looksLikeCredentialValue)) return "/:redacted";
+    const markerWidth = credentialContextWidth(segments, index);
+    if (markerWidth && segments.slice(index + markerWidth).some(looksLikeCredentialValue)) return "/:redacted";
   }
+  const directSecretIndex = segments.findIndex(isHighSignalCredentialPathValue);
+  // Preserve only the harmless route prefix for a standalone credential-shaped segment. This
+  // keeps diagnostics useful (for example `/webhook/:redacted`) without retaining the value.
+  if (directSecretIndex >= 0) return `/${segments.slice(0, directSecretIndex).join("/")}${directSecretIndex ? "/" : ""}:redacted`;
   return undefined;
 }
 
-/** Separators are presentation, not a security boundary: `api_key`, `API.KEY`, `api--key`, and
- * even `token-s` normalize to the same marker family. Match only complete marker words so normal
- * routes such as `/key/reference` and `/authentication/guide` remain readable. */
-function isStrongCredentialPathMarker(segment: string): boolean {
-  const compact = segment.toLowerCase().replace(/-/g, "");
-  return /^(?:tokens?|accesstokens?|apitokens?|apikeys?|secrets?|clientsecrets?|credentials?|signatures?|sigs?|bearers?|authtokens?|privatekeys?|oauthcodes?)$/.test(compact);
+/** Returns the number of segments in a complete credential marker. Separators and nesting are
+ * presentation details: api-key, api/key, api%2Bkey, private/key, and oauth2/code are equivalent
+ * contexts. Complete marker matching keeps `/docs/api-key/rotation` and `/signature/verification`
+ * readable until an actual credential-shaped value appears. */
+function credentialContextWidth(segments: string[], index: number): number | undefined {
+  const one = normalizedUrlIdentifier(segments[index]);
+  const two = segments[index + 1] ? `${one}-${normalizedUrlIdentifier(segments[index + 1])}` : "";
+  if (/^(?:api|access|auth|authorization|client|private|oauth2?)-(?:key|token|secret|code)$/.test(two)) return 2;
+  if (isCredentialMarker(one)) return 1;
+  if (NAVIGATION_PATH_MARKER.has(one)) return 1;
+  return undefined;
+}
+
+function isCredentialMarker(value: string): boolean {
+  const compact = value.replace(/-/g, "");
+  return /^(?:tokens?|accesstokens?|apitokens?|apikeys?|secrets?|clientsecrets?|credentials?|signatures?|sigs?|bearers?|authtokens?|authorizationtokens?|authorizationcodes?|privatekeys?|oauth2?codes?)$/.test(compact);
+}
+
+function hasCredentialParameterValue(component: string): boolean {
+  for (const [key, value] of new URLSearchParams(component).entries()) {
+    if (isCredentialMarker(normalizedUrlIdentifier(key)) && value.trim().length > 0) return true;
+  }
+  return false;
 }
 
 /** Decode repeatedly (within a small bound), fold Unicode compatibility characters, and discard
@@ -101,19 +114,33 @@ function decodeToStable(value: string): string {
 }
 
 function canonicalPathPart(value: string): string {
-  return value
+  return canonicalUrlText(value)
+    .replace(/[\s._+-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/** Identifier normalization is shared by path segments and query/fragment parameter names. */
+function normalizedUrlIdentifier(value: string): string {
+  return canonicalUrlText(value)
+    .toLowerCase()
+    .replace(/[\s._+\-/]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function canonicalUrlText(value: string): string {
+  return decodeToStable(value)
     .normalize("NFKC")
     .replace(DEFAULT_IGNORABLE_OR_CONTROL, "")
-    .trim()
-    .replace(/[\s._-]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+    .trim();
 }
 
 /** High-confidence values only. This is not a claim that every opaque URL segment is a secret;
  * it is the narrow condition under which an ordinary auth/password/key navigation route is
  * redacted rather than preserved in a generated artifact. */
 function isHighSignalCredentialPathValue(segment: string): boolean {
-  if (/(?:^|-)(?:secret|sekrit)(?:-|$)/i.test(segment)) return true;
+  // The words themselves are ordinary documentation terminology. Treat them as a value only
+  // when they carry additional opaque material; marker/value structure is handled separately.
+  if (/(?:secret|sekrit)[a-z0-9_-]{6,}$/i.test(segment)) return true;
   if (/^(?:sk|pk|rk|ghp|github-pat)-[a-z0-9_-]{8,}$/i.test(segment)) return true;
   // Opaque high-entropy material is never helpful in a release artifact. Require mixed classes
   // rather than treating an ordinary long article slug as credential material.
@@ -122,6 +149,10 @@ function isHighSignalCredentialPathValue(segment: string): boolean {
 
 function looksLikeCredentialValue(segment: string): boolean {
   if (isHighSignalCredentialPathValue(segment)) return true;
-  if (/(?:^|-)(?:secret|sekrit|token|api-key|access-token|client-secret|private-key|credential|signature|bearer)(?:-|$)/i.test(segment)) return true;
+  const normalized = normalizedUrlIdentifier(segment);
+  // `value` and explicit credential-value names are neutral, non-secret fixtures that still
+  // model a credential-bearing URL shape. Documentation navigation words do not match here.
+  if (/^(?:value|credential(?:-value)?|token(?:-value)?|secret(?:-value)?|key(?:-value)?|code(?:-value)?|bearer(?:-token)?|opaque)$/.test(normalized)) return true;
+  if (isCredentialMarker(normalized)) return true;
   return false;
 }

@@ -8,7 +8,8 @@ import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFinding
 import { detectScreenshotHarness } from "./scanner.js";
 import { buildMarketingSlideEntries, DEFAULT_MARKETING_FINAL_DIR, DEFAULT_OUTPUT_DIRECTORY, EXPORT_MJS, frameForFamily, renderPackageJson, renderReadme, renderSlideHtml, renderSlidesManifestJson, STRIP_ALPHA_MJS } from "./marketing.js";
 import { assessNotCollectionAttestation, notCollectionAttestationIssueMessage } from "./collection-attestation.js";
-import { assessNotCollectionEvidence, declaredProcessorsForFinding } from "./not-collection-evidence.js";
+import { assessNotCollectionEvidence } from "./not-collection-evidence.js";
+import { assessExternalServiceDecision } from "./external-service-assessment.js";
 import { validateManifest } from "./manifest.js";
 import { containsCredentialUrlMaterial, containsDirectCredentialMaterial } from "./secrets.js";
 
@@ -219,7 +220,7 @@ async function privacyDraft(repository: string, manifest: ShipLayerManifest, ana
   if (manifest.permissionFlows.length) lines.push(...manifest.permissionFlows.map((item) => `- **${item.category}** — dismissible screen before prompt: ${item.dismissibleScreenBeforePrompt}; confirmation: ${item.confirmation}.`));
   if (unresolvedPermissionFlows.length) lines.push(`- UNVERIFIED: the scanner detected a runtime permission request for ${unresolvedPermissionFlows.map((finding) => finding.key.slice("permissionFlow:".length)).join(", ")} with no matching permissionFlows declaration. Reconcile before submission.`);
   if (!manifest.permissionFlows.length && !unresolvedPermissionFlows.length) lines.push("- No runtime permission-request flows detected or declared.");
-  const questionnaireState = privacyQuestionnaireState(manifest, analysis, preflight);
+  const questionnaireState = await privacyQuestionnaireState(repository, manifest, analysis, preflight);
   const dataCategoryLines = manifest.dataProcessing.length
     ? [
         ...manifest.dataProcessing.map(dataProcessingQuestionnaireLine),
@@ -231,9 +232,9 @@ async function privacyDraft(repository: string, manifest: ShipLayerManifest, ana
         ...questionnaireState.unresolved.map((reason) => `  - UNVERIFIED: ${reason}`)
       ];
   lines.push("", "## Data categories", ...dataCategoryLines);
-  const unresolvedServices = unresolvedExternalServiceMessage(manifest, analysis);
+  const unresolvedServices = await unresolvedExternalServiceMessage(repository, manifest, analysis);
   if (manifest.externalProcessors.length || unresolvedServices) {
-    const processorLines = manifest.externalProcessors.map((processor) => externalProcessorQuestionnaireLine(processor, manifest, analysis, preflight));
+    const processorLines = await Promise.all(manifest.externalProcessors.map((processor) => externalProcessorQuestionnaireLine(repository, processor, manifest, analysis, preflight)));
     if (unresolvedServices) processorLines.push(`- ${unresolvedServices}`);
     lines.push("", "## External processors", ...processorLines);
   }
@@ -251,7 +252,7 @@ async function privacyDraft(repository: string, manifest: ShipLayerManifest, ana
  * processor falls under Apple's real-time-service exception: the same category can still be
  * collected locally or by another processor.
  */
-function externalProcessorQuestionnaireLine(processor: ShipLayerManifest["externalProcessors"][number], manifest: ShipLayerManifest, analysis: AnalysisReport, preflight: PreflightReport): string {
+async function externalProcessorQuestionnaireLine(repository: string, processor: ShipLayerManifest["externalProcessors"][number], manifest: ShipLayerManifest, analysis: AnalysisReport, preflight: PreflightReport): Promise<string> {
   const base = `- **${processor.name}** (${processor.kind}) — ${processor.purpose}; data: ${processor.dataCategories.join(", ")};`;
   const aggregateReminder = ` App Store Connect is aggregate: keep a category declared whenever it is collected locally or by any other processor.`;
   let determination: string;
@@ -262,7 +263,11 @@ function externalProcessorQuestionnaireLine(processor: ShipLayerManifest["extern
     const assessment = assessNotCollectionAttestation(attestation);
     const evidenceAssessment = assessNotCollectionEvidence(manifest, analysis, processor);
     const preflightPass = preflight.results.some((item) => item.id === `privacy.processor.${processor.name}.collection-determination` && item.severity === "pass");
-    const sourceBlock = evidenceAssessment.relevantFindingIds.some((findingId) => preflight.results.some((item) => item.id === `source.external.${findingId}` && item.severity === "block"));
+    // The source disposition predicate is asynchronous because it verifies the decision's
+    // actual repository evidence. Use that same predicate before this prose can sound
+    // authoritative; an unrelated source uncertainty is deliberately conservative here.
+    const sourceBlock = Boolean(await unresolvedExternalServiceMessage(repository, manifest, analysis))
+      || evidenceAssessment.relevantFindingIds.some((findingId) => preflight.results.some((item) => item.id === `source.external.${findingId}` && item.severity === "block"));
     if (assessment.issue || !attestation) determination = ` UNVERIFIED: marked not-collection but ${notCollectionAttestationIssueMessage(assessment.issue || "missing")}. Free-form audit notes cannot clear this.`;
     else if (evidenceAssessment.issue || !preflightPass || sourceBlock) determination = " UNVERIFIED: marked not-collection, but its structured attestation, evidence linkage, or relevant source reconciliation is not ready in preflight. Do not use this row to support an app-wide questionnaire answer.";
     else {
@@ -287,7 +292,7 @@ function dataProcessingQuestionnaireLine(item: ShipLayerManifest["dataProcessing
  * as well as preflight, so a stale or caller-supplied report cannot make the generated
  * questionnaire sound definitive.
  */
-function privacyQuestionnaireState(manifest: ShipLayerManifest, analysis: AnalysisReport, preflight: PreflightReport): { unresolved: string[] } {
+async function privacyQuestionnaireState(repository: string, manifest: ShipLayerManifest, analysis: AnalysisReport, preflight: PreflightReport): Promise<{ unresolved: string[] }> {
   const unresolved: string[] = [];
   if (manifest.confirmations.privacy !== "confirmed") unresolved.push(`the app-wide privacy confirmation is ${manifest.confirmations.privacy}`);
   for (const processor of manifest.externalProcessors) {
@@ -305,7 +310,7 @@ function privacyQuestionnaireState(manifest: ShipLayerManifest, analysis: Analys
   }
   const privacyManifestFindings = analysis.findings.filter((finding) => finding.key.startsWith("privacyManifestData:") || finding.key === "privacyManifestUnparsed");
   if (privacyManifestFindings.length) unresolved.push(`source declares collected-data privacy evidence (${privacyManifestFindings.map((finding) => finding.key).join(", ")})`);
-  if (unresolvedExternalServiceMessage(manifest, analysis)) unresolved.push("network/SDK source findings have not been reconciled with confirmed processor or disposition decisions");
+  if (await unresolvedExternalServiceMessage(repository, manifest, analysis)) unresolved.push("network/SDK source findings have not been reconciled with confirmed processor or disposition decisions");
   const relevantBlockers = preflight.results.filter((item) => item.severity === "block" && (item.id === "confirmation.privacy" || item.id === "source.scan-coverage" || item.id.startsWith("privacy.") || item.id.startsWith("source.external.") || item.id.startsWith("ai-sharing."))).map((item) => item.id);
   if (relevantBlockers.length) unresolved.push(`relevant preflight blocker(s) remain: ${[...new Set(relevantBlockers)].join(", ")}`);
   return { unresolved };
@@ -323,27 +328,21 @@ async function privacyPage(repository: string, manifest: ShipLayerManifest, anal
   const ai = manifest.aiDataSharing.enabled ? `<h2>Optional third-party AI processing</h2><p>After an in-app disclosure and explicit permission, the app sends ${escapeHtml(manifest.aiDataSharing.dataSent.join("; "))} to ${escapeHtml(manifest.aiDataSharing.processorNames.join(", "))} for ${escapeHtml(manifest.aiDataSharing.purpose)}. Users can decline via ${escapeHtml(manifest.aiDataSharing.consent.declinePath)}.</p><p>Explain actual collection/transmission, retention and deletion, consent withdrawal, international transfers, and how every processor provides the same or equal protection. Do not claim that Zero Data Retention or no-training means no sharing occurred.</p>` : aiContradiction?.unresolvedEndpoints.length ? `<h2>Optional third-party AI processing</h2><p><strong>UNVERIFIED:</strong> no AI data sharing is declared, but the scan detected a call to ${escapeHtml(aiContradiction.unresolvedEndpoints.join(", "))} shaped like an AI/inference API. This must be reconciled before publishing.</p>` : "";
   const unresolvedPermissions = analysis.findings.filter((finding) => finding.key.startsWith("permission:") && !manifest.permissions.some((permission) => finding.key === `permission:${permission.key}` && permission.confirmation === "confirmed"));
   const permissionsHtml = permissions.map((item) => `<li>${escapeHtml(item.key)}: ${escapeHtml(item.purpose || "purpose to be confirmed")}.</li>`).join("") || (unresolvedPermissions.length ? `<li>UNVERIFIED: the scanner detected ${escapeHtml(unresolvedPermissions.map((finding) => finding.key.slice("permission:".length)).join(", "))} with no confirmed manifest permission.</li>` : "<li>No confirmed permissions are listed.</li>");
-  const noProcessorsClaim = unresolvedExternalServiceHtml(manifest, analysis, "<li>No confirmed third-party processors are listed.</li>");
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${app} Privacy Policy</title></head><body><main><h1>${app} Privacy Policy</h1><p><strong>Draft generated by ShipLayer.</strong> Publish only after legal review and confirmation of every statement.</p><h2>Information handled by the app</h2><ul>${manifest.dataProcessing.filter((item) => item.confirmation === "confirmed").map((item) => `<li>${escapeHtml(item.category)}: used for ${escapeHtml(item.purpose.join(", ") || "the app's functionality")}.</li>`).join("") || "<li>Confirm and describe data handling before publishing.</li>"}</ul><h2>Device permissions</h2><ul>${permissionsHtml}</ul><h2>Service providers</h2><ul>${processors.map((item) => `<li>${escapeHtml(item.name)} (${escapeHtml(item.kind)}): ${escapeHtml(item.purpose)}. Policy: <a href="${escapeHtml(item.privacyPolicyUrl)}">${escapeHtml(item.privacyPolicyUrl)}</a>.</li>`).join("") || noProcessorsClaim}</ul>${ai}<h2>Contact</h2><p>${manifest.contacts.supportEmail ? `Contact <a href="mailto:${escapeHtml(manifest.contacts.supportEmail)}">${escapeHtml(manifest.contacts.supportEmail)}</a>.` : "Add a support contact before publishing."}</p></main></body></html>`;
+  const unresolvedServices = await unresolvedExternalServiceMessage(repository, manifest, analysis);
+  const processorItems = processors.map((item) => `<li>${escapeHtml(item.name)} (${escapeHtml(item.kind)}): ${escapeHtml(item.purpose)}. Policy: <a href="${escapeHtml(item.privacyPolicyUrl)}">${escapeHtml(item.privacyPolicyUrl)}</a>.</li>`).join("");
+  // A confirmed row does not make a separate source inconsistency disappear. Keep the policy
+  // draft honest in both cases instead of falling back to a "no processors" assertion.
+  const serviceProviderItems = processorItems
+    ? `${processorItems}${unresolvedServices ? `<li>${escapeHtml(unresolvedServices)}</li>` : ""}`
+    : (unresolvedServices ? `<li>${escapeHtml(unresolvedServices)}</li>` : "<li>No confirmed third-party processors are listed.</li>");
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${app} Privacy Policy</title></head><body><main><h1>${app} Privacy Policy</h1><p><strong>Draft generated by ShipLayer.</strong> Publish only after legal review and confirmation of every statement.</p><h2>Information handled by the app</h2><ul>${manifest.dataProcessing.filter((item) => item.confirmation === "confirmed").map((item) => `<li>${escapeHtml(item.category)}: used for ${escapeHtml(item.purpose.join(", ") || "the app's functionality")}.</li>`).join("") || "<li>Confirm and describe data handling before publishing.</li>"}</ul><h2>Device permissions</h2><ul>${permissionsHtml}</ul><h2>Service providers</h2><ul>${serviceProviderItems}</ul>${ai}<h2>Contact</h2><p>${manifest.contacts.supportEmail ? `Contact <a href="mailto:${escapeHtml(manifest.contacts.supportEmail)}">${escapeHtml(manifest.contacts.supportEmail)}</a>.` : "Add a support contact before publishing."}</p></main></body></html>`;
 }
-/**
- * Never let a generated artifact assert "none/no confirmed X" when the scanner detected source
- * evidence that has not been reconciled with a confirmed manifest disposition. Returns the
- * caller's clean-bill-of-health `<li>` HTML only when there is genuinely nothing unresolved;
- * otherwise a `<li>` naming the unresolved finding(s), escaped for HTML.
- */
-function unresolvedExternalServiceHtml(manifest: ShipLayerManifest, analysis: AnalysisReport, cleanFallbackHtml: string): string {
-  const message = unresolvedExternalServiceMessage(manifest, analysis);
-  return message ? `<li>${escapeHtml(message)}</li>` : cleanFallbackHtml;
-}
-/** Same check as unresolvedExternalServiceHtml, returning plain text (or undefined if clean) for Markdown/plain-text artifacts. */
-function unresolvedExternalServiceMessage(manifest: ShipLayerManifest, analysis: AnalysisReport): string | undefined {
-  const unresolved = externalServiceFindings(analysis).filter((finding) => {
-    const decision = manifest.externalServiceDecisions.find((item) => item.finding === externalFindingId(finding));
-    return !decision || decision.confirmation !== "confirmed" || (decision.disposition === "not-an-external-processor" && declaredProcessorsForFinding(manifest, finding).length > 0);
-  });
+/** Returns plain text for any source finding that lacks a usable, evidence-linked disposition. */
+async function unresolvedExternalServiceMessage(repository: string, manifest: ShipLayerManifest, analysis: AnalysisReport): Promise<string | undefined> {
+  const assessed = await Promise.all(externalServiceFindings(analysis).map(async (finding) => ({ finding, assessment: await assessExternalServiceDecision(repository, manifest, finding) })));
+  const unresolved = assessed.filter(({ assessment }) => !assessment.usable).map(({ finding }) => finding);
   if (!unresolved.length) return undefined;
-  return `UNVERIFIED: the scanner detected ${unresolved.length} network/SDK finding(s) without a usable confirmed disposition, including any same-host not-an-external-processor contradiction: ${unresolved.map((finding) => externalFindingId(finding)).join(", ")}. Confirm each before submission.`;
+  return `UNVERIFIED: the scanner detected ${unresolved.length} network/SDK finding(s) without a usable confirmed disposition or matching source evidence: ${unresolved.map((finding) => externalFindingId(finding)).join(", ")}. Confirm each before submission.`;
 }
 async function supportPage(repository: string, manifest: ShipLayerManifest, analysis: AnalysisReport): Promise<string> { const app = escapeHtml(manifest.app.name || "This app"); const restore = await restoreText(repository, manifest, analysis); return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${app} Support</title></head><body><main><h1>${app} Support</h1><p><strong>Draft generated by ShipLayer. Review before publishing.</strong></p><p>For help with ${app}, contact ${manifest.contacts.supportEmail ? `<a href="mailto:${escapeHtml(manifest.contacts.supportEmail)}">${escapeHtml(manifest.contacts.supportEmail)}</a>` : "the support email to be added"}.</p><h2>Purchases</h2><p>${escapeHtml(restore)}</p></main></body></html>`; }
 async function termsOfUseDraft(repository: string, manifest: ShipLayerManifest, analysis: AnalysisReport): Promise<string> {
@@ -357,7 +356,7 @@ async function termsOfUseDraft(repository: string, manifest: ShipLayerManifest, 
 }
 export async function appReviewNotes(repository: string, manifest: ShipLayerManifest, analysis: AnalysisReport): Promise<string> {
   const confirmedProcessors = manifest.externalProcessors.filter((processor) => processor.confirmation === "confirmed");
-  const unresolvedServices = unresolvedExternalServiceMessage(manifest, analysis);
+  const unresolvedServices = await unresolvedExternalServiceMessage(repository, manifest, analysis);
   const externalServicesLines = confirmedProcessors.map((processor) => `- ${processor.name}: ${processor.purpose}.`);
   if (unresolvedServices) externalServicesLines.push(`- ${unresolvedServices}`);
   else if (!externalServicesLines.length) externalServicesLines.push("- No confirmed external processors are listed. Confirm this is accurate before submission.");

@@ -492,26 +492,9 @@ function normalizeEndpoint(value: string): string {
     // identity without persisting credentials or opaque customer data.
     const parameterNames = [...new Set([...url.searchParams.keys()])].sort();
     const query = parameterNames.length ? `?${parameterNames.map((name) => encodeURIComponent(name)).join("&")}` : "";
-    const safePath = redactedCredentialPath(url.pathname) || redactedEndpointPath(url.pathname);
+    const safePath = redactedCredentialPath(url.pathname) || url.pathname;
     return `${url.protocol.toLowerCase()}//${url.host.toLowerCase()}${safePath}${query}`;
   } catch { return ""; }
-}
-function redactedEndpointPath(pathname: string): string {
-  const segments = pathname.split("/");
-  return segments.map((segment, index) => {
-    const decoded = safelyDecode(segment);
-    const previous = safelyDecode(segments[index - 1] || "");
-    return isCredentialLikePathSegment(decoded) || /(?:webhook|token|secret|api[-_]?key|access[-_]?token|auth|dsn)$/i.test(previous) ? ":redacted" : segment;
-  }).join("/") || "/";
-}
-function safelyDecode(value: string): string { try { return decodeURIComponent(value); } catch { return value; } }
-function isCredentialLikePathSegment(value: string): boolean {
-  if (!value) return false;
-  if (/(?:api[-_]?key|access[-_]?token|auth[-_]?token|secret|password|private[-_]?key|^sk-)/i.test(value)) return true;
-  // UUIDs, opaque bearer strings, and high-entropy-looking opaque values are
-  // not useful evidence. Keep the path shape but never echo their contents.
-  const opaque = /^[A-Za-z0-9_-]+$/.test(value) && value.length >= 16;
-  return opaque && (/[A-Za-z]/.test(value) && /\d/.test(value) || /^[0-9a-f]{24,}$/i.test(value) || new Set(value).size >= 8);
 }
 
 export function findValue(report: AnalysisReport, key: string): string | undefined { const value = report.findings.find((finding) => finding.key === key)?.value; return typeof value === "string" ? value : undefined; }

@@ -1,6 +1,9 @@
 import { assessNotCollectionAttestation, assessPublicEvidenceUrl, hasCanonicalPrivacyEvidencePath, normalizedSafeHost, notCollectionAttestationIssueMessage } from "./collection-attestation.js";
 import { endpointFindingUrl, externalFindingId, externalServiceFindings } from "./evidence.js";
+import { declaredProcessorsForFinding } from "./external-service-assessment.js";
 import type { AnalysisReport, ExternalProcessor, ShipLayerManifest } from "./types.js";
+
+export { declaredProcessorsForFinding } from "./external-service-assessment.js";
 
 export interface NotCollectionEvidenceAssessment {
   issue?: string;
@@ -63,27 +66,6 @@ function relevantProcessorFindings(manifest: ShipLayerManifest, analysis: Analys
     if (endpointHost && endpointHost === policyHost) return true;
     return manifest.externalServiceDecisions.some((decision) => decision.finding === externalFindingId(finding) && decision.processorName === processor.name);
   });
-}
-
-/** Exact host matching for the global source-disposition migration gate. A display-name processor
- * declares the hostname in its canonical privacyPolicyUrl; a structured host may declare it in
- * name as well. Never infer parent/registrable-domain ownership. */
-export function declaredProcessorsForFinding(manifest: ShipLayerManifest, finding: AnalysisReport["findings"][number]): ExternalProcessor[] {
-  const endpoint = endpointUrl(finding);
-  const endpointHost = endpoint ? normalizedSafeHost(endpoint.hostname) : undefined;
-  if (!endpointHost) return [];
-  return manifest.externalProcessors.filter((processor) => declaredProcessorHosts(processor).has(endpointHost));
-}
-
-function declaredProcessorHosts(processor: ExternalProcessor): Set<string> {
-  const hosts = new Set<string>();
-  const structuredHost = normalizedSafeHost(processor.name);
-  if (structuredHost) hosts.add(structuredHost);
-  try {
-    const policyHost = normalizedSafeHost(new URL(processor.privacyPolicyUrl).hostname);
-    if (policyHost) hosts.add(policyHost);
-  } catch { /* schema/preflight handles invalid URLs separately */ }
-  return hosts;
 }
 
 function isExactDeclaredProcessorDecision(decision: ShipLayerManifest["externalServiceDecisions"][number], finding: AnalysisReport["findings"][number], processor: ExternalProcessor): boolean {

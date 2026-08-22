@@ -78,8 +78,9 @@ That is true, but it is not the whole story for that endpoint. Independently, **
 `endpoint`/`thirdPartySdkCandidate` finding the scanner reports — AI-shaped or not, warning or
 not — also needs a confirmed entry in `externalServiceDecisions` (`source.external.<findingId>`
 in `src/preflight.ts`). A plain policy link is still a scanner finding; it still needs a human
-disposition recorded (for a policy/docs-only literal, `disposition: "reference-only"` with a
-reason and evidence citing the same file the finding points to). This is a human classification of
+disposition recorded (for a policy/docs-only HTTP(S) URL literal, `disposition: "reference-only"`
+with a reason and evidence citing the same file the finding points to; never use it for an SDK
+import). This is a human classification of
 the literal, not a ShipLayer reachability proof. Skipping this step
 because "the AI gate already passed" leaves `source.external.*` blocking on its own. See
 [references/questions.md](questions.md) for the question template to use for each finding.

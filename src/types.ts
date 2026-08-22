@@ -140,8 +140,9 @@ export type AIDataSharing =
   };
 export interface ExternalServiceDecision {
   finding: string;
-  /** `reference-only` is a human statement about this literal: it is a documentation/privacy/
-   * marketing/reference link, not a runtime processor call. ShipLayer does not prove reachability.
+  /** `reference-only` is a human statement about a scanner HTTP(S) URL literal only: it is a
+   * documentation/privacy/marketing/reference link, not a runtime processor call. It cannot
+   * classify an SDK/import/entitlement. ShipLayer does not prove reachability.
    * `not-an-external-processor` remains for a real endpoint that is not third-party processing. */
   disposition: "declared-processor" | "not-an-external-processor" | "reference-only";
   /** Required when a display-name processor's canonical policy host is linked through a declared

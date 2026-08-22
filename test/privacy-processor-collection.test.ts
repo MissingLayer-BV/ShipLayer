@@ -339,6 +339,47 @@ test("same-host legacy non-processor decisions block regardless of source syntax
   }
 });
 
+test("same-host migration contradictions use structural URL host equality, including IDN, IP, and special-use hosts", async () => {
+  const cases = [
+    { label: "special-use onion", sourceHost: "vendor.onion", processorName: "vendor.onion", policyUrl: "https://vendor.onion/privacy" },
+    { label: "Unicode IDN to punycode", sourceHost: "bücher.example", processorName: "xn--bcher-kva.example", policyUrl: "https://xn--bcher-kva.example/privacy" },
+    { label: "loopback IPv4", sourceHost: "127.0.0.1", processorName: "127.0.0.1", policyUrl: "https://127.0.0.1/privacy" },
+    { label: "routable IPv4", sourceHost: "8.8.8.8", processorName: "8.8.8.8", policyUrl: "https://8.8.8.8/privacy" },
+    { label: "IPv6", sourceHost: "[2606:4700:4700::1111]", processorName: "2606:4700:4700::1111", policyUrl: "https://[2606:4700:4700::1111]/privacy" }
+  ];
+  for (const entry of cases) {
+    const endpoint = `https://${entry.sourceHost}/v1/realtime`;
+    const state = await configuredNotCollectionProcessor(
+      { name: entry.processorName, privacyPolicyUrl: entry.policyUrl, evidence: ["Sources/CdnClient.swift"] },
+      {},
+      async (root) => { await writeFile(path.join(root, "Sources/CdnClient.swift"), `let endpoint = "${endpoint}"\n`); }
+    );
+    const analysis = await analyzeRepository(state.root);
+    const finding = analysis.findings.find((item) => item.key.startsWith("endpoint:") && String(item.value).includes("/v1/realtime"));
+    assert.ok(finding, entry.label);
+    state.manifest.externalServiceDecisions.push({ finding: finding.key, disposition: "not-an-external-processor", reason: "Legacy disposition requires migration.", evidence: ["Sources/CdnClient.swift"], confirmation: "confirmed" });
+    const report = await preflight(state.root, state.manifest, false, analysis);
+    assert.equal(report.canSubmit, false, entry.label);
+    assert.match(report.results.find((item) => item.id === `source.external.${finding.key}`)?.message || "", /contradicts declared processor host/i, entry.label);
+  }
+});
+
+test("reference-only cannot clear SDK/import or another non-URL finding", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-reference-only-sdk-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  await mkdir(path.join(root, "Sources"), { recursive: true });
+  await writeFile(path.join(root, "Sources/App.swift"), "import Sentry\n");
+  const analysis = await analyzeRepository(root);
+  const finding = analysis.findings.find((item) => item.key === "thirdPartySdkCandidate:Sentry");
+  assert.ok(finding);
+  manifest.externalServiceDecisions.push({ finding: `thirdPartySdkCandidate:Sentry:${String(finding.value)}`, disposition: "reference-only", reason: "Incorrectly calls an SDK import a documentation link.", evidence: ["Sources/App.swift"], confirmation: "confirmed" });
+  assert.throws(() => validateManifest(manifest), /endpoint:https/i, "schema communicates the narrow reference-only shape");
+  const report = await preflight(root, manifest, false, analysis);
+  assert.equal(report.canSubmit, false);
+  assert.match(report.results.find((item) => item.id.includes("thirdPartySdkCandidate:Sentry"))?.message || "", /reference-only is valid only/i);
+});
+
 test("a direct request marked reference-only warns but remains a human-authoritative disposition", async () => {
   const endpoint = "https://cdn.vendor-a.com/privacy";
   const state = await configuredNotCollectionProcessor(
@@ -384,6 +425,9 @@ test("questionnaire guidance agrees with source linkage blocks for display-name 
   const draft = await readFile(path.join(generated.directory, "privacy/questionnaire-draft.md"), "utf8");
   assert.match(draft, /UNVERIFIED: marked not-collection/i);
   assert.doesNotMatch(draft, /This processor alone adds no category disclosure requirement/i);
+  const privacyPolicy = await readFile(path.join(generated.directory, "legal/privacy-policy-draft.html"), "utf8");
+  assert.match(privacyPolicy, /UNVERIFIED: the scanner detected/i);
+  assert.doesNotMatch(privacyPolicy, /No confirmed third-party processors are listed/i);
 });
 
 test("ordinary manifest URLs may use benign query strings or fragments while structured evidence remains strict", () => {
@@ -471,6 +515,55 @@ test("ordinary manifest URLs may use benign query strings or fragments while str
     notCollectionAttestation: attestation({ basis: "vendor-documentation", evidence: { kind: "processor-privacy-policy" } })
   }));
   assert.throws(() => validateManifest(strict), /credential-safe public HTTPS URL/);
+});
+
+test("credential URL normalization catches split and encoded markers without blocking documentation routes", async () => {
+  const invalidPaths = [
+    "/api/key/value",
+    "/private/key/value",
+    "/authorization/code/value",
+    "/oauth2/code/value",
+    "/api%2Bkey/value",
+    "/client%2Dsecret/value",
+    "/access_token/value"
+  ];
+  for (const pathname of invalidPaths) {
+    const manifest = readyManifest();
+    manifest.contacts.supportUrl = `https://support.vendor-a.com${pathname}`;
+    assert.throws(() => validateManifest(manifest), /credential material/i, pathname);
+  }
+  for (const suffix of ["?to%E2%80%8Bken=value", "?%2574oken=value", "?authorization%2Fcode=value", "#api%2Bkey=value", "#client%2Dsecret=value"]) {
+    const manifest = readyManifest();
+    manifest.contacts.supportUrl = `https://support.vendor-a.com/help${suffix}`;
+    assert.throws(() => validateManifest(manifest), /credential material/i, suffix);
+  }
+  for (const pathname of [
+    "/docs/how-to-rotate-client-secret",
+    "/docs/api-key/rotation",
+    "/signature/verification",
+    "/oauth/code/examples",
+    "/auth/login/callback",
+    "/password/change",
+    "/password/reset",
+    "/key/reference",
+    "/key/faq",
+    "/auth/logout"
+  ]) {
+    const manifest = readyManifest();
+    manifest.contacts.supportUrl = `https://support.vendor-a.com${pathname}?lang=en#retention`;
+    assert.doesNotThrow(() => validateManifest(manifest), pathname);
+  }
+
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-neutral-url-redaction-"));
+  await writeFile(path.join(root, "worker.ts"), [
+    "fetch('https://api.vendor-a.com/api/key/value');",
+    "fetch('https://api.vendor-a.com/oauth2/code/value');",
+    "fetch('https://api.vendor-a.com/path?to%E2%80%8Bken=value');"
+  ].join("\n"));
+  const analysis = await analyzeRepository(root);
+  const serialized = JSON.stringify(analysis);
+  assert.doesNotMatch(serialized, /(?:api\/key\/value|oauth2\/code\/value|to%E2%80%8Bken=value)/i);
+  assert.ok(analysis.findings.some((finding) => finding.key === "endpoint:https://api.vendor-a.com/:redacted"));
 });
 
 test("scanner and generated artifacts redact chained credential-shaped endpoint paths", async () => {

@@ -135,8 +135,9 @@ turned out to be a plain provider policy or docs link, not an API call — see
 > API call? If it sends data, what does it send and why?
 
 "It's just a policy/docs/support/marketing link, nothing is ever sent there" → an
-`externalServiceDecisions` entry with `disposition: "reference-only"` and a reason. This is a
-human confirmation about that one literal; ShipLayer does **not** prove source reachability. "It
+`externalServiceDecisions` entry with `disposition: "reference-only"` and a reason. It is valid
+only for that scanner HTTP(S) URL literal—not an SDK/import/entitlement finding—and is a human
+confirmation about the literal; ShipLayer does **not** prove source reachability. "It
 sends data" → declare the processor (name, purpose from Apple's fixed list, data categories,
 policy URL) and link the decision to it (`disposition: "declared-processor"`).
 `"not-an-external-processor"` is reserved for an endpoint that is genuinely not third-party
@@ -206,9 +207,10 @@ exists. Ordinary support/privacy URLs elsewhere in the manifest may have benign 
 this strict URL form (including no credential-shaped path segment followed by a value) applies only
 to structured attestation evidence. A source finding on the exact host declared by an external
 processor must not use `not-an-external-processor`, whatever its pathname or apparent call syntax.
-For a literal that a human has checked is merely policy/docs/support/marketing/reference, use
-`reference-only`; this coexists with the processor but does not claim ShipLayer proved the literal
-is unreachable. Use `declared-processor` when the human links it to actual processing, with
+For an HTTP(S) URL literal that a human has checked is merely policy/docs/support/marketing/
+reference, use `reference-only`; this coexists with the processor but does not claim ShipLayer
+proved the literal is unreachable. Never use it for an SDK/import/entitlement finding. Use
+`declared-processor` when the human links it to actual processing, with
 matching source evidence.
 
 The exact observable fact is deliberately a literal field: **does this processor and every

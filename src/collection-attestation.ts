@@ -48,6 +48,27 @@ export function normalizedSafeHost(value: string): string | undefined {
   return normalized;
 }
 
+/**
+ * Canonical host identity for structural source/processor comparisons. This deliberately has no
+ * public-policy eligibility rules: an internal, special-use, IDN, or IP host can still be the
+ * *same* host in source and a declared processor, and that contradiction must never disappear
+ * merely because the host is ineligible as public attestation evidence. URL parsing supplies
+ * IDN-to-punycode and IPv4/IPv6 canonicalization; comparisons remain exact, never suffix-based.
+ */
+export function canonicalHostForComparison(value: string): string | undefined {
+  const candidate = value.trim();
+  if (!candidate) return undefined;
+  try {
+    const isUrl = /^[a-z][a-z0-9+.-]*:\/\//i.test(candidate);
+    let authority = candidate;
+    if (!isUrl && authority.includes(":") && !authority.startsWith("[") && authority.split(":").length > 2) authority = `[${authority}]`;
+    const url = new URL(isUrl ? candidate : `https://${authority}`);
+    if (!isUrl && (url.username || url.password || url.pathname !== "/" || url.search || url.hash)) return undefined;
+    const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+    return host || undefined;
+  } catch { return undefined; }
+}
+
 /** A vendor policy must use a canonical privacy/data-protection/retention/DPA route, not a ZDR,
  * marketing, generic docs, root, or arbitrary page. This checks route shape only, never content. */
 export function hasCanonicalPrivacyEvidencePath(url: URL): boolean {

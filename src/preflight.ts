@@ -10,7 +10,8 @@ import { appReviewNotes } from "./generator.js";
 import { DEFAULT_MARKETING_FINAL_DIR } from "./marketing.js";
 import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, isLoopbackOrPrivateEndpoint, isNonProductionSourcePath, MONETIZATION_CONTRADICTION_FINDING, PURCHASE_UNAVAILABLE_CONTRADICTION_FINDING, productionEvidenceOnly, resolveContradictionOverride, storekitPurchaseEvidence, stripCodeComments } from "./evidence.js";
 import { assessNotCollectionAttestation, notCollectionAttestationIssueMessage } from "./collection-attestation.js";
-import { assessNotCollectionEvidence, declaredProcessorsForFinding } from "./not-collection-evidence.js";
+import { assessNotCollectionEvidence } from "./not-collection-evidence.js";
+import { assessExternalServiceDecision } from "./external-service-assessment.js";
 
 // Apple requires ONE uniform size per required display class, and the classes are not
 // interchangeable: a 6.5-inch capture does not satisfy the 6.9-inch slot. Each display class is
@@ -1405,25 +1406,14 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
       if (insecureOverride) add(insecureEndpointId, "warn", `Source declares insecure HTTP endpoint ${String(finding.value)}, but this is human-overridden: ${insecureOverride.reason}`, "Re-verify this override whenever the source or manifest changes.");
       else add(insecureEndpointId, "block", `Source declares insecure HTTP endpoint ${String(finding.value)}.`, `Use HTTPS or document an App Transport Security exception, or add a confirmed sourceContradictionOverride naming '${insecureEndpointId}' with a reason and evidence that intersects this finding's source.`);
     }
-    const decisions = manifest.externalServiceDecisions.filter((item) => item.finding === findingId);
-    if (decisions.length !== 1) { add(`source.external.${findingId}`, "block", `Source heuristic '${findingId}' must have exactly one unambiguous processor/disposition decision.`, "Keep one confirmed decision: declared-processor for actual processing, reference-only for a human-confirmed documentation/privacy/marketing/reference literal, or not-an-external-processor only for a real non-processing endpoint."); continue; }
-    const decision = decisions[0];
-    if (decision.confirmation !== "confirmed" || !decision.reason || !decision.evidence.length) { add(`source.external.${findingId}`, "block", `Source heuristic '${findingId}' has no confirmed processor/disposition decision.`, "Declare the processor or explicitly record why it is not an external processor, with source evidence."); continue; }
-    const sourcePaths = new Set(finding.evidence.map((item) => item.source)); const decisionEvidence = await validEvidencePaths(repository, decision.evidence);
-    if (!intersects(decisionEvidence, sourcePaths)) { add(`source.external.${findingId}`, "block", `Disposition for '${findingId}' must cite an existing source evidence file that matches the scanner finding.`, "Reference exact contained, non-symlinked source evidence."); continue; }
-    const sameHostProcessors = declaredProcessorsForFinding(manifest, finding);
-    if (decision.disposition === "not-an-external-processor" && sameHostProcessors.length) {
-      add(`source.external.${findingId}`, "block", `Disposition for '${findingId}' is not-an-external-processor, but its exact host is declared by ${sameHostProcessors.map((processor) => processor.name).join(", ")}.`, "Migrate this same-host finding to reference-only only when a human confirms this literal is solely a documentation/privacy/marketing/reference link, or to declared-processor if it represents processing. ShipLayer does not infer reachability from pathname or request syntax.");
-      continue;
-    }
+    const assessment = await assessExternalServiceDecision(repository, manifest, finding);
+    if (!assessment.usable || !assessment.decision) { add(`source.external.${findingId}`, "block", `Source heuristic '${findingId}' is unresolved: ${assessment.issue || "its disposition cannot be used"}.`, assessment.remediation); continue; }
+    const decision = assessment.decision;
     if (decision.disposition === "reference-only") {
       if (finding.evidence.some((item) => item.runtimeNetworkRequest)) add(`source.external.${findingId}.runtime-reference`, "warn", `Source syntax places '${findingId}' in a recognizable network-request call, but a human confirmed this literal is reference-only. ShipLayer does not prove reachability; re-verify this disposition when source changes.`);
       add(`source.external.${findingId}`, "pass", `Source heuristic '${findingId}' has a human-confirmed reference-only disposition.`);
-    } else if (decision.disposition === "declared-processor") {
-      const linkedProcessor = manifest.externalProcessors.find((processor) => processor.confirmation === "confirmed" && (!decision.processorName || processor.name === decision.processorName) && intersects(new Set(processor.evidence || []), decisionEvidence));
-      if (!linkedProcessor || !intersects(await validEvidencePaths(repository, linkedProcessor.evidence || []), decisionEvidence)) add(`source.external.${findingId}`, "block", `Processor decision for '${findingId}' is not linked to a confirmed external processor evidence record.`, "Add the matching external processor with confirmed data categories and evidence.");
-      else add(`source.external.${findingId}`, "pass", `Source heuristic '${findingId}' has a human-confirmed processor disposition.`);
-    } else add(`source.external.${findingId}`, "pass", `Source heuristic '${findingId}' has a human-confirmed non-processor disposition.`);
+    } else if (decision.disposition === "declared-processor") add(`source.external.${findingId}`, "pass", `Source heuristic '${findingId}' has a human-confirmed processor disposition.`);
+    else add(`source.external.${findingId}`, "pass", `Source heuristic '${findingId}' has a human-confirmed non-processor disposition.`);
   }
   for (const processor of manifest.externalProcessors) {
     // Whether this processor's receipt of data is "collection" under Apple's App Privacy

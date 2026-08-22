@@ -666,7 +666,13 @@
         "confirmation": {
           "$ref": "#/$defs/confirmation"
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "disposition": { "const": "reference-only" } }, "required": ["disposition"] },
+          "then": { "properties": { "finding": { "pattern": "^endpoint:https?://" } } }
+        }
+      ]
     },
     "sourceContradictionOverride": {
       "type": "object",
