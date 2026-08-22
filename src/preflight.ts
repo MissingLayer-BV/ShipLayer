@@ -9,6 +9,9 @@ import { validateAscPrivateKey } from "./asc.js";
 import { appReviewNotes } from "./generator.js";
 import { DEFAULT_MARKETING_FINAL_DIR } from "./marketing.js";
 import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, isLoopbackOrPrivateEndpoint, isNonProductionSourcePath, MONETIZATION_CONTRADICTION_FINDING, PURCHASE_UNAVAILABLE_CONTRADICTION_FINDING, productionEvidenceOnly, resolveContradictionOverride, storekitPurchaseEvidence, stripCodeComments } from "./evidence.js";
+import { assessNotCollectionAttestation, notCollectionAttestationIssueMessage } from "./collection-attestation.js";
+import { assessNotCollectionEvidence } from "./not-collection-evidence.js";
+import { assessExternalServiceReadiness } from "./external-service-assessment.js";
 
 // Apple requires ONE uniform size per required display class, and the classes are not
 // interchangeable: a 6.5-inch capture does not satisfy the 6.9-inch slot. Each display class is
@@ -785,10 +788,15 @@ function confirmationChecks(manifest: ShipLayerManifest, add: Add): void {
     else if (value === "confirmed" || value === "not-applicable") add(`confirmation.${key}`, "pass", `${key} declaration is ${value}.`);
     else add(`confirmation.${key}`, "block", `${key} declaration requires explicit human confirmation.`, "Confirm only after reviewing the App Store Connect/legal requirement.");
   }
-  for (const item of [...manifest.dataProcessing, ...manifest.externalProcessors]) {
-    if (item.confirmation === "confirmed" || item.confirmation === "not-applicable") continue;
-    const name = "name" in item ? item.name : item.category;
-    add(`privacy.${name}`, "block", `${name} requires human privacy confirmation.`, "Confirm collection, use, tracking, identity linkage, and third-party processing.");
+  for (const item of manifest.dataProcessing) {
+    if (item.confirmation !== "confirmed") add(`privacy.${item.category}`, "block", `${item.category} is a declared App Privacy data category but is not human-confirmed.`, "Confirm collection, use, tracking, and identity linkage, or remove this dataProcessing row if it is not applicable. A declared data category cannot use confirmation: not-applicable.");
+  }
+  // A row in externalProcessors is itself a claim that the app uses that processor. Unlike a
+  // dataProcessing row, it therefore cannot be marked "not-applicable": that value used to let
+  // a declared processor bypass both this confirmation gate and the collection-determination
+  // checks below, producing a false-green canSubmit result.
+  for (const processor of manifest.externalProcessors) if (processor.confirmation !== "confirmed") {
+    add(`privacy.${processor.name}`, "block", `${processor.name} is a declared external processor but is not human-confirmed.`, "Confirm that this processor is used and its actual data handling, or remove the row if it is not applicable to this app. A declared processor cannot use confirmation: not-applicable.");
   }
   for (const item of manifest.dataProcessing) if (item.confirmation === "confirmed" && (!item.purpose.length || item.linkedToIdentity === "unknown" || item.usedForTracking === "unknown")) add(`privacy.${item.category}.details`, "block", `${item.category} is marked confirmed but purpose, identity linkage, or tracking is still unknown.`, "Record explicit App Privacy answers before submission.");
   for (const item of manifest.externalProcessors) if (item.confirmation === "confirmed" && (!item.purpose || !item.dataCategories.length)) add(`privacy.${item.name}.details`, "block", `${item.name} is marked confirmed but its purpose or data categories are incomplete.`, "Record explicit processor data handling before submission.");
@@ -1389,7 +1397,8 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
     else add(`source.permission.${key}.evidence`, "pass", `${key} manifest evidence matches source evidence.`);
   }
   for (const permission of manifest.permissions) if (!report.findings.some((finding) => finding.key === `permission:${permission.key}`) && !(permission.evidence || []).length) add(`manifest.permission.${permission.key}`, "warn", `${permission.key} has no scanner evidence or manifest evidence path.`, "Verify the purpose string and add source evidence if this permission is used.");
-  for (const finding of report.findings.filter((item) => item.key.startsWith("thirdPartySdkCandidate:") || item.key.startsWith("endpoint:"))) {
+  const externalReadiness = await assessExternalServiceReadiness(repository, manifest, report);
+  for (const { finding, assessment } of externalReadiness.findings) {
     const findingId = externalFindingId(finding);
     if (finding.key.startsWith("endpoint:http://") && !isLoopbackOrPrivateEndpoint(finding.key.slice("endpoint:".length))) {
       const insecureEndpointId = `source.insecure-endpoint.${findingId}`;
@@ -1398,17 +1407,18 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
       if (insecureOverride) add(insecureEndpointId, "warn", `Source declares insecure HTTP endpoint ${String(finding.value)}, but this is human-overridden: ${insecureOverride.reason}`, "Re-verify this override whenever the source or manifest changes.");
       else add(insecureEndpointId, "block", `Source declares insecure HTTP endpoint ${String(finding.value)}.`, `Use HTTPS or document an App Transport Security exception, or add a confirmed sourceContradictionOverride naming '${insecureEndpointId}' with a reason and evidence that intersects this finding's source.`);
     }
-    const decision = manifest.externalServiceDecisions.find((item) => item.finding === findingId);
-    if (!decision || decision.confirmation !== "confirmed" || !decision.reason || !decision.evidence.length) { add(`source.external.${findingId}`, "block", `Source heuristic '${findingId}' has no confirmed processor/disposition decision.`, "Declare the processor or explicitly record why it is not an external processor, with source evidence."); continue; }
-    const sourcePaths = new Set(finding.evidence.map((item) => item.source)); const decisionEvidence = await validEvidencePaths(repository, decision.evidence);
-    if (!intersects(decisionEvidence, sourcePaths)) { add(`source.external.${findingId}`, "block", `Disposition for '${findingId}' must cite an existing source evidence file that matches the scanner finding.`, "Reference exact contained, non-symlinked source evidence."); continue; }
-    if (decision.disposition === "declared-processor") {
-      const linkedProcessor = manifest.externalProcessors.find((processor) => processor.confirmation === "confirmed" && intersects(new Set(processor.evidence || []), decisionEvidence));
-      if (!linkedProcessor || !intersects(await validEvidencePaths(repository, linkedProcessor.evidence || []), decisionEvidence)) add(`source.external.${findingId}`, "block", `Processor decision for '${findingId}' is not linked to a confirmed external processor evidence record.`, "Add the matching external processor with confirmed data categories and evidence.");
-      else add(`source.external.${findingId}`, "pass", `Source heuristic '${findingId}' has a human-confirmed processor disposition.`);
-    } else add(`source.external.${findingId}`, "pass", `Source heuristic '${findingId}' has a human-confirmed non-processor disposition.`);
+    if (!assessment.usable || !assessment.decision) { add(`source.external.${findingId}`, "block", `Source heuristic '${findingId}' is unresolved: ${assessment.issue || "its disposition cannot be used"}.`, assessment.remediation); continue; }
+    const decision = assessment.decision;
+    if (decision.disposition === "reference-only") {
+      if (finding.evidence.some((item) => item.runtimeNetworkRequest)) add(`source.external.${findingId}.runtime-reference`, "warn", `Source syntax places '${findingId}' in a recognizable network-request call, but a human confirmed this literal is reference-only. ShipLayer does not prove reachability; re-verify this disposition when source changes.`);
+      add(`source.external.${findingId}`, "pass", `Source heuristic '${findingId}' has a human-confirmed reference-only disposition.`);
+    } else if (decision.disposition === "declared-processor") add(`source.external.${findingId}`, "pass", `Source heuristic '${findingId}' has a human-confirmed processor disposition.`);
+    else add(`source.external.${findingId}`, "pass", `Source heuristic '${findingId}' has a human-confirmed non-processor disposition.`);
   }
-  for (const processor of manifest.externalProcessors.filter((item) => item.confirmation === "confirmed")) {
+  for (const _decision of externalReadiness.staleReferenceOnly) {
+    add("source.external.stale-reference-only", "block", "A reference-only decision does not match a current scanner HTTP(S) endpoint finding.", "Remove the stale reference-only decision or update it to the exact current scanner endpoint finding with matching source evidence. ShipLayer cannot treat an unbound reference-only declaration as resolved.");
+  }
+  for (const processor of manifest.externalProcessors) {
     // Whether this processor's receipt of data is "collection" under Apple's App Privacy
     // definition is a legal judgment ShipLayer must route to a human, never decide itself — see
     // Apple's own definition (developer.apple.com/app-store/app-privacy-details/): data
@@ -1418,11 +1428,22 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
     // edge traffic and read-only API calls. `collectionDetermination` is optional and unset/
     // "needs-human-confirmation" by default; absence must NEVER be read as "not-collection" — it
     // blocks exactly like every other unconfirmed fact in this manifest until a human answers.
+    // Collection determinations only carry weight after the processor row itself has been
+    // confirmed. Do not turn an unconfirmed (or incorrectly not-applicable) proposal into a
+    // passing App Privacy conclusion merely because it happens to contain a determination.
+    if (processor.confirmation !== "confirmed") {
+      add(`privacy.processor.${processor.name}.collection-determination`, "block", `${processor.name}'s collection determination cannot be relied on because the declared processor is not human-confirmed.`, "Confirm the processor first, then record whether its receipt of data is App Privacy collection and, for not-collection, the structured real-time-service attestation and evidence.");
+      continue;
+    }
     const determination = processor.collectionDetermination;
     if (determination !== "collection" && determination !== "not-collection") { add(`privacy.processor.${processor.name}.collection-determination`, "block", `${processor.name} has no human-confirmed determination of whether its receipt of data is "collection" under Apple's App Privacy definition.`, "Set externalProcessors[].collectionDetermination to 'collection' or 'not-collection', based on whether this processor retains data beyond servicing the request in real time — see references/questions.md."); continue; }
     if (determination === "not-collection") {
-      if (!processor.collectionDeterminationReason || !processor.collectionDeterminationReason.trim().length) { add(`privacy.processor.${processor.name}.collection-determination`, "block", `${processor.name} is declared 'not-collection' but records no reason.`, "Record why this processor's receipt of data falls under Apple's real-time-service exception (transmitted only to service the request, not retained)."); continue; }
-      add(`privacy.processor.${processor.name}.collection-determination`, "pass", `${processor.name} is human-confirmed not to constitute "collection" under Apple's App Privacy definition: ${processor.collectionDeterminationReason}`);
+      const attestation = processor.notCollectionAttestation;
+      const assessment = assessNotCollectionAttestation(attestation);
+      if (assessment.issue || !attestation) { add(`privacy.processor.${processor.name}.collection-determination`, "block", `${processor.name} is declared 'not-collection' but ${notCollectionAttestationIssueMessage(assessment.issue || "missing")}.`, "Record a literal human-confirmed real-time-service attestation (dataNotRetainedBeyondRealTimeService: true), a checked evidence basis, and a non-secret evidence reference. Free-form audit notes cannot clear this blocker."); continue; }
+      const evidenceGate = assessNotCollectionEvidence(manifest, report, processor);
+      if (evidenceGate.issue) { add(`privacy.processor.${processor.name}.collection-determination`, "block", `${processor.name}'s structured not-collection attestation cannot use its evidence: ${evidenceGate.issue}.`, evidenceGate.remediation); continue; }
+      add(`privacy.processor.${processor.name}.collection-determination`, "pass", `${processor.name} is human-confirmed not to constitute "collection" under Apple's App Privacy definition, based on a structured real-time-service attestation (${attestation.basis}; ${notCollectionEvidenceLabel(attestation.evidence)}). ShipLayer verified ${evidenceGate.verified}; it did not retrieve evidence or infer the retention fact from document/source text.`);
       continue; // a confirmed non-collection processor makes no App Privacy claim, so no dataProcessing row can or should be demanded for it
     }
     add(`privacy.processor.${processor.name}.collection-determination`, "pass", `${processor.name} is human-confirmed to constitute "collection" under Apple's App Privacy definition.`);
@@ -1468,6 +1489,12 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
   const manifestIds = new Set(manifest.monetization.type === "subscriptions" || manifest.monetization.type === "non-consumables" ? manifest.monetization.products.map((product) => product.productId) : []);
   for (const id of sourceIds) if (!manifestIds.has(id)) add(`storekit.${id}`, "block", `StoreKit product ${id} is missing from monetization manifest.`);
   for (const id of manifestIds) if (sourceIds.size && !sourceIds.has(id)) add(`manifest.${id}`, "block", `Manifest product ${id} is absent from StoreKit evidence.`);
+}
+
+function notCollectionEvidenceLabel(evidence: NonNullable<ShipLayerManifest["externalProcessors"][number]["notCollectionAttestation"]>["evidence"]): string {
+  if (evidence.kind === "repo-path") return "legacy repository evidence (which cannot clear readiness)";
+  if (evidence.kind === "public-url") return "a legacy public URL (which cannot clear readiness)";
+  return "the processor privacy-policy URL";
 }
 
 function stringValues(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : typeof value === "string" ? [value] : []; }

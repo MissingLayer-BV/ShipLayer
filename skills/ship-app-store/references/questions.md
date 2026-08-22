@@ -134,12 +134,16 @@ turned out to be a plain provider policy or docs link, not an API call — see
 > actually sends data there, or is it just a link (e.g. to a policy page) that never fires an
 > API call? If it sends data, what does it send and why?
 
-"It's just a link, nothing is ever sent there" → an `externalServiceDecisions` entry with
-`disposition: "not-an-external-processor"` and a `reason` saying so — **that exact string**;
-`"not-a-processor"` is not a valid value and fails schema validation. "It sends data" → declare
-the processor (name, purpose from Apple's fixed list, data categories, policy URL) and link the
-decision to it (`disposition: "declared-processor"`). Never leave the finding undeclared — it
-blocks either way until there's a confirmed disposition.
+"It's just a policy/docs/support/marketing link, nothing is ever sent there" → an
+`externalServiceDecisions` entry with `disposition: "reference-only"` and a reason. It is valid
+only for that scanner HTTP(S) URL literal—not an SDK/import/entitlement finding—and is a human
+confirmation about the literal; ShipLayer does **not** prove source reachability. "It
+sends data" → declare the processor (name, purpose from Apple's fixed list, data categories,
+policy URL) and link the decision to it (`disposition: "declared-processor"`).
+`"not-an-external-processor"` is reserved for an endpoint that is genuinely not third-party
+processing. If its exact host is declared by an external processor, it is a contradiction and
+blocks; migrate an old docs-link decision to `reference-only` rather than silently reinterpreting
+it. Never leave the finding undeclared — it blocks until there is a confirmed disposition.
 
 **Declaring the processor is not the last question about it.** A confirmed `externalProcessors[]`
 row with `dataCategories` set immediately needs its own `collectionDetermination` answer (next
@@ -172,14 +176,54 @@ marketing description:
 >    agreement for a stated retention/logging policy, or ask them directly. "I assume not" does
 >    not count as an answer here.
 
-"Nothing is retained past servicing the request" (confirmed from the vendor's documented
-no-logging/edge-only behavior, or your own backend's code) → `collectionDetermination:
-"not-collection"`, with `collectionDeterminationReason` stating the concrete, checked basis (not
-"I think so") — this clears `privacy.processor.<name>.collection-determination` and, for this
-processor, no `dataProcessing[]` row is required at all. "Yes, it's retained" (or you cannot find
-or confirm a real no-retention basis) → `collectionDetermination: "collection"` — this now
-requires a matching confirmed `dataProcessing[]` row for every one of that processor's
-`dataCategories` (see "Data collection and tracking" below).
+"Nothing is retained past servicing the request" only after a human has checked a real source →
+`collectionDetermination: "not-collection"` **and** one of these explicit structured
+attestations:
+
+```yaml
+# Vendor documentation: use the row's canonical public privacy policy, not a generic vendor link.
+notCollectionAttestation:
+  dataNotRetainedBeyondRealTimeService: true
+  basis: vendor-documentation
+  evidence:
+    kind: processor-privacy-policy
+  confirmation: confirmed
+```
+
+The processor's `privacyPolicyUrl` itself is the one automatic evidence form: it must be public
+HTTPS with no userinfo, query string, or fragment; it cannot be loopback/private/reserved/IDN; its
+host must exactly match the structured processor host or an exact scanner endpoint that a confirmed
+`externalServiceDecision.processorName` maps to this row. Its route must be a canonical
+privacy/data-protection/data-collection/retention/DPA route — a root page, marketing/docs page,
+generic ZDR page, another vendor, a parent domain, or a different tenant on shared hosting does not
+clear the gate. ShipLayer verifies only that URL safety and exact linkage; it does not fetch, read,
+or prove the policy's retention terms. Repository/source paths cannot safely prove runtime
+reachability or retention, so legacy `first-party-implementation`/`repo-path` evidence is accepted
+only to return a migration blocker and never clears readiness. Do not use an arbitrary `public-url`, a generic
+no-training/ZDR link, or another vendor's policy as evidence. Contracts/DPAs and written vendor
+confirmations are confidential and cannot safely clear this v0.1 gate: keep them outside the
+release manifest and leave the row pending or record `collection` until a safe evidence model
+exists. Ordinary support/privacy URLs elsewhere in the manifest may have benign queries/fragments;
+this strict URL form (including no credential-shaped path segment followed by a value) applies only
+to structured attestation evidence. A source finding on the exact host declared by an external
+processor must not use `not-an-external-processor`, whatever its pathname or apparent call syntax.
+For an HTTP(S) URL literal that a human has checked is merely policy/docs/support/marketing/
+reference, use `reference-only`; this coexists with the processor but does not claim ShipLayer
+proved the literal is unreachable. Never use it for an SDK/import/entitlement finding. Use
+`declared-processor` when the human links it to actual processing, with
+matching source evidence.
+
+The exact observable fact is deliberately a literal field: **does this processor and every
+downstream recipient avoid retaining the transmitted data beyond real-time servicing of the
+request?** Do not set it to `true` on an assumption, from a generic no-training/ZDR claim, or to
+clear a blocker. `collectionDeterminationReason`, if retained, is an optional audit note only;
+ShipLayer does not parse or validate it as semantic proof in any language. A missing, pending,
+false, unconfirmed, mismatched, or unsupported attestation blocks safely.
+
+"Yes, it's retained" (or you cannot find and personally confirm the observable no-retention
+fact) → `collectionDetermination: "collection"` — this now requires a matching confirmed
+`dataProcessing[]` row for every one of that processor's `dataCategories` (see "Data collection
+and tracking" below).
 
 **Never record either answer to make the blocker disappear rather than because it's true.**
 Guessing `not-collection` when you don't actually know is the exact failure this field exists to

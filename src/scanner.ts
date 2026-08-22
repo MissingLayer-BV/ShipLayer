@@ -3,6 +3,7 @@ import { parse } from "yaml";
 import { readText, relative, walkRepository } from "./fs.js";
 import type { AnalysisReport, Evidence, Finding } from "./types.js";
 import { isXCUITestSourcePath, stripCodeComments } from "./evidence.js";
+import { redactedCredentialPath, urlContainsCredentialMaterial } from "./secrets.js";
 
 const PERMISSION_KEYS = ["NSCameraUsageDescription", "NSPhotoLibraryUsageDescription", "NSPhotoLibraryAddUsageDescription", "NSMicrophoneUsageDescription", "NSLocationWhenInUseUsageDescription", "NSUserTrackingUsageDescription", "NSContactsUsageDescription", "NSFaceIDUsageDescription"];
 const APPLE_FRAMEWORKS = new Set(["URLSession", "StoreKit", "UserNotifications", "Photos", "AVFoundation", "CoreLocation", "Contacts"]);
@@ -63,7 +64,13 @@ export async function analyzeRepository(repository: string): Promise<AnalysisRep
     if (["bundleId", "version", "build", "deploymentTarget", "deviceFamily", "encryption"].includes(key) && /\$\([^)]*\)/.test(normalized)) return;
     const finalSegment = normalized.split(".").at(-1) || "";
     const detectedKey = key === "endpoint" ? `endpoint:${normalized}` : key === "bundleId" && /(?:ui)?tests$/i.test(finalSegment) ? "testBundleId" : key;
-    (settings[detectedKey] ||= []).push({ value: normalized, evidence });
+    // Every endpoint ingestion route (source, Info.plist, and build settings) must retain the
+    // same sanitized value in its evidence excerpt. Keeping a raw build-setting/XML excerpt
+    // would otherwise leak a credential even though the finding key is normalized.
+    const safeEvidence = key === "endpoint" && evidence.excerpt
+      ? { ...evidence, excerpt: `Endpoint: ${normalized}` }
+      : evidence;
+    (settings[detectedKey] ||= []).push({ value: normalized, evidence: safeEvidence });
   };
   const scanText = async (file: string): Promise<void> => {
     const content = await readText(file); const source = relative(root, file);
@@ -125,12 +132,14 @@ export async function analyzeRepository(repository: string): Promise<AnalysisRep
       // exists inside a `//`/`/* */` comment (e.g. documenting a local dev-proxy flag) is not
       // live code, and must not become an endpoint/insecure-endpoint finding that then has no
       // legitimate way to be cleared short of deleting the comment.
-      for (const match of stripCodeComments(content).matchAll(/https?:\/\/[^\s"'<>`]+/gi)) {
+      const executableSource = stripCodeComments(content);
+      for (const match of executableSource.matchAll(/https?:\/\/[^\s"'<>`]+/gi)) {
         const dynamicAt = match[0].indexOf("${");
         const literal = dynamicAt >= 0 ? match[0].slice(0, dynamicAt) : match[0];
         const endpoint = normalizeEndpoint(literal.replace(/[),.;]+$/, ""));
         if (!endpoint) { questions.add(`${source} contains a malformed HTTP(S) endpoint literal; inspect the contained source manually.`); continue; }
-        push("endpoint", endpoint, { source, excerpt: `Endpoint: ${endpoint}`, confidence: "low", kind: "source-heuristic" });
+        const runtimeNetworkRequest = isRuntimeNetworkRequestLiteral(executableSource, match.index ?? 0, nativeSource, webRuntimeSource);
+        push("endpoint", endpoint, { source, excerpt: `${runtimeNetworkRequest ? "Runtime network request endpoint" : "Endpoint"}: ${endpoint}`, confidence: runtimeNetworkRequest ? "medium" : "low", kind: "source-heuristic", runtimeNetworkRequest });
         if (dynamicAt >= 0) questions.add(`${source} contains a dynamic endpoint expression beginning ${endpoint}; verify the resolved destination manually.`);
       }
     }
@@ -455,6 +464,30 @@ function pbxSettingsText(settings: Map<string, string>, secondaryTarget = false)
 
 function isAlternateConfigurationName(name: string): boolean { return /(?:^|[ _.-])(?:debug|staging|development|dev)(?:$|[ _.-])/i.test(name) || /^(?:debug|staging|development|dev)$/i.test(name); }
 function stripProjectSettingComments(content: string): string { return content.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|\s)\/\/.*$/gm, "$1"); }
+
+/**
+ * Marks a literal only when it appears directly inside a bounded, recognizable request call.
+ * This records source syntax, not reachability: a human still decides the endpoint's processor
+ * disposition and the structured attestation still carries the retention fact. The distinction is
+ * intentionally narrow because a docs-looking path can be a real API, while a bare policy URL is
+ * not enough to call a runtime request.
+ */
+function isRuntimeNetworkRequestLiteral(content: string, literalIndex: number, nativeSource: boolean, webRuntimeSource: boolean): boolean {
+  const before = content.slice(Math.max(0, literalIndex - 640), literalIndex);
+  if (nativeSource) {
+    // Direct `URLSession.shared.dataTask(with: URL(string: "https://…")!)`,
+    // `data(from:)`, `uploadTask`, and `downloadTask` forms. Do not infer through variables or
+    // arbitrary control flow: those require a human endpoint disposition rather than a heuristic.
+    if (/\bURLSession(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)*\s*\.\s*(?:dataTask|data|uploadTask|downloadTask)\s*\([^;{}]{0,640}$/s.test(before)) return true;
+  }
+  if (webRuntimeSource) {
+    // Direct fetch/request/axios calls, plus the common axios/request object `url`/`uri` form.
+    // A literal assigned to a link or documentation constant intentionally does not match.
+    if (/(?:\b(?:await\s+)?(?:fetch|request|axios(?:\s*\.\s*(?:request|get|post|put|patch|delete|head))?)\s*\(\s*["'`]?)$/s.test(before)) return true;
+    if (/\b(?:axios(?:\s*\.\s*request)?|request)\s*\(\s*\{[^{}]{0,480}\b(?:url|uri)\s*:\s*["'`]?$/s.test(before)) return true;
+  }
+  return false;
+}
 function normalizeEndpoint(value: string): string {
   const raw = value.trim().replace(/[),.;`]+$/, "");
   try {
@@ -465,25 +498,12 @@ function normalizeEndpoint(value: string): string {
     // identity without persisting credentials or opaque customer data.
     const parameterNames = [...new Set([...url.searchParams.keys()])].sort();
     const query = parameterNames.length ? `?${parameterNames.map((name) => encodeURIComponent(name)).join("&")}` : "";
-    return `${url.protocol.toLowerCase()}//${url.host.toLowerCase()}${redactedEndpointPath(url.pathname)}${query}`;
+    // Userinfo and credential-bearing query/fragment values make the entire literal sensitive,
+    // even when no path marker identifies which segment holds the value. Do not preserve a raw
+    // path merely because the credential happened to be carried elsewhere in the same URL.
+    const safePath = redactedCredentialPath(url.pathname) || (urlContainsCredentialMaterial(url) ? "/:redacted" : url.pathname);
+    return `${url.protocol.toLowerCase()}//${url.host.toLowerCase()}${safePath}${query}`;
   } catch { return ""; }
-}
-function redactedEndpointPath(pathname: string): string {
-  const segments = pathname.split("/");
-  return segments.map((segment, index) => {
-    const decoded = safelyDecode(segment);
-    const previous = safelyDecode(segments[index - 1] || "");
-    return isCredentialLikePathSegment(decoded) || /(?:webhook|token|secret|api[-_]?key|access[-_]?token|auth|dsn)$/i.test(previous) ? ":redacted" : segment;
-  }).join("/") || "/";
-}
-function safelyDecode(value: string): string { try { return decodeURIComponent(value); } catch { return value; } }
-function isCredentialLikePathSegment(value: string): boolean {
-  if (!value) return false;
-  if (/(?:api[-_]?key|access[-_]?token|auth[-_]?token|secret|password|private[-_]?key|^sk-)/i.test(value)) return true;
-  // UUIDs, opaque bearer strings, and high-entropy-looking opaque values are
-  // not useful evidence. Keep the path shape but never echo their contents.
-  const opaque = /^[A-Za-z0-9_-]+$/.test(value) && value.length >= 16;
-  return opaque && (/[A-Za-z]/.test(value) && /\d/.test(value) || /^[0-9a-f]{24,}$/i.test(value) || new Set(value).size >= 8);
 }
 
 export function findValue(report: AnalysisReport, key: string): string | undefined { const value = report.findings.find((finding) => finding.key === key)?.value; return typeof value === "string" ? value : undefined; }
