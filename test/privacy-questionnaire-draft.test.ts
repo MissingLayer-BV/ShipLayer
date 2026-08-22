@@ -34,6 +34,38 @@ function hasBlock(report: Awaited<ReturnType<typeof preflight>>, id: string): bo
   return report.results.some((item) => item.id === id && item.severity === "block");
 }
 
+const INVALID_NOT_COLLECTION_REASONS = [
+  "TODO",
+  "I think so",
+  "x",
+  "Request logs are retained forever.",
+  "Requests are stored for 30 days.",
+  "Logs are enabled.",
+  "The processor keeps a permanent request log.",
+  "No cache; requests are stored for 30 days.",
+  "ＴＯＤＯ request",
+  "T.O.D.O request",
+  "T O D O request",
+  "T\u200BODO request",
+  "T\u0000ODO request",
+  "I-think-so request",
+  "I_think_so request",
+  "N/A request",
+  "unknown request",
+  "x request"
+];
+
+const VALID_NOT_COLLECTION_REASONS = [
+  "No data retention.",
+  "Nothing is persisted.",
+  "No records are kept.",
+  "Ephemeral in-memory only.",
+  "Keine Anfrageprotokolle.",
+  "Aucune journalisation des requêtes.",
+  "The response appears only in memory and is discarded immediately.",
+  "No request logs."
+];
+
 test("questionnaire permits only conditional Data Not Collected guidance for fully confirmed not-collection processors", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-questionnaire-all-not-"));
   const manifest = readyManifest();
@@ -164,24 +196,26 @@ test("an unconfirmed dataProcessing row is explicitly unresolved in the question
   assert.match(draft, /Do not select .Data Not Collected. while any category above remains declared/);
 });
 
-test("questionnaire uses the same not-collection reason policy as preflight", async () => {
+test("questionnaire applies the full not-collection reason corpus consistently with preflight", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-questionnaire-reason-quality-"));
   const manifest = readyManifest();
   await writeReadyAssets(root, manifest);
   manifest.externalProcessors = [processor("cdn.example.com", ["Product Interaction"], { collectionDetermination: "not-collection" })];
 
-  for (const reason of ["TODO", "I think so", "x"]) {
+  for (const reason of INVALID_NOT_COLLECTION_REASONS) {
     manifest.externalProcessors[0].collectionDeterminationReason = reason;
     const generated = await questionnaire(root, manifest);
     assert.ok(hasBlock(generated.report, "privacy.processor.cdn.example.com.collection-determination"), reason);
     assert.equal(generated.report.canSubmit, false, reason);
-    assert.match(generated.draft, /UNVERIFIED: marked not-collection but the reason is (?:a placeholder|uncertain)/, reason);
+    assert.match(generated.draft, /UNVERIFIED: marked not-collection but the reason (?:is a placeholder|is uncertain|affirmatively describes retention)/, reason);
     assert.doesNotMatch(generated.draft, /Human-confirmed not to be App Privacy collection/, reason);
   }
 
-  manifest.externalProcessors[0].collectionDeterminationReason = "No request logs.";
-  const generated = await questionnaire(root, manifest);
-  assert.equal(generated.report.summary.block, 0, generated.report.results.filter((item) => item.severity === "block").map((item) => item.message).join("; "));
-  assert.equal(generated.report.canSubmit, true);
-  assert.match(generated.draft, /Human-confirmed not to be App Privacy collection for this processor: No request logs/);
+  for (const reason of VALID_NOT_COLLECTION_REASONS) {
+    manifest.externalProcessors[0].collectionDeterminationReason = reason;
+    const generated = await questionnaire(root, manifest);
+    assert.equal(generated.report.summary.block, 0, `${reason}: ${generated.report.results.filter((item) => item.severity === "block").map((item) => item.message).join("; ")}`);
+    assert.equal(generated.report.canSubmit, true, reason);
+    assert.match(generated.draft, /Human-confirmed not to be App Privacy collection for this processor/, reason);
+  }
 });

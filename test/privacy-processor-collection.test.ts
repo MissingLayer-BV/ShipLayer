@@ -14,8 +14,41 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { preflight } from "../src/preflight.js";
+import { assessCollectionDeterminationReason } from "../src/privacy.js";
 import { readyManifest, writeReadyAssets } from "./helpers.js";
 import type { ShipLayerManifest } from "../src/types.js";
+
+const INVALID_NOT_COLLECTION_REASONS = [
+  "TODO",
+  "I think so",
+  "x",
+  "Request logs are retained forever.",
+  "Requests are stored for 30 days.",
+  "Logs are enabled.",
+  "The processor keeps a permanent request log.",
+  "No cache; requests are stored for 30 days.",
+  "ＴＯＤＯ request",
+  "T.O.D.O request",
+  "T O D O request",
+  "T\u200BODO request",
+  "T\u0000ODO request",
+  "I-think-so request",
+  "I_think_so request",
+  "N/A request",
+  "unknown request",
+  "x request"
+];
+
+const VALID_NOT_COLLECTION_REASONS = [
+  "No data retention.",
+  "Nothing is persisted.",
+  "No records are kept.",
+  "Ephemeral in-memory only.",
+  "Keine Anfrageprotokolle.",
+  "Aucune journalisation des requêtes.",
+  "The response appears only in memory and is discarded immediately.",
+  "No request logs."
+];
 
 function processor(overrides: Partial<ShipLayerManifest["externalProcessors"][number]> = {}): ShipLayerManifest["externalProcessors"][number] {
   return {
@@ -78,24 +111,31 @@ test("collectionDetermination 'not-collection' with a whitespace-only reason sti
   assert.ok(report.results.some((item) => item.id === "privacy.processor.cdn.example.com.collection-determination" && item.severity === "block"));
 });
 
-test("not-collection reasons reject placeholders and uncertainty but accept concise concrete request-handling facts", async () => {
+test("not-collection reason assessment normalizes placeholder/uncertainty variants, rejects contradictions, and accepts non-English or concise factual text", () => {
+  for (const reason of INVALID_NOT_COLLECTION_REASONS) assert.notEqual(assessCollectionDeterminationReason(reason).issue, undefined, reason);
+  for (const reason of VALID_NOT_COLLECTION_REASONS) assert.equal(assessCollectionDeterminationReason(reason).issue, undefined, reason);
+});
+
+test("preflight rejects weak or contradictory not-collection reasons but accepts the full valid corpus", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-collection-reason-quality-"));
   const manifest = readyManifest();
   await writeReadyAssets(root, manifest);
   manifest.externalProcessors.push(processor({ collectionDetermination: "not-collection" }));
 
-  for (const reason of ["TODO", "I think so", "x"]) {
+  for (const reason of INVALID_NOT_COLLECTION_REASONS) {
     manifest.externalProcessors[0].collectionDeterminationReason = reason;
     const report = await preflight(root, manifest);
     assert.ok(report.results.some((item) => item.id === "privacy.processor.cdn.example.com.collection-determination" && item.severity === "block"), reason);
     assert.equal(report.canSubmit, false, reason);
   }
 
-  manifest.externalProcessors[0].collectionDeterminationReason = "No request logs.";
-  const report = await preflight(root, manifest);
-  assert.ok(report.results.some((item) => item.id === "privacy.processor.cdn.example.com.collection-determination" && item.severity === "pass"));
-  assert.equal(report.summary.block, 0, report.results.filter((item) => item.severity === "block").map((item) => item.message).join("; "));
-  assert.equal(report.canSubmit, true);
+  for (const reason of VALID_NOT_COLLECTION_REASONS) {
+    manifest.externalProcessors[0].collectionDeterminationReason = reason;
+    const report = await preflight(root, manifest);
+    assert.ok(report.results.some((item) => item.id === "privacy.processor.cdn.example.com.collection-determination" && item.severity === "pass"), reason);
+    assert.equal(report.summary.block, 0, `${reason}: ${report.results.filter((item) => item.severity === "block").map((item) => item.message).join("; ")}`);
+    assert.equal(report.canSubmit, true, reason);
+  }
 });
 
 test("a declared dataProcessing row requires literal confirmation and known identity/tracking answers", async () => {
