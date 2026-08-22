@@ -1,4 +1,4 @@
-import { access, copyFile, lstat, mkdir, readdir } from "node:fs/promises";
+import { access, copyFile, lstat, mkdir, readdir, readFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
 import { resolveContained, walkRepository } from "./fs.js";
@@ -53,7 +53,9 @@ export async function ingestCaptures(repository: string, manifest: ShipLayerMani
   // Recursive: xcresulttool's own attachment-export layout is not guaranteed to be flat (it may
   // nest attachments under per-test subdirectories), and a non-recursive scan would silently
   // ingest nothing from those with no skipped entry to explain why.
-  const entries = (await collectImageFiles(sourceRoot)).map((file) => path.relative(sourceRoot, file));
+  const exportedFiles = await collectCaptureExportFiles(sourceRoot);
+  const entries = exportedFiles.images.map((file) => path.relative(sourceRoot, file));
+  const attachmentNames = await readAttachmentNames(sourceRoot, exportedFiles.manifests);
   const destinationRelative = `${manifest.screenshots.rawOutputDir}/${options.family}/${options.locale}`;
   const destinationDirectory = await resolveContained(repository, destinationRelative, "screenshots.rawOutputDir");
   await mkdir(destinationDirectory, { recursive: true });
@@ -68,7 +70,9 @@ export async function ingestCaptures(repository: string, manifest: ShipLayerMani
     // exactly that rather than as a misleading "no scenario matches this filename".
     const image = await inspectImage(sourceFile);
     if (!image) { skipped.push({ sourceFile: relativeSource, reason: "unreadable, oversized, symlinked, or not a valid PNG/JPEG" }); continue; }
-    const scenario = matchScenario(path.basename(relativeSource), manifest.screenshots.scenarios);
+    // xcresulttool exports attachments under UUID filenames. Its adjacent manifest.json preserves
+    // the XCTAttachment name, which is the only reliable scenario label in that layout.
+    const scenario = matchScenario(attachmentNames.get(relativeSource) ?? path.basename(relativeSource), manifest.screenshots.scenarios);
     if (!scenario) { skipped.push({ sourceFile: relativeSource, reason: "no declared screenshot scenario matches this filename" }); continue; }
     if (usedScenarios.has(scenario.id)) { skipped.push({ sourceFile: relativeSource, reason: `scenario '${scenario.id}' was already ingested from another file in this batch` }); continue; }
     if (image.alpha) { skipped.push({ sourceFile: relativeSource, reason: "has an alpha channel; Apple rejects screenshots with transparency" }); continue; }
@@ -87,10 +91,10 @@ export async function ingestCaptures(repository: string, manifest: ShipLayerMani
 }
 
 const MAX_INGEST_ENTRIES = 5_000;
-/** Recursively collects PNG/JPEG file paths under `root`, refusing to descend into or return a
- * symlinked directory/file (matching the containment posture used everywhere else in this repo). */
-async function collectImageFiles(root: string): Promise<string[]> {
-  const files: string[] = []; let visited = 0;
+/** Recursively collects PNG/JPEG files and adjacent xcresulttool manifests under `root`, refusing
+ * to descend into or return symlinks (matching the containment posture used everywhere else). */
+async function collectCaptureExportFiles(root: string): Promise<{ images: string[]; manifests: string[] }> {
+  const images: string[] = []; const manifests: string[] = []; let visited = 0;
   async function walk(directory: string): Promise<void> {
     let entries; try { entries = await readdir(directory, { withFileTypes: true }); } catch { return; }
     for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
@@ -98,11 +102,45 @@ async function collectImageFiles(root: string): Promise<string[]> {
       if (entry.isSymbolicLink()) continue;
       const full = path.join(directory, entry.name);
       if (entry.isDirectory()) { await walk(full); continue; }
-      if (entry.isFile() && /\.(?:png|jpe?g)$/i.test(entry.name)) files.push(full);
+      if (entry.isFile() && /\.(?:png|jpe?g)$/i.test(entry.name)) images.push(full);
+      else if (entry.isFile() && entry.name === "manifest.json") manifests.push(full);
     }
   }
   await walk(root);
-  return files.sort();
+  return { images: images.sort(), manifests: manifests.sort() };
+}
+
+const MAX_ATTACHMENT_MANIFEST_BYTES = 10 * 1024 * 1024;
+/** Reads xcresulttool's attachment-export manifest without trusting it as a path source. Each
+ * exported filename must be a basename beside its own manifest, and conflicting labels are
+ * discarded rather than guessed. */
+async function readAttachmentNames(root: string, manifestFiles: string[]): Promise<Map<string, string>> {
+  const candidates = new Map<string, Set<string>>();
+  for (const manifestFile of manifestFiles) {
+    let parsed: unknown;
+    try {
+      const details = await lstat(manifestFile);
+      if (details.isSymbolicLink() || details.size > MAX_ATTACHMENT_MANIFEST_BYTES) continue;
+      parsed = JSON.parse(await readFile(manifestFile, "utf8"));
+    } catch { continue; }
+    if (!Array.isArray(parsed)) continue;
+    for (const test of parsed) {
+      if (!test || typeof test !== "object") continue;
+      const attachments = (test as { attachments?: unknown }).attachments;
+      if (!Array.isArray(attachments)) continue;
+      for (const attachment of attachments) {
+        if (!attachment || typeof attachment !== "object") continue;
+        const { exportedFileName, suggestedHumanReadableName } = attachment as { exportedFileName?: unknown; suggestedHumanReadableName?: unknown };
+        if (typeof exportedFileName !== "string" || path.basename(exportedFileName) !== exportedFileName) continue;
+        if (typeof suggestedHumanReadableName !== "string" || !suggestedHumanReadableName.trim() || suggestedHumanReadableName.length > 1_000) continue;
+        const relativeFile = path.relative(root, path.join(path.dirname(manifestFile), exportedFileName));
+        if (path.isAbsolute(relativeFile) || relativeFile === ".." || relativeFile.startsWith(`..${path.sep}`)) continue;
+        const names = candidates.get(relativeFile) ?? new Set<string>();
+        names.add(suggestedHumanReadableName.trim()); candidates.set(relativeFile, names);
+      }
+    }
+  }
+  return new Map([...candidates].flatMap(([file, names]) => names.size === 1 ? [[file, [...names][0]] as const] : []));
 }
 async function existingReferenceDimensions(directory: string, acceptedForConfig: Set<string>): Promise<{ width: number; height: number; source: string } | undefined> {
   let existing: string[]; try { existing = await readdir(directory); } catch { return undefined; }
@@ -118,10 +156,15 @@ async function lstatIfExists(target: string) { try { return await lstat(target);
  * slugified match only when it is unambiguous. Never guesses across a genuine tie. */
 function matchScenario(filename: string, scenarios: ShipLayerManifest["screenshots"]["scenarios"]): { id: string } | undefined {
   const stem = path.basename(filename, path.extname(filename));
-  const exact = scenarios.filter((scenario) => stem === scenario.id || stem.startsWith(`${scenario.id}-`));
-  if (exact.length) return exact.reduce((best, candidate) => candidate.id.length > best.id.length ? candidate : best);
+  const exactId = scenarios.filter((scenario) => stem === scenario.id || stem.startsWith(`${scenario.id}-`));
+  if (exactId.length) return exactId.reduce((best, candidate) => candidate.id.length > best.id.length ? candidate : best);
+  const exactTitle = scenarios.filter((scenario) => stem === scenario.title || stem.startsWith(`${scenario.title}_`) || stem.startsWith(`${scenario.title}-`));
+  if (exactTitle.length) return exactTitle.length === 1 ? exactTitle[0] : undefined;
   const slug = stem.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-  const candidates = scenarios.filter((scenario) => slug === scenario.id || slug.startsWith(`${scenario.id}-`) || (scenario.id.length > 2 && slug.includes(scenario.id)));
+  const candidates = scenarios.filter((scenario) => {
+    const titleSlug = scenario.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    return slug === scenario.id || slug.startsWith(`${scenario.id}-`) || (scenario.id.length > 2 && slug.includes(scenario.id)) || slug === titleSlug || slug.startsWith(`${titleSlug}-`);
+  });
   return candidates.length === 1 ? candidates[0] : undefined;
 }
 async function commandAvailable(command: string): Promise<boolean> { const candidates = process.env.PATH?.split(path.delimiter).map((directory) => path.join(directory, command)) || []; for (const candidate of candidates) try { await access(candidate, constants.X_OK); return true; } catch { /* next */ } return false; }
