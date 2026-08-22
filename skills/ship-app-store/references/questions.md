@@ -172,29 +172,52 @@ marketing description:
 >    agreement for a stated retention/logging policy, or ask them directly. "I assume not" does
 >    not count as an answer here.
 
-"Nothing is retained past servicing the request" only after a human has checked a real source
-(the vendor's documentation, contract/DPA, written confirmation, or your own implementation) →
-`collectionDetermination: "not-collection"` **and** this explicit structured attestation:
+"Nothing is retained past servicing the request" only after a human has checked a real source →
+`collectionDetermination: "not-collection"` **and** one of these explicit structured
+attestations:
 
 ```yaml
+# First-party implementation: cite the exact existing processor evidence path, not a README,
+# project manifest, .env file, test, or credential/config secret.
 notCollectionAttestation:
   dataNotRetainedBeyondRealTimeService: true
-  basis: vendor-documentation # or first-party-implementation, contract-dpa, written-vendor-confirmation
+  basis: first-party-implementation
   evidence:
-    kind: public-url # or repo-path, processor-privacy-policy
-    url: https://vendor.example/privacy/retention
+    kind: repo-path
+    path: Sources/VendorClient.swift
   confirmation: confirmed
 ```
 
-For `repo-path`, use an existing contained regular file and `path`; for
-`processor-privacy-policy`, use only `kind: processor-privacy-policy` and make sure the row's
-public `privacyPolicyUrl` is the checked evidence. The evidence reference must be non-secret.
+The `repo-path` must be an existing contained regular production source/config file that exactly
+overlaps `externalProcessors[].evidence` for this processor. ShipLayer verifies that linkage and
+existence, not what the file means; the human still owns the retention fact. An arbitrary README,
+project manifest, `.env`, test, docs file, or a path from another processor does not clear this.
+
+```yaml
+# Vendor documentation: use the row's canonical public privacy policy, not a generic vendor link.
+notCollectionAttestation:
+  dataNotRetainedBeyondRealTimeService: true
+  basis: vendor-documentation
+  evidence:
+    kind: processor-privacy-policy
+  confirmation: confirmed
+```
+
+For that second form, the processor's `privacyPolicyUrl` must be public HTTPS with no userinfo,
+query string, or fragment; it cannot be loopback/private/reserved/IDN and must be on the
+processor's exact or registrable domain. ShipLayer verifies only that URL safety/linkage; it does
+not fetch, read, or prove the policy's retention terms. Do not use an arbitrary `public-url`, a
+generic no-training/ZDR link, or another vendor's policy as evidence. Contracts/DPAs and written
+vendor confirmations are confidential and cannot safely clear this v0.1 gate: keep them outside
+the release manifest and leave the row pending or record `collection` until a safe evidence model
+exists.
+
 The exact observable fact is deliberately a literal field: **does this processor and every
 downstream recipient avoid retaining the transmitted data beyond real-time servicing of the
 request?** Do not set it to `true` on an assumption, from a generic no-training/ZDR claim, or to
 clear a blocker. `collectionDeterminationReason`, if retained, is an optional audit note only;
 ShipLayer does not parse or validate it as semantic proof in any language. A missing, pending,
-false, or unconfirmed attestation blocks safely.
+false, unconfirmed, mismatched, or unsupported attestation blocks safely.
 
 "Yes, it's retained" (or you cannot find and personally confirm the observable no-retention
 fact) → `collectionDetermination: "collection"` — this now requires a matching confirmed

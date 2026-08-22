@@ -9,7 +9,7 @@ import { validateAscPrivateKey } from "./asc.js";
 import { appReviewNotes } from "./generator.js";
 import { DEFAULT_MARKETING_FINAL_DIR } from "./marketing.js";
 import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, isLoopbackOrPrivateEndpoint, isNonProductionSourcePath, MONETIZATION_CONTRADICTION_FINDING, PURCHASE_UNAVAILABLE_CONTRADICTION_FINDING, productionEvidenceOnly, resolveContradictionOverride, storekitPurchaseEvidence, stripCodeComments } from "./evidence.js";
-import { assessNotCollectionAttestation, notCollectionAttestationIssueMessage } from "./collection-attestation.js";
+import { assessNotCollectionAttestation, assessPublicEvidenceUrl, notCollectionAttestationIssueMessage, processorNameLinksToDocumentation } from "./collection-attestation.js";
 
 // Apple requires ONE uniform size per required display class, and the classes are not
 // interchangeable: a 6.5-inch capture does not satisfy the 6.9-inch slot. Each display class is
@@ -1437,16 +1437,9 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
       const attestation = processor.notCollectionAttestation;
       const assessment = assessNotCollectionAttestation(attestation);
       if (assessment.issue || !attestation) { add(`privacy.processor.${processor.name}.collection-determination`, "block", `${processor.name} is declared 'not-collection' but ${notCollectionAttestationIssueMessage(assessment.issue || "missing")}.`, "Record a literal human-confirmed real-time-service attestation (dataNotRetainedBeyondRealTimeService: true), a checked evidence basis, and a non-secret evidence reference. Free-form audit notes cannot clear this blocker."); continue; }
-      const evidence = attestation.evidence;
-      if (evidence.kind === "repo-path") {
-        const valid = await validEvidencePaths(repository, [evidence.path]);
-        if (!valid.has(evidence.path)) { add(`privacy.processor.${processor.name}.collection-determination`, "block", `${processor.name}'s structured not-collection attestation cites a missing, symlinked, or out-of-repository evidence path.`, "Reference an existing contained regular file, a public HTTPS document, or the processor privacy-policy URL."); continue; }
-      } else if (evidence.kind === "public-url" && !isSafePublicHttpsUrl(evidence.url)) {
-        add(`privacy.processor.${processor.name}.collection-determination`, "block", `${processor.name}'s structured not-collection attestation needs a safe public HTTPS evidence URL.`, "Use a public HTTPS documentation URL with no credentials, or cite a contained evidence file or the processor privacy-policy URL."); continue;
-      } else if (evidence.kind === "processor-privacy-policy" && !isSafePublicHttpsUrl(processor.privacyPolicyUrl)) {
-        add(`privacy.processor.${processor.name}.collection-determination`, "block", `${processor.name}'s structured not-collection attestation references an invalid processor privacy-policy URL.`, "Record the processor's public HTTPS privacy-policy URL before relying on it as evidence."); continue;
-      }
-      add(`privacy.processor.${processor.name}.collection-determination`, "pass", `${processor.name} is human-confirmed not to constitute "collection" under Apple's App Privacy definition, based on a structured real-time-service attestation (${attestation.basis}; ${notCollectionEvidenceLabel(attestation.evidence)}). ShipLayer does not infer this conclusion from audit-note prose.`);
+      const evidenceGate = await notCollectionEvidenceGate(repository, processor);
+      if (evidenceGate.issue) { add(`privacy.processor.${processor.name}.collection-determination`, "block", `${processor.name}'s structured not-collection attestation cannot use its evidence: ${evidenceGate.issue}.`, evidenceGate.remediation); continue; }
+      add(`privacy.processor.${processor.name}.collection-determination`, "pass", `${processor.name} is human-confirmed not to constitute "collection" under Apple's App Privacy definition, based on a structured real-time-service attestation (${attestation.basis}; ${notCollectionEvidenceLabel(attestation.evidence)}). ShipLayer verified ${evidenceGate.verified}; it did not retrieve evidence or infer the retention fact from document/source text.`);
       continue; // a confirmed non-collection processor makes no App Privacy claim, so no dataProcessing row can or should be demanded for it
     }
     add(`privacy.processor.${processor.name}.collection-determination`, "pass", `${processor.name} is human-confirmed to constitute "collection" under Apple's App Privacy definition.`);
@@ -1494,14 +1487,40 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
   for (const id of manifestIds) if (sourceIds.size && !sourceIds.has(id)) add(`manifest.${id}`, "block", `Manifest product ${id} is absent from StoreKit evidence.`);
 }
 
-function isSafePublicHttpsUrl(value: string): boolean {
-  try { const url = new URL(value); return url.protocol === "https:" && Boolean(url.hostname) && !url.username && !url.password; } catch { return false; }
-}
-
 function notCollectionEvidenceLabel(evidence: NonNullable<ShipLayerManifest["externalProcessors"][number]["notCollectionAttestation"]>["evidence"]): string {
   if (evidence.kind === "repo-path") return `repository evidence ${evidence.path}`;
   if (evidence.kind === "public-url") return `public evidence ${evidence.url}`;
   return "the processor privacy-policy URL";
+}
+
+async function notCollectionEvidenceGate(repository: string, processor: ShipLayerManifest["externalProcessors"][number]): Promise<{ issue?: string; remediation: string; verified: string }> {
+  const attestation = processor.notCollectionAttestation!;
+  const evidence = attestation.evidence;
+  const blocked = (issue: string, remediation: string): { issue: string; remediation: string; verified: string } => ({ issue, remediation, verified: "nothing" });
+  if (evidence.kind === "public-url" && assessPublicEvidenceUrl(evidence.url).issue) return blocked("the public evidence URL is not a credential-safe public HTTPS URL", "Do not place credentials, query strings, fragments, private/reserved hosts, or IDN hostnames in the manifest. For vendor documentation, use processor-privacy-policy after recording the vendor's canonical public policy URL.");
+  if (evidence.kind === "processor-privacy-policy" && assessPublicEvidenceUrl(processor.privacyPolicyUrl).issue) return blocked("the processor privacy-policy URL is not a credential-safe public HTTPS URL", "Record a canonical public HTTPS policy URL without userinfo, query strings, fragments, private/reserved hosts, or IDN hostnames; do not put access links or credentials in the manifest.");
+  if (attestation.basis === "contract-dpa" || attestation.basis === "written-vendor-confirmation") return blocked(`${attestation.basis} is not a safely verifiable v0.1 evidence basis`, "Keep confidential contracts or written confirmations outside the release manifest. Do not paste or link them here; record collection or leave the determination pending until a future evidence model supports a safe, reviewable reference.");
+  if (attestation.basis === "first-party-implementation") {
+    if (evidence.kind !== "repo-path") return blocked("first-party-implementation requires a processor-linked repository source/config path", "Use an existing regular source/config file already listed in this processor's evidence, or choose collection/pending. Vendor documentation and contracts cannot substitute for first-party implementation evidence.");
+    const processorEvidence = await validEvidencePaths(repository, processor.evidence || []);
+    if (!processorEvidence.has(evidence.path)) return blocked("the repository path does not overlap the processor's existing evidence", "Use the exact contained regular source/config path already recorded in externalProcessors[].evidence for this processor; unrelated files cannot attest to its handling.");
+    if (!isFirstPartyImplementationEvidencePath(evidence.path)) return blocked("the repository path is not an eligible non-secret processor source/config file", "Use a processor-linked production source or non-secret service configuration file. README/project manifests, .env files, credentials, tests, and documentation cannot clear this gate.");
+    return { remediation: "", verified: `the contained regular evidence path overlaps this processor's declared source evidence (${evidence.path})` };
+  }
+  if (attestation.basis === "vendor-documentation") {
+    if (evidence.kind !== "processor-privacy-policy") return blocked("vendor-documentation must use the processor's canonical privacy-policy reference", "Set evidence.kind: processor-privacy-policy and record the vendor's canonical public privacyPolicyUrl. Arbitrary repository files, generic ZDR/no-training links, and public URLs do not clear this gate in v0.1.");
+    if (!processorNameLinksToDocumentation(processor.name, processor.privacyPolicyUrl)) return blocked("the privacy-policy host is not defensibly linked to the declared processor", "Use a canonical policy URL on the processor's exact or registrable domain, or leave this determination pending. Do not point one processor at another vendor's policy.");
+    return { remediation: "", verified: "the canonical privacy-policy URL is credential-safe public HTTPS and domain-linked to the declared processor" };
+  }
+  return blocked("the evidence basis is unsupported", "Use first-party-implementation with overlapping processor source/config evidence, vendor-documentation with a canonical processor privacy-policy URL, or leave the determination pending.");
+}
+
+function isFirstPartyImplementationEvidencePath(value: string): boolean {
+  const normalized = value.replace(/\\/g, "/");
+  const basename = normalized.split("/").at(-1)?.toLowerCase() || "";
+  if (isNonProductionSourcePath(normalized) || /^(?:readme|project|shiplayer)(?:\.[a-z0-9]+)?$/i.test(basename)) return false;
+  if (basename.startsWith(".env") || /(?:^|[._-])(?:credential|credentials|secret|secrets|token|tokens|password|passwords|private[-_]?key|api[-_]?key)(?:[._-]|$)/i.test(basename)) return false;
+  return /\.(?:swift|m|mm|h|c|cc|cpp|js|jsx|ts|tsx|json|plist|xcconfig|pbxproj|ya?ml)$/i.test(basename);
 }
 
 function stringValues(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : typeof value === "string" ? [value] : []; }

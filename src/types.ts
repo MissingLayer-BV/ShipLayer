@@ -91,9 +91,11 @@ export interface NotCollectionAttestation {
    * downstream recipients. False or pending is not a not-collection clearance. */
   dataNotRetainedBeyondRealTimeService: boolean | "needs-human-confirmation";
   /** How the human established the observable fact; this is a classification of evidence, not a
-   * claim ShipLayer derives from text. */
+   * claim ShipLayer derives from text. v0.1 clears only first-party implementation and canonical
+   * vendor-documentation evidence; confidential contract/written-confirmation bases fail closed. */
   basis: "first-party-implementation" | "vendor-documentation" | "contract-dpa" | "written-vendor-confirmation" | "needs-human-confirmation";
-  /** A safe reference to the checked evidence. Public URLs must not carry credentials. */
+  /** A safe reference to the checked evidence. The preflight gate verifies only linkage/existence,
+   * never retention semantics or document content. */
   evidence: NotCollectionEvidence;
   /** Literal human confirmation of this attestation. not-applicable never clears a declared row. */
   confirmation: Confirmation;
@@ -101,6 +103,7 @@ export interface NotCollectionAttestation {
 
 export type NotCollectionEvidence =
   | { kind: "repo-path"; path: string }
+  /** Legacy-compatible shape: v0.1 never lets an arbitrary public URL clear readiness. */
   | { kind: "public-url"; url: string }
   | { kind: "processor-privacy-policy" };
 

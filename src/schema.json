@@ -529,9 +529,10 @@
           "description": "Human-observed Apple-definition fact: transmitted data is not retained beyond servicing the request in real time. Only true may support not-collection."
         },
         "basis": {
-          "enum": ["first-party-implementation", "vendor-documentation", "contract-dpa", "written-vendor-confirmation", "needs-human-confirmation"]
+          "enum": ["first-party-implementation", "vendor-documentation", "contract-dpa", "written-vendor-confirmation", "needs-human-confirmation"],
+          "description": "Preflight clears only first-party-implementation with overlapping processor source/config evidence, or vendor-documentation with processor-privacy-policy. contract-dpa and written-vendor-confirmation remain fail-closed in v0.1 to avoid storing confidential evidence."
         },
-        "evidence": { "$ref": "#/$defs/notCollectionEvidence" },
+        "evidence": { "$ref": "#/$defs/notCollectionEvidence", "description": "Preflight verifies path existence/processor overlap or policy-host linkage only; it never proves retention semantics from a document." },
         "confirmation": { "$ref": "#/$defs/confirmation" }
       }
     },
@@ -547,7 +548,7 @@
           "type": "object",
           "additionalProperties": false,
           "required": ["kind", "url"],
-          "properties": { "kind": { "const": "public-url" }, "url": { "$ref": "#/$defs/url" } }
+          "properties": { "kind": { "const": "public-url" }, "url": { "$ref": "#/$defs/url", "description": "Legacy-compatible only: v0.1 rejects arbitrary public URLs as not-collection clearance." } }
         },
         {
           "type": "object",

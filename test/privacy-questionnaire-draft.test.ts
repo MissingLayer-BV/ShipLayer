@@ -10,7 +10,7 @@ import type { ExternalProcessor, NotCollectionAttestation, ShipLayerManifest } f
 import { readyManifest, writeReadyAssets } from "./helpers.js";
 
 function attestation(overrides: Partial<NotCollectionAttestation> = {}): NotCollectionAttestation {
-  return { dataNotRetainedBeyondRealTimeService: true, basis: "vendor-documentation", evidence: { kind: "repo-path", path: "project.yml" }, confirmation: "confirmed", ...overrides };
+  return { dataNotRetainedBeyondRealTimeService: true, basis: "first-party-implementation", evidence: { kind: "repo-path", path: "Sources/ProcessorClient.swift" }, confirmation: "confirmed", ...overrides };
 }
 
 function processor(name: string, dataCategories: string[], overrides: Partial<ExternalProcessor> = {}): ExternalProcessor {
@@ -23,11 +23,14 @@ function processor(name: string, dataCategories: string[], overrides: Partial<Ex
     privacyPolicyUrl: `https://${name}/privacy`,
     protectionConfirmation: "confirmed",
     confirmation: "confirmed",
+    evidence: ["Sources/ProcessorClient.swift"],
     ...overrides
   };
 }
 
 async function questionnaire(root: string, manifest: ShipLayerManifest): Promise<{ draft: string; report: Awaited<ReturnType<typeof preflight>> }> {
+  await mkdir(path.join(root, "Sources"), { recursive: true });
+  await writeFile(path.join(root, "Sources/ProcessorClient.swift"), "struct ProcessorClient { func send() {} }\n");
   const analysis = await analyzeRepository(root);
   const report = await preflight(root, manifest, false, analysis);
   const generated = await generateReleasePackage(root, manifest, analysis, report, "shiplayer-release");
@@ -73,7 +76,7 @@ test("all structured not-collection rows are aggregate-aware without a global Da
   await writeReadyAssets(root, manifest);
   manifest.externalProcessors = [
     processor("cdn.example.com", ["Product Interaction"], { collectionDetermination: "not-collection", notCollectionAttestation: attestation() }),
-    processor("api.example.com", ["Email Address"], { collectionDetermination: "not-collection", notCollectionAttestation: attestation({ evidence: { kind: "processor-privacy-policy" } }) })
+    processor("api.vendor-a.com", ["Email Address"], { privacyPolicyUrl: "https://vendor-a.com/privacy", evidence: [], collectionDetermination: "not-collection", notCollectionAttestation: attestation({ basis: "vendor-documentation", evidence: { kind: "processor-privacy-policy" } }) })
   ];
 
   const { draft, report } = await questionnaire(root, manifest);
