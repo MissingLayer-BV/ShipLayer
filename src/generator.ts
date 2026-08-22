@@ -37,8 +37,9 @@ export async function generateReleasePackage(repository: string, manifest: ShipL
   await emit("legal/privacy-policy-draft.html", await privacyPage(repository, manifest, analysis)); await emit("legal/support-page-draft.html", await supportPage(repository, manifest, analysis)); await emit("legal/terms-of-use-draft.md", await termsOfUseDraft(repository, manifest, analysis));
   await emit("review/app-review-notes.md", await appReviewNotes(repository, manifest, analysis)); await emit("review/physical-device-recording-script.md", recordingScript(manifest, analysis));
   const screenshotHarness = await detectScreenshotHarness(repository);
+  const usesXcodeGen = await readFile(path.join(repository, "project.yml")).then(() => true, () => false);
   await emit("screenshots/capture-plan.json", stableJson(capturePlan(manifest))); await emitMarketingProject(manifest, outputRelative, emit, emitDeviceFrameAsset); await emit("storekit/checklist.md", await storeKitChecklist(repository, manifest, analysis));
-  await emit("screenshots/ui-test-harness-template.swift", screenshotHarnessTemplate(manifest, screenshotHarness.sourceFiles.length > 0)); await emit("screenshots/ui-test-harness-contract.md", screenshotHarnessContract(manifest, screenshotHarness)); await emit("screenshots/capture-workflow.yml", screenshotCaptureWorkflow(manifest, screenshotHarness));
+  await emit("screenshots/ui-test-harness-template.swift", screenshotHarnessTemplate(manifest, screenshotHarness.sourceFiles.length > 0)); await emit("screenshots/ui-test-harness-contract.md", screenshotHarnessContract(manifest, screenshotHarness)); await emit("screenshots/capture-workflow.yml", screenshotCaptureWorkflow(manifest, screenshotHarness, usesXcodeGen));
   await emit("app-store-connect/dry-run-plan.md", dryRunPlan(manifest)); await emit("remaining-human-actions.md", humanActions(packagePreflight));
     await writeText(path.join(stage, ".shiplayer-managed"), "ShipLayer managed release package v1\n"); files.push(".shiplayer-managed");
   await preserveNonDeterministicMarketingArtifacts(repository, out, stage, manifest.screenshots.finalOutputDir || `${outputRelative}/screenshots/final`, files);
@@ -567,7 +568,7 @@ function screenshotHarnessContract(manifest: ShipLayerManifest, harness: { scena
   return `${lines.join("\n")}\n`;
 }
 
-function screenshotCaptureWorkflow(manifest: ShipLayerManifest, harness: { sourceFiles: string[] }): string {
+function screenshotCaptureWorkflow(manifest: ShipLayerManifest, harness: { sourceFiles: string[] }, usesXcodeGen: boolean): string {
   const primaryConfig = manifest.screenshots.configurations.find((configuration) => configuration.family === "iphone") || manifest.screenshots.configurations[0];
   const simulatorDefault = primaryConfig?.device || "iPhone 16 Pro Max";
   const schemeDefault = manifest.app.name || "";
@@ -635,6 +636,13 @@ function screenshotCaptureWorkflow(manifest: ShipLayerManifest, harness: { sourc
     "      - name: Print Xcode version",
     "        run: xcodebuild -version",
     "",
+    ...(usesXcodeGen ? [
+      "      - name: Generate Xcode project",
+      "        run: |",
+      "          if ! command -v xcodegen >/dev/null 2>&1; then brew install xcodegen; fi",
+      "          xcodegen generate",
+      ""
+    ] : []),
     "      - name: Run screenshot UI tests",
     "        run: |",
     "          EXTRA=()",

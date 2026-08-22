@@ -460,6 +460,10 @@ test("prepare emits a manually-installed workflow_dispatch-only capture workflow
   assert.equal(job["runs-on"], "macos-latest");
   assert.ok(typeof job["timeout-minutes"] === "number" && job["timeout-minutes"] > 0);
   assert.ok((workflow.concurrency as Record<string, unknown>)?.["cancel-in-progress"] === true);
+  const generateProject = job.steps.find((step) => step.name === "Generate Xcode project");
+  assert.match(generateProject?.run || "", /command -v xcodegen/);
+  assert.match(generateProject?.run || "", /xcodegen generate/);
+  assert.ok(job.steps.indexOf(generateProject!) < job.steps.findIndex((step) => step.name === "Run screenshot UI tests"));
   // A zero-screenshot extraction must fail the job loudly rather than finish green with only an
   // annotation, and the current (non-"--legacy") xcresulttool invocation must be tried first.
   const uploadScreens = job.steps.find((step) => step.name === "Upload extracted screenshots");
