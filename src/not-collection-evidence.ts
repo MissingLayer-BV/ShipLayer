@@ -72,6 +72,11 @@ function isExactDeclaredProcessorDecision(decision: ShipLayerManifest["externalS
 
 function isRuntimeEndpointFinding(finding: AnalysisReport["findings"][number]): boolean {
   if (!finding.key.startsWith("endpoint:")) return false;
+  // A literal in URLSession/fetch/axios/request syntax is source evidence of a request even when
+  // its path happens to look like documentation or support. This is deliberately not a runtime
+  // reachability claim; it only prevents an incompatible `not-an-external-processor` answer from
+  // supporting authoritative questionnaire guidance.
+  if (finding.evidence.some((item) => item.runtimeNetworkRequest)) return true;
   const url = endpointUrl(finding);
   if (!url || hasCanonicalPrivacyEvidencePath(url)) return false;
   return !/^\/(?:legal|docs?|support|help|terms?|blog|marketing|about|contact)(?:\/|$)/i.test(url.pathname);

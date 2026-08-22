@@ -5,8 +5,15 @@
  */
 const DIRECT_CREDENTIAL = /(?:\b(?:api[ _-]?(?:key|token)|access[ _-]?token|auth(?:orization)?[ _-]?token|client[ _-]?secret|secret|password|private[ _-]?key|bearer)\s*[:=]\s*(?:["']?)[^\s"']+|\bauthorization\s*:\s*bearer\s+[A-Za-z0-9._~+\/-]{8,}|\bbearer\s+[A-Za-z0-9._~+\/-]{8,})/i;
 const SENSITIVE_URL_PARAMETER = /(?:^|[_-])(?:api[_-]?(?:key|token)|access[_-]?token|auth(?:orization)?[_-]?token|client[_-]?secret|secret|password|private[_-]?key|bearer|credential|signature|sig|token|key|code)(?:$|[_-])/i;
-const SENSITIVE_PATH_SEGMENT = /^(?:api[-_.]?(?:key|token)|access[-_.]?token|auth(?:orization)?|client[-_.]?secret|secret|password|private[-_.]?key|bearer|credential|signature|sig|token|key)$/i;
-const BENIGN_PATH_VALUE = new Set(["about", "callback", "docs", "guide", "help", "legal", "login", "oauth", "policy", "privacy", "reference", "signin", "support", "terms"]);
+// These path markers have no normal public-navigation interpretation once they carry a following
+// segment. Do not make their safety depend on the *next* segment: `/token/login/value` is still
+// credential-shaped even though `login` alone is an ordinary public route.
+const HIGH_RISK_PATH_MARKER = /^(?:api[-_.]?(?:keys?|tokens?)|tokens?|access[-_.]?tokens?|secrets?|credentials?|signatures?|sigs?|bearers?)$/i;
+// These three words legitimately occur in public navigation, but only the listed final pairs are
+// allowed. Any additional path material is treated as a credential-shaped URL rather than guessed
+// safe from prose or a generic allowlist.
+const NAVIGATION_PATH_MARKER = /^(?:auth|password|key)$/i;
+const BENIGN_TERMINAL_PATH_PAIRS = new Set(["auth/guide", "auth/login", "auth/logout", "password/reset", "key/faq"]);
 
 export function containsDirectCredentialMaterial(value: string): boolean {
   return /-----BEGIN(?: [A-Z]+)? PRIVATE KEY-----/i.test(value)
@@ -34,7 +41,40 @@ export function urlContainsCredentialMaterial(url: URL): boolean {
     // discarding values. A bare `?api_key` therefore is not credential material
     // by itself; reject it only when the sensitive-looking key carries a value.
     if ([url.search, url.hash.replace(/^#/, "")].some((component) => [...new URLSearchParams(component).entries()].some(([key, value]) => SENSITIVE_URL_PARAMETER.test(key) && value.trim().length > 0))) return true;
-    const segments = url.pathname.split("/").filter(Boolean).map((segment) => decodeURIComponent(segment).trim());
-    return segments.some((segment, index) => SENSITIVE_PATH_SEGMENT.test(segment) && index + 1 < segments.length && !BENIGN_PATH_VALUE.has(segments[index + 1].toLowerCase()));
+    return Boolean(redactedCredentialPath(url.pathname));
   } catch { return true; }
+}
+
+/** Returns a safe replacement path when a URL path is credential-shaped. Scanner output and
+ * generated artifacts use this same structural policy, so a path accepted by a less strict
+ * scanner formatter can never reintroduce material that manifest validation would reject. */
+export function redactedCredentialPath(pathname: string): string | undefined {
+  const segments = canonicalPathSegments(pathname);
+  for (let index = 0; index < segments.length; index++) {
+    const segment = segments[index];
+    if (HIGH_RISK_PATH_MARKER.test(segment) && index + 1 < segments.length) return "/:redacted";
+    if (NAVIGATION_PATH_MARKER.test(segment) && index + 1 < segments.length) {
+      const pair = `${segment}/${segments[index + 1]}`;
+      if (index + 2 >= segments.length && BENIGN_TERMINAL_PATH_PAIRS.has(pair)) continue;
+      return "/:redacted";
+    }
+  }
+  return undefined;
+}
+
+/** Decode and resolve URL path structure before checking credential markers. A credential cannot
+ * evade the contract with case, percent encoding, `.`/`..`, repeated separators, or a decoded
+ * slash/backslash tucked inside one segment. */
+function canonicalPathSegments(pathname: string): string[] {
+  const segments: string[] = [];
+  for (const rawSegment of pathname.split(/[\\/]+/)) {
+    let decoded: string;
+    try { decoded = decodeURIComponent(rawSegment).normalize("NFKC").trim().toLowerCase(); } catch { throw new Error("invalid encoded URL path"); }
+    for (const segment of decoded.split(/[\\/]+/)) {
+      if (!segment || segment === ".") continue;
+      if (segment === "..") { segments.pop(); continue; }
+      segments.push(segment);
+    }
+  }
+  return segments;
 }

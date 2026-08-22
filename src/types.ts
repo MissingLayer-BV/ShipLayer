@@ -6,6 +6,9 @@ export interface Evidence {
   excerpt?: string;
   confidence: Confidence;
   kind: "project-setting" | "plist" | "entitlement" | "privacy-manifest" | "source-heuristic" | "asset" | "storekit" | "manifest";
+  /** A bounded syntax match found this URL literal inside a recognizable network-request call.
+   * It is evidence of source intent only, never proof that the request is reachable at runtime. */
+  runtimeNetworkRequest?: boolean;
 }
 
 export interface Finding {

@@ -292,11 +292,60 @@ test("a runtime endpoint cannot be both a processor attestation link and a non-p
   const policyLink = await configuredNotCollectionProcessor(
     { evidence: ["Sources/CdnClient.swift"] },
     {},
-    async (root) => { await writeFile(path.join(root, "Sources/CdnClient.swift"), "let policy = \"https://cdn.vendor-a.com/privacy\"\n"); }
+    async (root) => { await writeFile(path.join(root, "Sources/CdnClient.swift"), "let policy = \"https://cdn.vendor-a.com/privacy\"\nlet docs = \"https://cdn.vendor-a.com/docs/v1/reference\"\n"); }
   );
   policyLink.manifest.externalServiceDecisions.push({ finding: "endpoint:https://cdn.vendor-a.com/privacy", disposition: "not-an-external-processor", reason: "Public policy link only.", evidence: ["Sources/CdnClient.swift"], confirmation: "confirmed" });
+  policyLink.manifest.externalServiceDecisions.push({ finding: "endpoint:https://cdn.vendor-a.com/docs/v1/reference", disposition: "not-an-external-processor", reason: "Public documentation link only.", evidence: ["Sources/CdnClient.swift"], confirmation: "confirmed" });
+  const policyAnalysis = await analyzeRepository(policyLink.root);
+  assert.equal(policyAnalysis.findings.find((finding) => finding.key === "endpoint:https://cdn.vendor-a.com/privacy")?.evidence.some((item) => item.runtimeNetworkRequest), false);
+  assert.equal(policyAnalysis.findings.find((finding) => finding.key === "endpoint:https://cdn.vendor-a.com/docs/v1/reference")?.evidence.some((item) => item.runtimeNetworkRequest), false);
   const policyReport = await preflight(policyLink.root, policyLink.manifest);
   assert.equal(policyReport.canSubmit, true, "a docs/privacy link on the same host is not a runtime processor endpoint");
+});
+
+test("URLSession request syntax keeps docs-looking runtime endpoints contradictory and suppresses questionnaire guidance", async () => {
+  const requests = [
+    { path: "/support/tickets", call: (url: string) => `URLSession.shared.dataTask(with: URL(string: \"${url}\")!).resume()` },
+    { path: "/help/chat", call: (url: string) => `Task { _ = try? await URLSession.shared.data(from: URL(string: \"${url}\")!) }` },
+    { path: "/docs/v1/upload", call: (url: string) => `URLSession.shared.uploadTask(with: URL(string: \"${url}\")!, from: Data()).resume()` },
+    { path: "/legal/submit", call: (url: string) => `URLSession.shared.downloadTask(with: URL(string: \"${url}\")!).resume()` },
+    { path: "/privacy", call: (url: string) => `URLSession.shared.dataTask(with: URL(string: \"${url}\")!).resume()` }
+  ];
+  for (const request of requests) {
+    const endpoint = `https://cdn.vendor-a.com${request.path}`;
+    const state = await configuredNotCollectionProcessor(
+      { evidence: ["Sources/CdnClient.swift"] },
+      {},
+      async (root) => { await writeFile(path.join(root, "Sources/CdnClient.swift"), `import Foundation\nfunc request() { ${request.call(endpoint)} }\n`); }
+    );
+    state.manifest.externalServiceDecisions.push({ finding: `endpoint:${endpoint}`, disposition: "not-an-external-processor", reason: "Incorrectly classified despite direct request syntax.", evidence: ["Sources/CdnClient.swift"], confirmation: "confirmed" });
+    const analysis = await analyzeRepository(state.root);
+    const finding = analysis.findings.find((item) => item.key === `endpoint:${endpoint}`);
+    assert.ok(finding?.evidence.some((item) => item.runtimeNetworkRequest), endpoint);
+    const report = await preflight(state.root, state.manifest, false, analysis);
+    assert.ok(collectionDeterminationBlocked(report), endpoint);
+    assert.equal(report.canSubmit, false, endpoint);
+    const generated = await generateReleasePackage(state.root, state.manifest, analysis, report, "shiplayer-release");
+    const draft = await readFile(path.join(generated.directory, "privacy/questionnaire-draft.md"), "utf8");
+    assert.match(draft, /UNVERIFIED: marked not-collection/i, endpoint);
+    assert.doesNotMatch(draft, /Human-confirmed not to be App Privacy collection for this processor/i, endpoint);
+  }
+});
+
+test("scanner distinguishes common JS/TS request syntax from bare policy constants", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-runtime-call-syntax-"));
+  await writeFile(path.join(root, "worker.ts"), [
+    "const policy = 'https://cdn.vendor-a.com/privacy';",
+    "fetch('https://cdn.vendor-a.com/support/tickets');",
+    "axios.get('https://cdn.vendor-a.com/help/chat');",
+    "request('https://cdn.vendor-a.com/docs/v1/upload');",
+    "axios({ url: 'https://cdn.vendor-a.com/legal/submit' });"
+  ].join("\n"));
+  const analysis = await analyzeRepository(root);
+  for (const endpoint of ["/support/tickets", "/help/chat", "/docs/v1/upload", "/legal/submit"]) {
+    assert.ok(analysis.findings.find((finding) => finding.key === `endpoint:https://cdn.vendor-a.com${endpoint}`)?.evidence.some((item) => item.runtimeNetworkRequest), endpoint);
+  }
+  assert.equal(analysis.findings.find((finding) => finding.key === "endpoint:https://cdn.vendor-a.com/privacy")?.evidence.some((item) => item.runtimeNetworkRequest), false);
 });
 
 test("questionnaire guidance agrees with source linkage blocks for display-name processors", async () => {
@@ -341,8 +390,21 @@ test("ordinary manifest URLs may use benign query strings or fragments while str
 
   const pathSecretCases: Array<(candidate: ShipLayerManifest) => void> = [
     (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/token/sekrit-value"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/token/login/sekrit-value"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/tokens/sekrit-value"; },
     (candidate) => { candidate.contacts.privacyUrl = "https://vendor-a.com/access-token/sekrit-value"; },
-    (candidate) => { candidate.externalProcessors.push(processor({ collectionDetermination: "collection", privacyPolicyUrl: "https://cdn.vendor-a.com/api-key/sekrit-value", evidence: [] })); }
+    (candidate) => { candidate.externalProcessors.push(processor({ collectionDetermination: "collection", privacyPolicyUrl: "https://cdn.vendor-a.com/api-key/sekrit-value", evidence: [] })); },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/secret/sekrit-value"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/credentials/sekrit-value"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/signature/sekrit-value"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/sig/sekrit-value"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/bearer/sekrit-value"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/TOKENS/%2E/sekrit-value"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/%74okens/sekrit-value"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/api_key//sekrit-value"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/key/faq/sekrit-value"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/password/reset/sekrit-value"; },
+    (candidate) => { candidate.contacts.supportUrl = "https://support.vendor-a.com/auth/logout/sekrit-value"; }
   ];
   for (const setPathSecret of pathSecretCases) {
     const pathSecret = readyManifest();
@@ -355,9 +417,15 @@ test("ordinary manifest URLs may use benign query strings or fragments while str
 
   const benignPaths = readyManifest();
   benignPaths.contacts.supportUrl = "https://support.vendor-a.com/help/token";
-  benignPaths.contacts.privacyUrl = "https://vendor-a.com/auth/login?lang=en#retention";
+  benignPaths.contacts.privacyUrl = "https://vendor-a.com/auth/logout?lang=en#retention";
   benignPaths.externalProcessors.push(processor({ collectionDetermination: "collection", privacyPolicyUrl: "https://cdn.vendor-a.com/docs/auth/guide", evidence: [] }));
   assert.doesNotThrow(() => validateManifest(benignPaths));
+
+  for (const url of ["https://vendor-a.com/password/reset", "https://vendor-a.com/key/faq", "https://vendor-a.com/auth/guide", "https://vendor-a.com/auth/login", "https://vendor-a.com/auth/logout"]) {
+    const benignTerminalPath = readyManifest();
+    benignTerminalPath.contacts.supportUrl = url;
+    assert.doesNotThrow(() => validateManifest(benignTerminalPath), url);
+  }
 
   const strict = readyManifest();
   strict.externalProcessors.push(processor({
@@ -368,6 +436,20 @@ test("ordinary manifest URLs may use benign query strings or fragments while str
     notCollectionAttestation: attestation({ basis: "vendor-documentation", evidence: { kind: "processor-privacy-policy" } })
   }));
   assert.throws(() => validateManifest(strict), /credential-safe public HTTPS URL/);
+});
+
+test("scanner and generated artifacts redact chained credential-shaped endpoint paths", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-path-redaction-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  const sentinel = "sekrit-value";
+  await writeFile(path.join(root, "worker.ts"), `fetch(\"https://api.vendor-a.com/token/login/${sentinel}\");`);
+  const analysis = await analyzeRepository(root);
+  assert.doesNotMatch(JSON.stringify(analysis), new RegExp(sentinel, "i"));
+  assert.ok(analysis.findings.some((finding) => finding.key === "endpoint:https://api.vendor-a.com/:redacted"));
+  const report = await preflight(root, manifest, false, analysis);
+  const generated = await generateReleasePackage(root, manifest, analysis, report, "shiplayer-release");
+  for (const file of generated.files) assert.doesNotMatch(await readFile(path.join(generated.directory, file), "utf8"), new RegExp(sentinel, "i"), file);
 });
 
 test("unsafe evidence URLs are rejected without leaking their value into diagnostics or generated artifacts", async () => {
