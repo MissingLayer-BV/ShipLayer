@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { parse } from "yaml";
@@ -455,11 +455,25 @@ test("prepare emits a manually-installed workflow_dispatch-only capture workflow
   const workflow = parse(workflowText) as Record<string, unknown>;
   assert.ok("workflow_dispatch" in (workflow.on as Record<string, unknown>));
   assert.equal(Object.keys(workflow.on as Record<string, unknown>).length, 1);
-  const jobs = workflow.jobs as Record<string, { "runs-on": string; "timeout-minutes": number; steps: Array<{ name: string; run?: string; with?: Record<string, unknown> }> }>;
+  const dispatch = (workflow.on as Record<string, Record<string, unknown>>).workflow_dispatch;
+  const inputs = dispatch.inputs as Record<string, Record<string, unknown>>;
+  assert.equal(inputs.xcodegen_spec.type, "choice");
+  assert.equal(inputs.xcodegen_spec.default, "project.yml");
+  assert.deepEqual(inputs.xcodegen_spec.options, ["project.yml"]);
+  const jobs = workflow.jobs as Record<string, { "runs-on": string; "timeout-minutes": number; steps: Array<{ name: string; run?: string; env?: Record<string, string>; with?: Record<string, unknown> }> }>;
   const job = Object.values(jobs)[0];
   assert.equal(job["runs-on"], "macos-latest");
   assert.ok(typeof job["timeout-minutes"] === "number" && job["timeout-minutes"] > 0);
   assert.ok((workflow.concurrency as Record<string, unknown>)?.["cancel-in-progress"] === true);
+  const generateProject = job.steps.find((step) => step.name === "Generate Xcode project");
+  assert.match(generateProject?.run || "", /command -v xcodegen/);
+  assert.match(generateProject?.run || "", /xcodegen generate --spec "\$XCODEGEN_SPEC"/);
+  assert.equal(generateProject?.env?.XCODEGEN_SPEC, "${{ inputs.xcodegen_spec }}");
+  assert.ok(job.steps.indexOf(generateProject!) < job.steps.findIndex((step) => step.name === "Run screenshot UI tests"));
+  const runTests = job.steps.find((step) => step.name === "Run screenshot UI tests");
+  assert.match(runTests?.run || "", /cd "\$\(dirname "\$XCODEGEN_SPEC"\)"/);
+  assert.match(runTests?.run || "", /\$GITHUB_WORKSPACE\/TestResults\/ShipLayerScreenshots\.xcresult/);
+  assert.doesNotMatch(runTests?.run || "", /\$\{\{\s*inputs\./, "manual inputs must reach the shell through env, not expression interpolation");
   // A zero-screenshot extraction must fail the job loudly rather than finish green with only an
   // annotation, and the current (non-"--legacy") xcresulttool invocation must be tried first.
   const uploadScreens = job.steps.find((step) => step.name === "Upload extracted screenshots");
@@ -474,4 +488,93 @@ test("prepare emits a manually-installed workflow_dispatch-only capture workflow
   assert.ok(template.includes("XCTAttachment(screenshot: XCUIScreen.main.screenshot())"));
   const contract = await readFile(path.join(pkg.directory, "screenshots/ui-test-harness-contract.md"), "utf8");
   assert.ok(contract.includes("keepScreenshot(named:)"));
+});
+
+test("prepare enables XcodeGen only for bounded, non-symlinked, successfully parsed scanner specs", async (t) => {
+  const workflowFor = async (root: string): Promise<{ analysis: Awaited<ReturnType<typeof analyzeRepository>>; workflow: Record<string, unknown> }> => {
+    const manifest = readyManifest();
+    const analysis = await analyzeRepository(root);
+    const report = await preflight(root, manifest, false, analysis);
+    const pkg = await generateReleasePackage(root, manifest, analysis, report, "shiplayer-release");
+    const text = await readFile(path.join(pkg.directory, "screenshots/capture-workflow.yml"), "utf8");
+    return { analysis, workflow: parse(text) as Record<string, unknown> };
+  };
+  const assertDisabled = (workflow: Record<string, unknown>): void => {
+    const dispatch = (workflow.on as Record<string, Record<string, unknown>>).workflow_dispatch;
+    const inputs = dispatch.inputs as Record<string, unknown>;
+    assert.equal("xcodegen_spec" in inputs, false);
+    const jobs = workflow.jobs as Record<string, { steps: Array<{ name: string }> }>;
+    assert.equal(Object.values(jobs)[0].steps.some((step) => step.name === "Generate Xcode project"), false);
+  };
+
+  const absent = await mkdtemp(path.join(tmpdir(), "shiplayer-xcodegen-absent-"));
+  await writeReadyAssets(absent, readyManifest());
+  await rm(path.join(absent, "project.yml"));
+  const absentResult = await workflowFor(absent);
+  assert.deepEqual(absentResult.analysis.project.projectYml, []);
+  assertDisabled(absentResult.workflow);
+
+  const invalid = await mkdtemp(path.join(tmpdir(), "shiplayer-xcodegen-invalid-"));
+  await writeReadyAssets(invalid, readyManifest());
+  await writeFile(path.join(invalid, "project.yml"), "name: [unterminated\n");
+  const invalidResult = await workflowFor(invalid);
+  assert.deepEqual(invalidResult.analysis.project.projectYml, []);
+  assert.ok(invalidResult.analysis.unresolvedQuestions.some((question) => question.includes("Could not parse project.yml")));
+  assertDisabled(invalidResult.workflow);
+
+  const unrelated = await mkdtemp(path.join(tmpdir(), "shiplayer-xcodegen-unrelated-yaml-"));
+  await writeReadyAssets(unrelated, readyManifest());
+  await writeFile(path.join(unrelated, "project.yml"), "owner: mobile-team\ntracking: internal\n");
+  const unrelatedResult = await workflowFor(unrelated);
+  assert.deepEqual(unrelatedResult.analysis.project.projectYml, []);
+  assert.ok(unrelatedResult.analysis.unresolvedQuestions.some((question) => question.includes("no non-empty top-level XcodeGen project name")));
+  assertDisabled(unrelatedResult.workflow);
+
+  const oversized = await mkdtemp(path.join(tmpdir(), "shiplayer-xcodegen-oversized-"));
+  await writeReadyAssets(oversized, readyManifest());
+  await writeFile(path.join(oversized, "project.yml"), Buffer.alloc(1_000_001, 0x20));
+  const oversizedResult = await workflowFor(oversized);
+  assert.deepEqual(oversizedResult.analysis.project.projectYml, []);
+  assert.ok(oversizedResult.analysis.ignored.filesOverLimitPaths.includes("project.yml"));
+  assertDisabled(oversizedResult.workflow);
+
+  const linked = await mkdtemp(path.join(tmpdir(), "shiplayer-xcodegen-linked-"));
+  await writeReadyAssets(linked, readyManifest());
+  await rm(path.join(linked, "project.yml"));
+  const outside = await mkdtemp(path.join(tmpdir(), "shiplayer-xcodegen-outside-"));
+  const outsideSpec = path.join(outside, "project.yml");
+  await writeFile(outsideSpec, "name: Outside\n");
+  try { await symlink(outsideSpec, path.join(linked, "project.yml"), "file"); }
+  catch (error) {
+    if (["EPERM", "EACCES", "ENOTSUP"].includes((error as NodeJS.ErrnoException).code || "")) { t.diagnostic("Symlink creation is unavailable on this host; symlink case skipped."); return; }
+    throw error;
+  }
+  const linkedResult = await workflowFor(linked);
+  assert.deepEqual(linkedResult.analysis.project.projectYml, []);
+  assert.ok(linkedResult.analysis.ignored.symlinkFilesIgnored.includes("project.yml"));
+  assertDisabled(linkedResult.workflow);
+});
+
+test("prepare offers every parsed nested XcodeGen spec and runs the selected project from its own directory", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-xcodegen-multiple-"));
+  const manifest = readyManifest(); await writeReadyAssets(root, manifest);
+  const nestedDirectory = path.join(root, "ios app"); await mkdir(nestedDirectory, { recursive: true });
+  await writeFile(path.join(nestedDirectory, "project.yml"), "name: Nested\n");
+  const analysis = await analyzeRepository(root);
+  assert.deepEqual(analysis.project.projectYml, ["ios app/project.yml", "project.yml"]);
+  const report = await preflight(root, manifest, false, analysis);
+  const pkg = await generateReleasePackage(root, manifest, analysis, report, "shiplayer-release");
+  const workflow = parse(await readFile(path.join(pkg.directory, "screenshots/capture-workflow.yml"), "utf8")) as Record<string, unknown>;
+  const dispatch = (workflow.on as Record<string, Record<string, unknown>>).workflow_dispatch;
+  const inputs = dispatch.inputs as Record<string, Record<string, unknown>>;
+  assert.equal(inputs.xcodegen_spec.type, "choice");
+  assert.equal(inputs.xcodegen_spec.default, "project.yml");
+  assert.deepEqual(inputs.xcodegen_spec.options, ["project.yml", "ios app/project.yml"]);
+  const jobs = workflow.jobs as Record<string, { steps: Array<{ name: string; run?: string; env?: Record<string, string> }> }>;
+  const steps = Object.values(jobs)[0].steps;
+  const generate = steps.find((step) => step.name === "Generate Xcode project");
+  assert.equal(generate?.env?.XCODEGEN_SPEC, "${{ inputs.xcodegen_spec }}");
+  assert.match(generate?.run || "", /xcodegen generate --spec "\$XCODEGEN_SPEC"/);
+  const run = steps.find((step) => step.name === "Run screenshot UI tests");
+  assert.match(run?.run || "", /cd "\$\(dirname "\$XCODEGEN_SPEC"\)"/);
 });
