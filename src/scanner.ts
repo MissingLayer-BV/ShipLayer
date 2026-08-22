@@ -55,7 +55,7 @@ const PRIVACY_PURPOSE_MAP: Record<string, string> = { NSPrivacyCollectedDataType
 export async function analyzeRepository(repository: string): Promise<AnalysisReport> {
   const root = path.resolve(repository); const walked = await walkRepository(root); const findings: Finding[] = []; const contradictions: string[] = []; const questions = new Set<string>();
   const byName = (name: string): string[] => walked.files.filter((file) => path.basename(file) === name);
-  const projectYml = byName("project.yml"); const xcodeProjects = walked.files.filter((file) => file.endsWith("project.pbxproj")).map((file) => relative(root, path.dirname(file))); const workspaces = walked.files.filter((file) => file.endsWith("contents.xcworkspacedata")).map((file) => relative(root, path.dirname(file)));
+  const discoveredProjectYml = new Set(byName("project.yml")); const validProjectYml = new Set<string>(); const xcodeProjects = walked.files.filter((file) => file.endsWith("project.pbxproj")).map((file) => relative(root, path.dirname(file))); const workspaces = walked.files.filter((file) => file.endsWith("contents.xcworkspacedata")).map((file) => relative(root, path.dirname(file)));
   const settings: Record<string, Array<{ value: string; evidence: Evidence }>> = {};
   const push = (key: string, value: string, evidence: Evidence): void => {
     const normalized = key === "endpoint" ? normalizeEndpoint(value) : value.trim().replace(/^["']|["']$/g, "");
@@ -101,7 +101,7 @@ export async function analyzeRepository(repository: string): Promise<AnalysisRep
       // than an invisible proxy target only reachable via a $(VARIABLE) indirection elsewhere.
       for (const match of productionSettings.matchAll(/^[ \t]*[A-Za-z_][A-Za-z0-9_]*\s*=\s*["']?(https?:\/\/[^\s;"']+)["']?/gm)) push("endpoint", match[1], { source, excerpt: match[0].slice(0, 220), confidence: "medium", kind });
     }
-    if (file.endsWith("project.yml")) scanXcodeGenProject(content, source, push, questions);
+    if (discoveredProjectYml.has(file) && scanXcodeGenProject(content, source, push, questions)) validProjectYml.add(source);
     if (file.endsWith("Info.plist")) {
       for (const key of PERMISSION_KEYS) { const regex = new RegExp(`<key>${key}</key>\\s*<string>([^<]*)</string>`, "g"); for (const match of content.matchAll(regex)) push(`permission:${key}`, match[1], { source, excerpt: match[0], confidence: "confirmed", kind }); }
       // Any Info.plist string value that is itself a literal URL — not only the named permission
@@ -189,7 +189,7 @@ export async function analyzeRepository(repository: string): Promise<AnalysisRep
   if (walked.filesOverLimit) questions.add(`${walked.filesOverLimit} oversized file(s) were skipped at the ${1_000_000}-byte content limit; inspect them manually.`);
   if (walked.unreadable.length) questions.add(`${walked.unreadable.length} unreadable path(s) were skipped; inspect them manually.`);
   if (walked.symlinksIgnored.length) questions.add(`${walked.symlinksIgnored.length} symlinked path(s) were ignored for containment safety; inspect them manually.`);
-  return { schemaVersion: 1, repository: root, scannedAt: new Date().toISOString(), project: { xcodeProjects: xcodeProjects.sort(), workspaces: workspaces.sort(), projectYml: projectYml.map((file) => relative(root, file)).sort() }, findings: findings.sort((a, b) => a.key.localeCompare(b.key)), contradictions: contradictions.sort(), unresolvedQuestions: [...questions].sort(), ignored: { directories: walked.ignoredDirectories, filesOverLimit: walked.filesOverLimit, filesOverLimitPaths: walked.filesOverLimitPaths, filesScanned: walked.files.length, entriesVisited: walked.entriesVisited, unreadable: walked.unreadable, symlinksIgnored: walked.symlinksIgnored, symlinkDirectoriesIgnored: walked.symlinkDirectoriesIgnored, symlinkFilesIgnored: walked.symlinkFilesIgnored, truncated: walked.truncated } };
+  return { schemaVersion: 1, repository: root, scannedAt: new Date().toISOString(), project: { xcodeProjects: xcodeProjects.sort(), workspaces: workspaces.sort(), projectYml: [...validProjectYml].sort() }, findings: findings.sort((a, b) => a.key.localeCompare(b.key)), contradictions: contradictions.sort(), unresolvedQuestions: [...questions].sort(), ignored: { directories: walked.ignoredDirectories, filesOverLimit: walked.filesOverLimit, filesOverLimitPaths: walked.filesOverLimitPaths, filesScanned: walked.files.length, entriesVisited: walked.entriesVisited, unreadable: walked.unreadable, symlinksIgnored: walked.symlinksIgnored, symlinkDirectoriesIgnored: walked.symlinkDirectoriesIgnored, symlinkFilesIgnored: walked.symlinkFilesIgnored, truncated: walked.truncated } };
 }
 
 function isTestOnlySource(source: string): boolean { const parts = source.split("/"); const basename = parts.at(-1) || ""; return parts.some((component) => /(?:UI)?Tests$|^(?:scripts?|benchmarks?)$/i.test(component)) || /(?:\.test|\.spec)\.[cm]?[jt]sx?$/i.test(basename) || /(?:UI)?Tests?\.xcconfig$/i.test(basename); }
@@ -212,13 +212,13 @@ const XCODEGEN_SETTINGS: Record<string, string> = {
  * extension. Parse the YAML shape so release settings remain evidence while
  * settings from genuine target entries retain their own bundle identities.
  */
-function scanXcodeGenProject(content: string, source: string, push: ScannerFindingPush, questions: Set<string>): void {
+function scanXcodeGenProject(content: string, source: string, push: ScannerFindingPush, questions: Set<string>): boolean {
   let document: unknown;
   // Build settings are semantically strings to Xcode. The failsafe schema
   // preserves values such as 1.0 and 17.0 rather than coercing them to 1/17.
-  try { document = parse(content, { schema: "failsafe" }); } catch { questions.add(`Could not parse ${source}; verify project settings manually.`); return; }
+  try { document = parse(content, { schema: "failsafe" }); } catch { questions.add(`Could not parse ${source}; verify project settings manually.`); return false; }
   const project = asRecord(document);
-  if (!project) { questions.add(`Could not parse ${source}; verify project settings manually.`); return; }
+  if (!project) { questions.add(`Could not parse ${source}; verify project settings manually.`); return false; }
   const appName = stringValue(project.name);
   if (appName) push("appName", appName, { source, excerpt: "XcodeGen project name", confidence: "high", kind: "project-setting" });
 
@@ -273,6 +273,7 @@ function scanXcodeGenProject(content: string, source: string, push: ScannerFindi
   else emit(rootVariants, false);
   for (const target of secondaryTargets) emit(target.variants, true);
   if (ignoredConfigurations.size) questions.add(`Excluded alternate XcodeGen build configuration(s) ${[...ignoredConfigurations].sort().join(", ")} from production release-setting inference.`);
+  return true;
 }
 
 interface XcodeGenSettingValue { value: string; label: string; }

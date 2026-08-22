@@ -37,9 +37,13 @@ export async function generateReleasePackage(repository: string, manifest: ShipL
   await emit("legal/privacy-policy-draft.html", await privacyPage(repository, manifest, analysis)); await emit("legal/support-page-draft.html", await supportPage(repository, manifest, analysis)); await emit("legal/terms-of-use-draft.md", await termsOfUseDraft(repository, manifest, analysis));
   await emit("review/app-review-notes.md", await appReviewNotes(repository, manifest, analysis)); await emit("review/physical-device-recording-script.md", recordingScript(manifest, analysis));
   const screenshotHarness = await detectScreenshotHarness(repository);
-  const usesXcodeGen = await readFile(path.join(repository, "project.yml")).then(() => true, () => false);
+  // Reuse the scanner's bounded, symlink-rejecting, successfully-parsed result instead of
+  // probing the filesystem again. A second read here could follow an out-of-repository symlink
+  // or consume an arbitrarily large/device-backed target merely to answer an existence question.
+  const xcodeGenSpecs = [...new Set(analysis.project.projectYml.map((spec) => safeRelativePath(spec, "analyzed XcodeGen spec")))]
+    .sort((left, right) => left === "project.yml" ? -1 : right === "project.yml" ? 1 : left.localeCompare(right));
   await emit("screenshots/capture-plan.json", stableJson(capturePlan(manifest))); await emitMarketingProject(manifest, outputRelative, emit, emitDeviceFrameAsset); await emit("storekit/checklist.md", await storeKitChecklist(repository, manifest, analysis));
-  await emit("screenshots/ui-test-harness-template.swift", screenshotHarnessTemplate(manifest, screenshotHarness.sourceFiles.length > 0)); await emit("screenshots/ui-test-harness-contract.md", screenshotHarnessContract(manifest, screenshotHarness)); await emit("screenshots/capture-workflow.yml", screenshotCaptureWorkflow(manifest, screenshotHarness, usesXcodeGen));
+  await emit("screenshots/ui-test-harness-template.swift", screenshotHarnessTemplate(manifest, screenshotHarness.sourceFiles.length > 0)); await emit("screenshots/ui-test-harness-contract.md", screenshotHarnessContract(manifest, screenshotHarness)); await emit("screenshots/capture-workflow.yml", screenshotCaptureWorkflow(manifest, screenshotHarness, xcodeGenSpecs));
   await emit("app-store-connect/dry-run-plan.md", dryRunPlan(manifest)); await emit("remaining-human-actions.md", humanActions(packagePreflight));
     await writeText(path.join(stage, ".shiplayer-managed"), "ShipLayer managed release package v1\n"); files.push(".shiplayer-managed");
   await preserveNonDeterministicMarketingArtifacts(repository, out, stage, manifest.screenshots.finalOutputDir || `${outputRelative}/screenshots/final`, files);
@@ -568,7 +572,7 @@ function screenshotHarnessContract(manifest: ShipLayerManifest, harness: { scena
   return `${lines.join("\n")}\n`;
 }
 
-function screenshotCaptureWorkflow(manifest: ShipLayerManifest, harness: { sourceFiles: string[] }, usesXcodeGen: boolean): string {
+function screenshotCaptureWorkflow(manifest: ShipLayerManifest, harness: { sourceFiles: string[] }, xcodeGenSpecs: string[]): string {
   const primaryConfig = manifest.screenshots.configurations.find((configuration) => configuration.family === "iphone") || manifest.screenshots.configurations[0];
   const simulatorDefault = primaryConfig?.device || "iPhone 16 Pro Max";
   const schemeDefault = manifest.app.name || "";
@@ -616,6 +620,15 @@ function screenshotCaptureWorkflow(manifest: ShipLayerManifest, harness: { sourc
     "        description: \"xcodebuild -only-testing Target/Class, e.g. MyAppUITests/MyAppScreenshotUITests. The default is a best-effort guess from the detected source file and directory name — verify it names your real UI Testing target before running, or every UI test in the scheme runs on this 10x-billed runner. Leave blank only if you accept that cost.\"",
     "        required: false",
     `        default: ${yamlDoubleQuoted(onlyTestingDefault)}`,
+    ...(xcodeGenSpecs.length ? [
+      "      xcodegen_spec:",
+      "        description: \"Safely detected XcodeGen project spec to generate\"",
+      "        required: true",
+      `        default: ${yamlDoubleQuoted(xcodeGenSpecs[0])}`,
+      "        type: choice",
+      "        options:",
+      ...xcodeGenSpecs.map((spec) => `          - ${yamlDoubleQuoted(spec)}`)
+    ] : []),
     "",
     "permissions:",
     "  contents: read",
@@ -636,21 +649,29 @@ function screenshotCaptureWorkflow(manifest: ShipLayerManifest, harness: { sourc
     "      - name: Print Xcode version",
     "        run: xcodebuild -version",
     "",
-    ...(usesXcodeGen ? [
+    ...(xcodeGenSpecs.length ? [
       "      - name: Generate Xcode project",
+      "        env:",
+      "          XCODEGEN_SPEC: ${{ inputs.xcodegen_spec }}",
       "        run: |",
       "          if ! command -v xcodegen >/dev/null 2>&1; then brew install xcodegen; fi",
-      "          xcodegen generate",
+      "          xcodegen generate --spec \"$XCODEGEN_SPEC\"",
       ""
     ] : []),
     "      - name: Run screenshot UI tests",
+    "        env:",
+    "          SCHEME: ${{ inputs.scheme }}",
+    "          SIMULATOR_DEVICE: ${{ inputs.simulator_device }}",
+    "          ONLY_TESTING: ${{ inputs.only_testing }}",
+    ...(xcodeGenSpecs.length ? ["          XCODEGEN_SPEC: ${{ inputs.xcodegen_spec }}"] : []),
     "        run: |",
     "          EXTRA=()",
-    "          if [ -n \"${{ inputs.only_testing }}\" ]; then EXTRA+=(-only-testing:\"${{ inputs.only_testing }}\"); fi",
+    "          if [ -n \"$ONLY_TESTING\" ]; then EXTRA+=(-only-testing:\"$ONLY_TESTING\"); fi",
+    ...(xcodeGenSpecs.length ? ["          cd \"$(dirname \"$XCODEGEN_SPEC\")\""] : []),
     "          xcodebuild test \\",
-    "            -scheme \"${{ inputs.scheme }}\" \\",
-    "            -destination \"platform=iOS Simulator,name=${{ inputs.simulator_device }}\" \\",
-    "            -resultBundlePath TestResults/ShipLayerScreenshots.xcresult \\",
+    "            -scheme \"$SCHEME\" \\",
+    "            -destination \"platform=iOS Simulator,name=$SIMULATOR_DEVICE\" \\",
+    "            -resultBundlePath \"$GITHUB_WORKSPACE/TestResults/ShipLayerScreenshots.xcresult\" \\",
     "            \"${EXTRA[@]}\"",
     "",
     "      - name: Extract screenshot attachments from the .xcresult",
