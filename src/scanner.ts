@@ -220,7 +220,11 @@ function scanXcodeGenProject(content: string, source: string, push: ScannerFindi
   const project = asRecord(document);
   if (!project) { questions.add(`Could not parse ${source}; verify project settings manually.`); return false; }
   const appName = stringValue(project.name);
-  if (appName) push("appName", appName, { source, excerpt: "XcodeGen project name", confidence: "high", kind: "project-setting" });
+  // `project.yml` is a generic filename. A syntactically valid YAML mapping is not enough to
+  // justify installing XcodeGen on a paid macOS runner: XcodeGen requires the resolved project
+  // to have a name, and ShipLayer deliberately does not follow arbitrary include graphs here.
+  if (!appName) { questions.add(`${source} has no non-empty top-level XcodeGen project name; verify whether it is an XcodeGen spec manually.`); return false; }
+  push("appName", appName, { source, excerpt: "XcodeGen project name", confidence: "high", kind: "project-setting" });
 
   const ignoredConfigurations = new Set<string>();
   const variants = (candidate: unknown, label: string): XcodeGenSettingsVariant[] => {

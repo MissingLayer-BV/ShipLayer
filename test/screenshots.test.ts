@@ -522,6 +522,14 @@ test("prepare enables XcodeGen only for bounded, non-symlinked, successfully par
   assert.ok(invalidResult.analysis.unresolvedQuestions.some((question) => question.includes("Could not parse project.yml")));
   assertDisabled(invalidResult.workflow);
 
+  const unrelated = await mkdtemp(path.join(tmpdir(), "shiplayer-xcodegen-unrelated-yaml-"));
+  await writeReadyAssets(unrelated, readyManifest());
+  await writeFile(path.join(unrelated, "project.yml"), "owner: mobile-team\ntracking: internal\n");
+  const unrelatedResult = await workflowFor(unrelated);
+  assert.deepEqual(unrelatedResult.analysis.project.projectYml, []);
+  assert.ok(unrelatedResult.analysis.unresolvedQuestions.some((question) => question.includes("no non-empty top-level XcodeGen project name")));
+  assertDisabled(unrelatedResult.workflow);
+
   const oversized = await mkdtemp(path.join(tmpdir(), "shiplayer-xcodegen-oversized-"));
   await writeReadyAssets(oversized, readyManifest());
   await writeFile(path.join(oversized, "project.yml"), Buffer.alloc(1_000_001, 0x20));
