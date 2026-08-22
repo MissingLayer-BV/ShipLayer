@@ -78,6 +78,42 @@ test("collectionDetermination 'not-collection' with a whitespace-only reason sti
   assert.ok(report.results.some((item) => item.id === "privacy.processor.cdn.example.com.collection-determination" && item.severity === "block"));
 });
 
+test("not-collection reasons reject placeholders and uncertainty but accept concise concrete request-handling facts", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-collection-reason-quality-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  manifest.externalProcessors.push(processor({ collectionDetermination: "not-collection" }));
+
+  for (const reason of ["TODO", "I think so", "x"]) {
+    manifest.externalProcessors[0].collectionDeterminationReason = reason;
+    const report = await preflight(root, manifest);
+    assert.ok(report.results.some((item) => item.id === "privacy.processor.cdn.example.com.collection-determination" && item.severity === "block"), reason);
+    assert.equal(report.canSubmit, false, reason);
+  }
+
+  manifest.externalProcessors[0].collectionDeterminationReason = "No request logs.";
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "privacy.processor.cdn.example.com.collection-determination" && item.severity === "pass"));
+  assert.equal(report.summary.block, 0, report.results.filter((item) => item.severity === "block").map((item) => item.message).join("; "));
+  assert.equal(report.canSubmit, true);
+});
+
+test("a declared dataProcessing row requires literal confirmation and known identity/tracking answers", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-data-processing-confirmation-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  manifest.dataProcessing.push({ category: "Product Interaction", purpose: ["App Functionality"], linkedToIdentity: "unknown", usedForTracking: "unknown", confirmation: "not-applicable" });
+
+  let report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "privacy.Product Interaction" && item.severity === "block"));
+  assert.equal(report.canSubmit, false);
+
+  manifest.dataProcessing[0].confirmation = "confirmed";
+  report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "privacy.Product Interaction.details" && item.severity === "block"));
+  assert.equal(report.canSubmit, false);
+});
+
 test("collectionDetermination 'collection' with a matching confirmed dataProcessing row passes both checks", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-collection-yes-matched-"));
   const manifest = readyManifest();

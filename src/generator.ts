@@ -7,6 +7,7 @@ import type { AnalysisReport, LocaleCopy, PreflightReport, ShipLayerManifest } f
 import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, externalServiceFindings, MONETIZATION_CONTRADICTION_FINDING, resolveContradictionOverride, storekitPurchaseEvidence } from "./evidence.js";
 import { detectScreenshotHarness } from "./scanner.js";
 import { buildMarketingSlideEntries, DEFAULT_MARKETING_FINAL_DIR, DEFAULT_OUTPUT_DIRECTORY, EXPORT_MJS, frameForFamily, renderPackageJson, renderReadme, renderSlideHtml, renderSlidesManifestJson, STRIP_ALPHA_MJS } from "./marketing.js";
+import { assessCollectionDeterminationReason, collectionDeterminationReasonIssueMessage } from "./privacy.js";
 
 export interface PreparedPackage { directory: string; files: string[] }
 const RESERVED_OUTPUT_ROOTS = new Set([".git", ".github", ".shiplayer-staging", "node_modules", "pods", "carthage", "deriveddata", "build", ".build", "dist", ".swiftpm", "vendor", "release", "shiplayer.yml"]);
@@ -218,7 +219,7 @@ async function privacyDraft(repository: string, manifest: ShipLayerManifest, ana
   const questionnaireState = privacyQuestionnaireState(manifest, analysis, preflight);
   const dataCategoryLines = manifest.dataProcessing.length
     ? [
-        ...manifest.dataProcessing.map((item) => `- **${item.category}** — purposes: ${item.purpose.join(", ") || "missing"}; linked to identity: ${item.linkedToIdentity}; tracking: ${item.usedForTracking}; confirmation: ${item.confirmation}.`),
+        ...manifest.dataProcessing.map(dataProcessingQuestionnaireLine),
         "- App Store Connect records categories for the app as a whole. Do not select ‘Data Not Collected’ while any category above remains declared; a processor’s not-collection conclusion does not remove a category collected locally or by another processor."
       ]
     : questionnaireState.canConsiderDataNotCollected
@@ -248,13 +249,21 @@ async function privacyDraft(repository: string, manifest: ShipLayerManifest, ana
 function externalProcessorQuestionnaireLine(processor: ShipLayerManifest["externalProcessors"][number]): string {
   const base = `- **${processor.name}** (${processor.kind}) — ${processor.purpose}; data: ${processor.dataCategories.join(", ")};`;
   const aggregateReminder = ` App Store Connect is aggregate: keep a category declared whenever it is collected locally or by any other processor.`;
+  const reason = assessCollectionDeterminationReason(processor.collectionDeterminationReason);
   let determination: string;
   if (processor.confirmation !== "confirmed") determination = ` UNVERIFIED: processor confirmation is ${processor.confirmation}; do not rely on its collection determination until a human confirms this processor.`;
   else if (processor.collectionDetermination !== "not-collection" && processor.collectionDetermination !== "collection") determination = " UNVERIFIED: collection determination is unanswered; resolve it before using this row in the app-wide questionnaire.";
-  else if (processor.collectionDetermination === "not-collection" && !processor.collectionDeterminationReason?.trim()) determination = " UNVERIFIED: marked not-collection but no non-blank human reason records the real-time-service basis.";
-  else if (processor.collectionDetermination === "not-collection") determination = ` Human-confirmed not to be App Privacy collection for this processor: ${processor.collectionDeterminationReason!.trim()}. This processor alone adds no category disclosure requirement.${aggregateReminder}`;
+  else if (processor.collectionDetermination === "not-collection" && reason.issue) determination = ` UNVERIFIED: marked not-collection but ${collectionDeterminationReasonIssueMessage(reason.issue)}.`;
+  else if (processor.collectionDetermination === "not-collection") determination = ` Human-confirmed not to be App Privacy collection for this processor: ${reason.normalized}. This processor alone adds no category disclosure requirement.${aggregateReminder}`;
   else determination = ` Human-confirmed to be App Privacy collection for this processor. Include its categories in the app-wide declarations.${aggregateReminder}`;
   return `${base}${determination}; AI-pipeline recipient: ${processor.aiPipelineRecipient}; policy: ${processor.privacyPolicyUrl}; equal protection: ${processor.protectionConfirmation}; confirmation: ${processor.confirmation}.`;
+}
+
+function dataProcessingQuestionnaireLine(item: ShipLayerManifest["dataProcessing"][number]): string {
+  const details = `purposes: ${item.purpose.join(", ") || "missing"}; linked to identity: ${item.linkedToIdentity}; tracking: ${item.usedForTracking}; confirmation: ${item.confirmation}.`;
+  if (item.confirmation !== "confirmed") return `- **${item.category}** — UNVERIFIED: declared App Privacy category is not human-confirmed; ${details}`;
+  if (!item.purpose.length || item.linkedToIdentity === "unknown" || item.usedForTracking === "unknown") return `- **${item.category}** — UNVERIFIED: declared App Privacy category has incomplete purpose, identity-linkage, or tracking answers; ${details}`;
+  return `- **${item.category}** — ${details}`;
 }
 
 /**
@@ -269,8 +278,11 @@ function privacyQuestionnaireState(manifest: ShipLayerManifest, analysis: Analys
   for (const processor of manifest.externalProcessors) {
     if (processor.confirmation !== "confirmed") unresolved.push(`${processor.name} is a declared processor with confirmation ${processor.confirmation}`);
     else if (processor.collectionDetermination !== "not-collection") unresolved.push(`${processor.name} has not been human-confirmed as not-collection`);
-    else if (!processor.collectionDeterminationReason?.trim()) unresolved.push(`${processor.name} has no non-blank not-collection reason`);
-    else if (processor.protectionConfirmation !== "confirmed") unresolved.push(`${processor.name}'s equal-protection confirmation is ${processor.protectionConfirmation}`);
+    else {
+      const reason = assessCollectionDeterminationReason(processor.collectionDeterminationReason);
+      if (reason.issue) unresolved.push(`${processor.name}'s not-collection reason is unresolved: ${collectionDeterminationReasonIssueMessage(reason.issue)}`);
+      else if (processor.protectionConfirmation !== "confirmed") unresolved.push(`${processor.name}'s equal-protection confirmation is ${processor.protectionConfirmation}`);
+    }
   }
   const privacyManifestFindings = analysis.findings.filter((finding) => finding.key.startsWith("privacyManifestData:") || finding.key === "privacyManifestUnparsed");
   if (privacyManifestFindings.length) unresolved.push(`source declares collected-data privacy evidence (${privacyManifestFindings.map((finding) => finding.key).join(", ")})`);

@@ -9,6 +9,7 @@ import { validateAscPrivateKey } from "./asc.js";
 import { appReviewNotes } from "./generator.js";
 import { DEFAULT_MARKETING_FINAL_DIR } from "./marketing.js";
 import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, isLoopbackOrPrivateEndpoint, isNonProductionSourcePath, MONETIZATION_CONTRADICTION_FINDING, PURCHASE_UNAVAILABLE_CONTRADICTION_FINDING, productionEvidenceOnly, resolveContradictionOverride, storekitPurchaseEvidence, stripCodeComments } from "./evidence.js";
+import { assessCollectionDeterminationReason, collectionDeterminationReasonIssueMessage } from "./privacy.js";
 
 // Apple requires ONE uniform size per required display class, and the classes are not
 // interchangeable: a 6.5-inch capture does not satisfy the 6.9-inch slot. Each display class is
@@ -786,8 +787,7 @@ function confirmationChecks(manifest: ShipLayerManifest, add: Add): void {
     else add(`confirmation.${key}`, "block", `${key} declaration requires explicit human confirmation.`, "Confirm only after reviewing the App Store Connect/legal requirement.");
   }
   for (const item of manifest.dataProcessing) {
-    if (item.confirmation === "confirmed" || item.confirmation === "not-applicable") continue;
-    add(`privacy.${item.category}`, "block", `${item.category} requires human privacy confirmation.`, "Confirm collection, use, tracking, identity linkage, and third-party processing.");
+    if (item.confirmation !== "confirmed") add(`privacy.${item.category}`, "block", `${item.category} is a declared App Privacy data category but is not human-confirmed.`, "Confirm collection, use, tracking, and identity linkage, or remove this dataProcessing row if it is not applicable. A declared data category cannot use confirmation: not-applicable.");
   }
   // A row in externalProcessors is itself a claim that the app uses that processor. Unlike a
   // dataProcessing row, it therefore cannot be marked "not-applicable": that value used to let
@@ -1434,8 +1434,9 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
     const determination = processor.collectionDetermination;
     if (determination !== "collection" && determination !== "not-collection") { add(`privacy.processor.${processor.name}.collection-determination`, "block", `${processor.name} has no human-confirmed determination of whether its receipt of data is "collection" under Apple's App Privacy definition.`, "Set externalProcessors[].collectionDetermination to 'collection' or 'not-collection', based on whether this processor retains data beyond servicing the request in real time — see references/questions.md."); continue; }
     if (determination === "not-collection") {
-      if (!processor.collectionDeterminationReason || !processor.collectionDeterminationReason.trim().length) { add(`privacy.processor.${processor.name}.collection-determination`, "block", `${processor.name} is declared 'not-collection' but records no reason.`, "Record why this processor's receipt of data falls under Apple's real-time-service exception (transmitted only to service the request, not retained)."); continue; }
-      add(`privacy.processor.${processor.name}.collection-determination`, "pass", `${processor.name} is human-confirmed not to constitute "collection" under Apple's App Privacy definition: ${processor.collectionDeterminationReason}`);
+      const reason = assessCollectionDeterminationReason(processor.collectionDeterminationReason);
+      if (reason.issue) { add(`privacy.processor.${processor.name}.collection-determination`, "block", `${processor.name} is declared 'not-collection' but ${collectionDeterminationReasonIssueMessage(reason.issue)}.`, "Record a concrete, checked basis describing what happens to the request after service (for example, documented no request logs or immediate discard). Do not use a placeholder or an uncertain statement."); continue; }
+      add(`privacy.processor.${processor.name}.collection-determination`, "pass", `${processor.name} is human-confirmed not to constitute "collection" under Apple's App Privacy definition: ${reason.normalized}`);
       continue; // a confirmed non-collection processor makes no App Privacy claim, so no dataProcessing row can or should be demanded for it
     }
     add(`privacy.processor.${processor.name}.collection-determination`, "pass", `${processor.name} is human-confirmed to constitute "collection" under Apple's App Privacy definition.`);

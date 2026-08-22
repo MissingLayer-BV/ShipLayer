@@ -149,3 +149,39 @@ test("unreconciled endpoints and an unconfirmed app-wide privacy declaration pre
   assert.match(draft, /UNVERIFIED: the scanner detected 1 network\/SDK finding/);
   assert.doesNotMatch(draft, /support considering .Data Not Collected./);
 });
+
+test("an unconfirmed dataProcessing row is explicitly unresolved in the questionnaire and blocks submit", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-questionnaire-data-processing-confirmation-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  manifest.dataProcessing = [{ category: "Product Interaction", purpose: ["App Functionality"], linkedToIdentity: "unknown", usedForTracking: "unknown", confirmation: "not-applicable" }];
+
+  const { draft, report } = await questionnaire(root, manifest);
+  assert.ok(hasBlock(report, "privacy.Product Interaction"));
+  assert.equal(report.canSubmit, false);
+  assert.match(draft, /UNVERIFIED: declared App Privacy category is not human-confirmed/);
+  assert.match(draft, /confirmation: not-applicable/);
+  assert.match(draft, /Do not select .Data Not Collected. while any category above remains declared/);
+});
+
+test("questionnaire uses the same not-collection reason policy as preflight", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-questionnaire-reason-quality-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  manifest.externalProcessors = [processor("cdn.example.com", ["Product Interaction"], { collectionDetermination: "not-collection" })];
+
+  for (const reason of ["TODO", "I think so", "x"]) {
+    manifest.externalProcessors[0].collectionDeterminationReason = reason;
+    const generated = await questionnaire(root, manifest);
+    assert.ok(hasBlock(generated.report, "privacy.processor.cdn.example.com.collection-determination"), reason);
+    assert.equal(generated.report.canSubmit, false, reason);
+    assert.match(generated.draft, /UNVERIFIED: marked not-collection but the reason is (?:a placeholder|uncertain)/, reason);
+    assert.doesNotMatch(generated.draft, /Human-confirmed not to be App Privacy collection/, reason);
+  }
+
+  manifest.externalProcessors[0].collectionDeterminationReason = "No request logs.";
+  const generated = await questionnaire(root, manifest);
+  assert.equal(generated.report.summary.block, 0, generated.report.results.filter((item) => item.severity === "block").map((item) => item.message).join("; "));
+  assert.equal(generated.report.canSubmit, true);
+  assert.match(generated.draft, /Human-confirmed not to be App Privacy collection for this processor: No request logs/);
+});
