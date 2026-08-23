@@ -328,8 +328,9 @@ anywhere in `shiplayer.yml`, including free-text fields like `setupInstructions`
 gives you literal credentials, tell them where those values actually need to live (their own
 secrets store / CI environment) and only record the *variable name* in the manifest. Confirm the
 credentials actually work in the current build — ask the owner to log in with them — before
-setting `credentialsEnteredConfirmation: confirmed`; don't take their word that they "should"
-work.
+setting `credentialsEnteredConfirmation: confirmed`; this confirmation authorizes ShipLayer to
+send the environment-backed values to App Store Connect during a separately approved apply, but
+does not itself authorize that apply. Don't take their word that the credentials "should" work.
 
 ## Availability and subscription territory
 

@@ -24,14 +24,16 @@ test("remote discovery selects IOS version and reads screenshot sets through ver
   const client = new AppStoreConnectClient({ issuerId: "issuer", keyId: "kid", privateKeyPath }, async (url, init) => {
     paths.push(url); assert.match(String(init?.headers && (init.headers as Record<string, string>).Authorization), /^Bearer /);
     const body = url.includes("/apps?") ? { data: [{ id: "app-id" }] }
-      : url.includes("/appStoreVersions?") ? { data: [{ id: "mac", attributes: { platform: "MAC_OS", versionString: "1.0" } }, { id: "ios", attributes: { platform: "IOS", versionString: "1.0" } }] }
+      : url.includes("/appStoreVersions?") ? { data: [{ id: "mac", attributes: { platform: "MAC_OS", versionString: "1.0" } }, { id: "ios", attributes: { platform: "IOS", versionString: "1.0", appStoreState: "PREPARE_FOR_SUBMISSION" } }] }
+      : url.includes("/apps/app-id/appInfos") ? { data: [{ id: "live-info", attributes: { appStoreState: "READY_FOR_DISTRIBUTION" } }, { id: "draft-info", attributes: { appStoreState: "PREPARE_FOR_SUBMISSION" } }] }
       : url.includes("/appStoreVersions/ios/appStoreVersionLocalizations") ? { data: [{ id: "localization" }] }
-      : url.includes("/appStoreVersionLocalizations/localization/appScreenshotSets") ? { data: [{ id: "set" }], included: [{ id: "image", type: "appScreenshots" }] }
+      : url.includes("/appScreenshotSets/set/appScreenshots") ? { data: [{ id: "image", type: "appScreenshots" }] }
+      : url.includes("/appStoreVersionLocalizations/localization/appScreenshotSets") ? { data: [{ id: "set" }] }
       : { data: [] };
     return { ok: true, status: 200, text: async () => JSON.stringify(body) };
   });
   const result = await client.discover("com.example.app", { version: "1.0" });
-  assert.equal(result.versions.length, 1); assert.equal(result.screenshotSets.length, 1); assert.equal(result.screenshots.length, 1); assert.ok(paths.some((item) => item.includes("/appStoreVersionLocalizations/localization/appScreenshotSets"))); assert.ok(!paths.some((item) => item.includes("/appStoreVersions/ios/appScreenshotSets")));
+  assert.equal(result.versions.length, 1); assert.equal(result.appInfos[0]?.id, "draft-info"); assert.equal(result.screenshotSets.length, 1); assert.equal(result.screenshots.length, 1); assert.ok(paths.some((item) => item.includes("/appInfos/draft-info/appInfoLocalizations"))); assert.ok(!paths.some((item) => item.includes("/appInfos/live-info/appInfoLocalizations"))); assert.ok(paths.some((item) => item.includes("/appStoreVersionLocalizations/localization/appScreenshotSets"))); assert.ok(!paths.some((item) => item.includes("/appStoreVersions/ios/appScreenshotSets")));
 });
 test("discovery preserves included pagination, one review-detail objects, and subscription products", async () => {
   const privateKeyPath = await keyPath(); const paths: string[] = [];
@@ -40,11 +42,13 @@ test("discovery preserves included pagination, one review-detail objects, and su
     const body = url.includes("/apps?") ? { data: [{ id: "app" }] }
       : url.includes("appStoreVersions?") ? { data: [{ id: "version", attributes: { platform: "IOS", versionString: "1.0" } }] }
       : url.includes("/appStoreVersions/version/build") ? { data: { id: "build", attributes: { version: "9" } } }
-      : url.includes("appStoreVersionAppReviewDetail") ? { data: { id: "review-detail" } }
+      : url.includes("appStoreReviewDetail") ? { data: { id: "review-detail" } }
+      : url.includes("/builds?") ? { data: [{ id: "build", attributes: { version: "9", processingState: "VALID" } }] }
       : url.includes("subscriptionGroups?") ? { data: [{ id: "group" }] }
       : url.includes("subscriptionGroups/group/subscriptions") ? { data: [{ id: "subscription" }] }
-      : url.endsWith("/one") ? { data: [{ id: "second" }], included: [{ id: "second-image", type: "appScreenshots" }] }
-      : url.includes("appScreenshotSets") ? { data: [{ id: "set" }], included: [{ id: "first-image", type: "appScreenshots" }], links: { next: "https://api.appstoreconnect.apple.com/v1/one" } }
+      : url.endsWith("/one") ? { data: [{ id: "second-image", type: "appScreenshots" }] }
+      : url.includes("/appScreenshotSets/set/appScreenshots") ? { data: [{ id: "first-image", type: "appScreenshots" }], links: { next: "https://api.appstoreconnect.apple.com/v1/one" } }
+      : url.includes("appScreenshotSets") ? { data: [{ id: "set" }] }
       : url.includes("appStoreVersionLocalizations") ? { data: [{ id: "locale" }] } : { data: [] };
     return { ok: true, status: 200, text: async () => JSON.stringify(body) };
   });
@@ -74,8 +78,31 @@ test("ASC client follows bounded official pagination and retries 429 reads", asy
 
 test("ASC errors redact sensitive response text and never write", async () => {
   const privateKeyPath = await keyPath();
-  const client = new AppStoreConnectClient({ issuerId: "issuer", keyId: "kid", privateKeyPath }, async () => ({ ok: false, status: 400, text: async () => "password=super-secret Bearer abc.def.ghi" }));
-  await assert.rejects(() => client.get("/apps"), (error: Error) => !error.message.includes("super-secret") && !error.message.includes("abc.def.ghi"));
+  const client = new AppStoreConnectClient({ issuerId: "issuer", keyId: "kid", privateKeyPath }, async () => ({ ok: false, status: 400, text: async () => 'password=super-secret Bearer abc.def.ghi {"demoAccountPassword":"json-secret\\"still-secret"}' }));
+  await assert.rejects(() => client.get("/apps"), (error: Error) => !error.message.includes("super-secret") && !error.message.includes("abc.def.ghi") && !error.message.includes("json-secret") && !error.message.includes("still-secret"));
+});
+
+test("ASC mutations are not retried and report possible partial state", async () => {
+  const privateKeyPath = await keyPath(); let calls = 0;
+  const client = new AppStoreConnectClient({ issuerId: "issuer", keyId: "kid", privateKeyPath }, async () => { calls++; return { ok: false, status: 500, text: async () => "temporary" }; });
+  await assert.rejects(() => client.post("/appInfoLocalizations", { data: {} }), /Partial remote changes may have occurred/);
+  assert.equal(calls, 1);
+});
+
+test("ASC validates complete upload byte ranges before contacting the unsigned asset host", async () => {
+  const privateKeyPath = await keyPath(); let calls = 0;
+  const client = new AppStoreConnectClient({ issuerId: "issuer", keyId: "kid", privateKeyPath }, async () => { calls++; return { ok: true, status: 200, text: async () => "" }; });
+  await assert.rejects(() => client.uploadAsset([{ method: "PUT", url: "https://upload.example.test/object", offset: 1, length: 2, requestHeaders: [] }], Buffer.from("abc")), /overlapping or incomplete/);
+  await assert.rejects(() => client.uploadAsset([{ method: "PUT", url: "http://upload.example.test/object", offset: 0, length: 3, requestHeaders: [] }], Buffer.from("abc")), /unsafe asset upload URL/);
+  assert.equal(calls, 0);
+});
+
+test("ASC bounds and retries idempotent asset uploads", async () => {
+  const privateKeyPath = await keyPath(); let calls = 0;
+  const hangingFetcher = async (_url: string, init?: RequestInit): Promise<never> => await new Promise<never>((_resolve, reject) => { calls++; if (init?.signal?.aborted) { reject(Object.assign(new Error("aborted"), { name: "AbortError" })); return; } init?.signal?.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true }); });
+  const client = new AppStoreConnectClient({ issuerId: "issuer", keyId: "kid", privateKeyPath }, hangingFetcher, 10_000, 1);
+  await assert.rejects(() => client.uploadAsset([{ method: "PUT", url: "https://upload.example.test/object", offset: 0, length: 3, requestHeaders: [] }], Buffer.from("abc")), /asset upload failed/);
+  assert.equal(calls, 3);
 });
 
 test("ASC request timeout is bounded and reports no mutation", async () => {

@@ -44,10 +44,10 @@ test("nested managed output works without escaping the repository", async () => 
   assert.equal(first.directory, second.directory);
 });
 
-test("unsupported apply and submit execution return exit code 3", async () => {
+test("apply fails closed without credentials and submit execution remains unsupported", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-unsupported-")); const manifest = readyManifest(); await writeReadyAssets(root, manifest); await writeManifest(root, manifest);
   const command = "./node_modules/.bin/tsx";
-  const apply = spawnSync(command, ["src/index.ts", "apply", root, "--apply", "--yes-i-understand", "--json"], { encoding: "utf8" }); assert.equal(apply.status, 3); assert.equal(JSON.parse(apply.stdout).unsupported, true);
+  const apply = spawnSync(command, ["src/index.ts", "apply", root, "--apply", "--yes-i-understand", "--json"], { encoding: "utf8" }); assert.equal(apply.status, 2); assert.match(JSON.parse(apply.stdout).error, /sync.mode is dry-run/);
   const submit = spawnSync(command, ["src/index.ts", "submit", root, "--submit", "--yes-submit", "--json"], { encoding: "utf8" }); assert.equal(submit.status, 3); assert.equal(JSON.parse(submit.stdout).unsupported, true);
 });
 
