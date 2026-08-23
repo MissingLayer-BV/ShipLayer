@@ -390,6 +390,32 @@ test("capture --from recursively finds screenshots nested under subdirectories, 
   assert.equal(result.ingested[0].sourceFile, path.join("testEmptyHomeShowsFirstUseActions", "home.png"));
 });
 
+test("capture --from resolves UUID xcresulttool exports through each adjacent manifest.json", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-ingest-xcresult-manifest-"));
+  const manifest = readyManifest(); manifest.screenshots.scenarios = [
+    { id: "reader", title: "Quran reader, Arabic and translation together", steps: ["Launch"] },
+    { id: "tafsir", title: "Tafsir sheet on a verse", steps: ["Open"] },
+  ]; await writeReadyAssets(root, manifest); await writeManifest(root, manifest);
+  const from = await mkdtemp(path.join(tmpdir(), "shiplayer-exported-xcresult-manifest-"));
+  const previous = path.join(from, "previous", "artifact"); const retry = path.join(from, "retry", "artifact");
+  await mkdir(previous, { recursive: true }); await mkdir(retry, { recursive: true });
+  await writeFile(path.join(previous, "E29293B7-E777-4B4D-AEA3-85751DBDF66F.png"), png(1320, 2868));
+  await writeFile(path.join(retry, "B85F3960-8133-4BBF-8393-807F9C3F3DE0.png"), png(1320, 2868));
+  await writeFile(path.join(previous, "manifest.json"), JSON.stringify([{ attachments: [{
+    exportedFileName: "E29293B7-E777-4B4D-AEA3-85751DBDF66F.png",
+    suggestedHumanReadableName: "Quran reader, Arabic and translation together_0_0C7DD888.png",
+  }] }]));
+  await writeFile(path.join(retry, "manifest.json"), JSON.stringify([{ attachments: [{
+    exportedFileName: "B85F3960-8133-4BBF-8393-807F9C3F3DE0.png",
+    suggestedHumanReadableName: "Tafsir sheet on a verse_0_A73CCD8B.png",
+  }] }]));
+  const result = await ingestCaptures(root, manifest, { from, family: "iphone", locale: "en-US" });
+  assert.deepEqual(result.ingested.map((item) => item.scenarioId).sort(), ["reader", "tafsir"]);
+  assert.equal(result.skipped.length, 0);
+  assert.ok((await readFile(path.join(root, result.destinationDirectory, "reader.png"))).length > 0);
+  assert.ok((await readFile(path.join(root, result.destinationDirectory, "tafsir.png"))).length > 0);
+});
+
 test("capture --from rejects a batch mixing two individually-valid dimensions", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-ingest-mixed-"));
   const manifest = readyManifest(); manifest.screenshots.scenarios = [{ id: "aaa-home", title: "Home", steps: ["Launch"] }, { id: "bbb-detail", title: "Detail", steps: ["Open"] }]; await writeReadyAssets(root, manifest); await writeManifest(root, manifest);
