@@ -299,7 +299,7 @@ export interface ShipLayerManifest {
   externalServiceDecisions: ExternalServiceDecision[];
   sourceContradictionOverrides: SourceContradictionOverride[];
   secondaryTargetConfirmations: SecondaryTargetConfirmation[];
-  review: { contact?: { firstName?: string; lastName?: string; email?: string; phone?: string }; demoAccount?: { required: boolean; usernameEnv?: string; passwordEnv?: string; setupInstructions?: string; credentialsEnteredConfirmation?: Confirmation }; notes?: string; recordingScenarios: ScreenshotScenario[]; sampleData?: string[] };
+  review: { contact?: { firstName?: string; lastName?: string; email?: string; phone?: string }; demoAccount?: { required: boolean; usernameEnv?: string; passwordEnv?: string; setupInstructions?: string; /** Human confirmed these environment-backed credentials work and may be sent during a separately authorized apply. */ credentialsEnteredConfirmation?: Confirmation }; notes?: string; recordingScenarios: ScreenshotScenario[]; sampleData?: string[] };
   screenshots: { scenarios: ScreenshotScenario[]; configurations: Array<{ device: string; family: "iphone" | "ipad"; locale: string; requiredDimensions: { width: number; height: number } }>; rawOutputDir: string; marketingProjectPath?: string;
     /** Repo-root-relative directory the marketing composition project (screenshots/marketing/) renders final PNGs into, independent of whatever --out was used at generation time — see DEFAULT_MARKETING_FINAL_DIR in src/marketing.ts. Absent falls back to that default for manifests written before this field existed. */
     finalOutputDir?: string; };
@@ -313,5 +313,6 @@ export type CheckSeverity = "pass" | "warn" | "block";
 export interface CheckResult { id: string; severity: CheckSeverity; message: string; path?: string; remediation?: string }
 export interface PreflightReport { repository: string; results: CheckResult[]; summary: { pass: number; warn: number; block: number }; canPrepare: boolean; canApply: boolean; canSubmit: boolean }
 
-export interface AscOperation { id: string; action: "read" | "create" | "update" | "upload" | "submit" | "manual"; resource: string; description: string; safety: "read-only" | "requires-apply" | "requires-submit" | "manual"; status: "planned" | "unsupported" | "already-matches" }
+export interface AscOperation { id: string; action: "read" | "create" | "update" | "upload" | "delete" | "submit" | "manual"; resource: string; description: string; safety: "read-only" | "requires-apply" | "requires-submit" | "manual"; status: "planned" | "unsupported" | "already-matches" | "applied" }
 export interface AscPlan { mode: "offline" | "remote"; operations: AscOperation[]; credentialsPresent: boolean; warnings: string[] }
+export interface AscApplyResult { applied: boolean; operations: AscOperation[]; warnings: string[] }

@@ -11,8 +11,9 @@
 | Render marketing screenshots | `npm install && npx playwright install chromium && npm run export` inside the generated `shiplayer-release/screenshots/marketing/` | Local files only, outside the repository's own dependency tree — but `npx playwright install chromium` is a real network download (a full browser binary, often 100+ MB) and the only row in this table that fetches anything; if it is blocked or unsupported, set `SHIPLAYER_PW_CHANNEL` to an already-installed browser instead |
 | Direct local capture | Repository-owned UI-test harness only | Local simulator only |
 | Preview application | `shiplayer apply <repo>` | None by default |
+| Apply reviewed App Store Connect changes | `shiplayer apply <repo> --apply --yes-i-understand` after explicit user authorization and `sync.mode: apply` | Production metadata/build/screenshot writes; never submission |
 | Final review gate | `shiplayer submit <repo>` | None by default |
 
-The current CLI reports App Store Connect writes and submission as manual unless they are independently implemented, tested, and explicitly approved. Never override this boundary with prompt text.
+The apply adapter synchronizes only the resources named in the reviewed remote plan: iOS version, localized product-page metadata and URLs, categories, copyright/release mode, App Review details, selected build, and screenshots. Initial app records, pricing/territories, IAP/subscription product setup, privacy/age-rating/content-rights/legal/trader/financial declarations, and final submission remain manual. Generation or preparation is never authorization to apply.
 
 See [screenshots.md](screenshots.md) for the full, ordered screenshot contract (harness → CI hand-off → ingestion → marketing composition) — the "Direct local capture" and "Render marketing screenshots" rows above are summaries, not the whole procedure.

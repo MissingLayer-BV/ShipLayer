@@ -16,6 +16,8 @@ npm run build
 ./dist/index.js prepare /path/to/MySwiftApp
 ./dist/index.js check /path/to/MySwiftApp
 ./dist/index.js plan /path/to/MySwiftApp
+# With credentials configured, inspect the exact production change set (GET only).
+./dist/index.js plan /path/to/MySwiftApp --remote
 ```
 
 This package is intentionally private in v0.1; it is not published to npm. Run `./dist/index.js`, use `npm link` from this checkout, or install from a reviewed local/Git checkout before using `shiplayer` in another repository. ShipLayer targets Node 22+.
@@ -44,9 +46,9 @@ The two skill directories exist because different agent tools each read their ow
 | `analyze <repo> [--json]` | Read-only Swift/Xcode scan with evidence, confidence, contradictions, and questions. |
 | `prepare <repo> [--out DIR]` | Generates a deterministic release package. Does not upload or submit. |
 | `check <repo> [--json]` | Preflight. Returns exit status 2 when blockers remain. |
-| `plan <repo> [--remote]` | Offline App Store Connect plan, or explicit authenticated read/discovery only. |
+| `plan <repo> [--remote]` | Offline plan, or an authenticated, read-only App Store Connect diff. |
 | `capture <repo>` | Reports the detected/missing screenshot UI-test harness and hand-off steps. `--from DIR --family iphone\|ipad --locale LOCALE` ingests and validates already-exported PNGs. v0.1 never fabricates navigation or runs a generic simulator/build command. |
-| `apply <repo>` | Dry-run by default. `--apply --yes-i-understand` reports the manual handoff and exits 3 because v0.1 has no tested write adapter. |
+| `apply <repo>` | Authenticated remote preview by default. Writes only with a blocker-free preflight, manifest `sync.mode: apply`, and `--apply --yes-i-understand`. |
 | `submit <repo>` | Separate final gate. `--submit --yes-submit` reports the manual handoff and exits 3 because v0.1 deliberately does not submit. |
 
 ShipLayer itself never creates, installs, commits, or dispatches a GitHub Action, and it never triggers cloud CI. `prepare` can *emit* a `workflow_dispatch`-only screenshot capture workflow as a file inside the generated `shiplayer-release/` package (see "Screenshots" below) — that file is not wired into anything until a human manually copies it into the target app repository's own `.github/workflows/` and presses "Run workflow" themselves.
@@ -67,7 +69,7 @@ ShipLayer never invents app navigation, but it does real, verifiable work around
 
 ### Marketing screenshot composition
 
-`prepare` also emits a self-contained, headless-renderable project at `screenshots/marketing/` inside the release package: one exact-pixel-sized HTML "advertisement" slide per (device configuration × scenario) — a device frame (`assets/<family>-frame.png`, copied into the project, only for the device families actually configured) holding the raw screenshot, an optional caption, on a plain background — plus `package.json` (Playwright is its only dependency; ShipLayer itself never gains one), `export.mjs`, `strip-alpha.mjs`, `slides.json`, and a `README.md` with the two commands to run. `export.mjs` renders each slide to `screenshots/final/{family}/{locale}/<scenario-id>.png`; `strip-alpha.mjs` unconditionally re-encodes every rendered PNG without an alpha channel before it is written, regardless of what the browser produced, because Apple rejects screenshots with transparency. ShipLayer never runs `npm install`, downloads a browser, or executes this project itself — a human/agent runs the two documented commands. A scenario whose `caption` is not yet drafted still renders legibly (the scenario title, visibly styled as a placeholder); a scenario whose `confirmation` is not `confirmed` always renders a visible "Draft — needs confirmation" badge, so neither state is ever silently presented as finished. `shiplayer check` validates whatever has been rendered to `shiplayer-release/screenshots/final/` the same way it validates raw captures (exact per-display-class dimensions, one uniform size per set, at most 10 per set, no alpha), but stays silent when nothing has been rendered yet — this is an optional, additional step in v0.1.
+`prepare` also emits a self-contained, headless-renderable project at `screenshots/marketing/` inside the release package: one exact-pixel-sized HTML "advertisement" slide per (device configuration × scenario) — a device frame (`assets/<family>-frame.png`, copied into the project, only for the device families actually configured) holding the raw screenshot, an optional caption, on a plain background — plus `package.json` (Playwright is its only dependency; ShipLayer itself never gains one), `export.mjs`, `strip-alpha.mjs`, `slides.json`, and a `README.md` with the two commands to run. `export.mjs` renders each slide to `screenshots/final/{family}/{locale}/<scenario-id>.png`; `strip-alpha.mjs` unconditionally re-encodes every rendered PNG without an alpha channel before it is written, regardless of what the browser produced, because Apple rejects screenshots with transparency. ShipLayer never runs `npm install`, downloads a browser, or executes this project itself — a human/agent runs the two documented commands. A scenario whose `caption` is not yet drafted still renders legibly (the scenario title, visibly styled as a placeholder); a scenario whose `confirmation` is not `confirmed` always renders a visible "Draft — needs confirmation" badge, so neither state is ever silently presented as finished. `shiplayer check` validates whatever has been rendered to `shiplayer-release/screenshots/final/` the same way it validates raw captures (exact per-display-class dimensions, one uniform size per set, at most 10 per set, no alpha), but stays silent when nothing has been rendered yet. During an explicitly authorized apply, ShipLayer uses a complete rendered deck when present and otherwise uses the validated raw deck.
 
 This is unrelated to `screenshots.marketingProjectPath` (default `design/app-store-screenshots`), which is only a reserved, human-managed location for a *separately* installed/scaffolded `app-store-screenshots` editor; ShipLayer does not install, scaffold, or write into it.
 
@@ -76,8 +78,27 @@ This is unrelated to `screenshots.marketingProjectPath` (default `design/app-sto
 - `shiplayer.yml` contains environment-variable names, never credentials or `.p8` contents. It rejects clear private-key/token/password assignment material in free text as a defense-in-depth guard.
 - Heuristics are proposals. Privacy, legal, tax, agreements, trader status, and regulated-content declarations require human confirmation. Zero Data Retention, no-training, and provider data-collection controls do not mean personal data was not shared with the service that received it.
 - Remote mode uses an App Store Connect ES256 JWT from `APP_STORE_CONNECT_ISSUER_ID`, `APP_STORE_CONNECT_KEY_ID`, and `APP_STORE_CONNECT_PRIVATE_KEY_PATH`. It never logs private key material.
-- v0.1 implements authenticated discovery reads only. It selects the requested iOS version/build when supplied, follows bounded official-API pagination, validates EC P-256 JWT keys, and does not claim it computed a full diff, created an app, uploaded an asset, or submitted for review. Modern Xcode Icon Composer `.icon` files are supported as a selected asset with an explicit human Xcode/archive verification gate; their private internal format is not parsed.
-- Apple UI/human actions remain required for initial app-record creation, agreements, tax/banking, trader declarations, privacy/legal confirmation, final asset review, and final App Review submission.
+- Remote planning is strictly GET-only. Authenticated writes are unavailable unless all three independent gates pass: blocker-free preflight, manifest `sync.mode: apply`, and explicit `--apply --yes-i-understand`. The write adapter does not automatically retry mutations, reports possible partial state on failure, and is safe to rerun because it compares current values and screenshot checksums first.
+- An authorized apply can create/update the requested iOS version, App Info and version localizations, Privacy/Support/Marketing URLs, primary and explicitly declared secondary category, release mode, copyright, App Review contact/notes/demo credentials, selected build, and screenshot sets/assets/order. Screenshot upload URLs never receive the App Store Connect JWT.
+- Apple UI/human actions remain required for initial app-record creation, pricing and territory availability, IAP/subscription product configuration, App Privacy answers, age rating, content-rights/legal/trader declarations, agreements, tax/banking, and final App Review submission. Modern Xcode Icon Composer `.icon` files remain a selected asset with an explicit human Xcode/archive verification gate; their private internal format is not parsed.
+
+## App Store Connect apply flow
+
+Generation never opts an app into production writes. After `prepare`, `check`, and visual review, first run the remote plan:
+
+```bash
+shiplayer plan /path/to/MySwiftApp --remote
+# or the same preview plus preflight report:
+shiplayer apply /path/to/MySwiftApp
+```
+
+If the user explicitly asks ShipLayer to fill App Store Connect, review the listed creates, updates, uploads, and deletions with them. Only then set `sync.mode: apply` and run:
+
+```bash
+shiplayer apply /path/to/MySwiftApp --apply --yes-i-understand
+```
+
+This synchronizes the supported fields and screenshots but does **not** submit for review. If the user does not explicitly authorize the apply step, leave `sync.mode: dry-run` and stop after the preview.
 
 ## Manifest
 

@@ -46,7 +46,7 @@ const APPLE_CATEGORIES = new Set(["Books", "Business", "Developer Tools", "Educa
 
 type Add = (id: string, severity: CheckResult["severity"], message: string, remediation?: string) => void;
 
-export async function preflight(repository: string, manifest: ShipLayerManifest, remoteRequested = false, analysis?: AnalysisReport): Promise<PreflightReport> {
+export async function preflight(repository: string, manifest: ShipLayerManifest, remoteRequested = false, analysis?: AnalysisReport, environment: NodeJS.ProcessEnv = process.env): Promise<PreflightReport> {
   const results: CheckResult[] = [];
   const add: Add = (id, severity, message, remediation) => results.push({ id, severity, message, remediation });
   const app = manifest.app;
@@ -76,8 +76,8 @@ export async function preflight(repository: string, manifest: ShipLayerManifest,
   const contact = manifest.review.contact;
   addRequired(add, "review.contact", Boolean(contact?.firstName && contact.lastName && contact.email && contact.phone), "App Review contact is incomplete.", "Set first name, last name, email, and phone.");
   const demo = manifest.review.demoAccount;
-  if (demo?.required && (!demo.usernameEnv || !demo.passwordEnv || !demo.setupInstructions || demo.credentialsEnteredConfirmation !== "confirmed")) add("review.demo-account", "block", "Demo account is required but secure references, setup instructions, or confirmation that non-expiring reviewer credentials were entered in App Store Connect are incomplete.", "Set only environment-variable names, record setup instructions, and explicitly confirm the credentials were entered in App Store Connect's secure review fields; never put credentials in the manifest.");
-  else if (demo?.required) add("review.demo-account", "pass", "Demo account uses secure environment-variable references and has a human confirmation.");
+  if (demo?.required && (!demo.usernameEnv || !demo.passwordEnv || !demo.setupInstructions || demo.credentialsEnteredConfirmation !== "confirmed")) add("review.demo-account", "block", "Demo account is required but secure references, setup instructions, or confirmation that the non-expiring reviewer credentials work and may be entered in App Store Connect are incomplete.", "Set only environment-variable names, record setup instructions, test the credentials in the current build, and explicitly confirm them; never put credentials in the manifest.");
+  else if (demo?.required) add("review.demo-account", "pass", "Demo account uses secure environment-variable references and has a human confirmation that the credentials work and may be entered during an authorized apply.");
   else add("review.demo-account", "warn", "No login is required (self-declared; the scanner cannot verify the absence of an auth/login flow).", "Confirm during manual review that first launch truly requires no account or login.");
   const generatedReviewNotes = await appReviewNotes(repository, manifest, scan);
   const reviewBytes = Buffer.byteLength(generatedReviewNotes, "utf8");
@@ -102,10 +102,10 @@ export async function preflight(repository: string, manifest: ShipLayerManifest,
   if (remoteRequested) {
     const pairs = [["key ID", manifest.sync.appStoreConnectKeyIdEnv], ["issuer ID", manifest.sync.issuerIdEnv], ["private-key path", manifest.sync.privateKeyPathEnv]] as const;
     const missingReferences = pairs.filter(([, reference]) => !reference).map(([label]) => label);
-    const missingValues = pairs.filter(([, reference]) => reference && !process.env[reference]).map(([, reference]) => reference as string);
+    const missingValues = pairs.filter(([, reference]) => reference && !environment[reference]).map(([, reference]) => reference as string);
     if (missingReferences.length || missingValues.length) add("asc.credentials", "block", `Remote App Store Connect discovery lacks ${[...missingReferences, ...missingValues].join(", ")}.`, "Set all three environment-variable references and values locally; never put secrets in shiplayer.yml.");
     else {
-      const keyPath = process.env[manifest.sync.privateKeyPathEnv as string] as string;
+      const keyPath = environment[manifest.sync.privateKeyPathEnv as string] as string;
       try { await validateAscPrivateKey(keyPath); add("asc.credentials", "pass", "Remote App Store Connect credential references contain a readable EC P-256 private key."); }
       catch { add("asc.credentials", "block", "Remote App Store Connect private-key path is unreadable or not an EC P-256 key.", "Set the private-key path environment variable to a readable EC P-256 .p8 file; never put key material in shiplayer.yml."); }
     }
