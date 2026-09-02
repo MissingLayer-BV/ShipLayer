@@ -158,16 +158,42 @@ async function syncLocalizations(client: AppStoreConnectClient, manifest: ShipLa
   const appInfo = discovery.appInfos[0]; const appInfoId = requiredId(appInfo, "App Info"); const versionIds = new Map<string, string>();
   for (const [locale, copy] of Object.entries(manifest.metadata.localizations)) {
     const desiredApp = appInfoLocalizationAttributes(copy, manifest);
-    const existingApp = byLocale(discovery.appInfoLocalizations, locale);
-    if (!existingApp) { await client.post("/appInfoLocalizations", { data: { type: "appInfoLocalizations", attributes: { locale, ...desiredApp }, relationships: { appInfo: { data: { type: "appInfos", id: appInfoId } } } } }); operations.push(applied(`app-info-locale.${locale}`, "create", `App Info localization ${locale}`, "Created name, subtitle, and Privacy Policy URL.")); }
+    let existingApp = byLocale(discovery.appInfoLocalizations, locale);
+    if (!existingApp) {
+      try { await client.post("/appInfoLocalizations", { data: { type: "appInfoLocalizations", attributes: { locale, ...desiredApp }, relationships: { appInfo: { data: { type: "appInfos", id: appInfoId } } } } }); operations.push(applied(`app-info-locale.${locale}`, "create", `App Info localization ${locale}`, "Created name, subtitle, and Privacy Policy URL.")); }
+      catch (error) {
+        existingApp = await recoverDuplicateLocalization(client, `/appInfos/${appInfoId}/appInfoLocalizations?limit=200`, locale, error);
+        const changed = changedAttributes(existingApp, desiredApp);
+        if (Object.keys(changed).length) await client.patch(`/appInfoLocalizations/${requiredId(existingApp, "App Info localization")}`, updateBody("appInfoLocalizations", existingApp, changed));
+        operations.push(applied(`app-info-locale.${locale}`, "update", `App Info localization ${locale}`, "Recovered Apple's duplicate-locale create response and synchronized name, subtitle, and Privacy Policy URL."));
+      }
+    }
     else { const changed = changedAttributes(existingApp, desiredApp); if (Object.keys(changed).length) { await client.patch(`/appInfoLocalizations/${requiredId(existingApp, "App Info localization")}`, updateBody("appInfoLocalizations", existingApp, changed)); operations.push(applied(`app-info-locale.${locale}`, "update", `App Info localization ${locale}`, "Updated name, subtitle, and Privacy Policy URL.")); } else operations.push(matched(`app-info-locale.${locale}`, `App Info localization ${locale}`, "Already matches.")); }
 
     const desiredVersion = versionLocalizationAttributes(copy, manifest); let existingVersion = byLocale(discovery.versionLocalizations, locale);
-    if (!existingVersion) { const response = await client.post("/appStoreVersionLocalizations", { data: { type: "appStoreVersionLocalizations", attributes: { locale, ...desiredVersion }, relationships: { appStoreVersion: { data: { type: "appStoreVersions", id: versionId } } } } }); existingVersion = firstResource(response, `creating ${locale} version localization`); operations.push(applied(`version-locale.${locale}`, "create", `Version localization ${locale}`, "Created localized version metadata and URLs.")); }
+    if (!existingVersion) {
+      try { const response = await client.post("/appStoreVersionLocalizations", { data: { type: "appStoreVersionLocalizations", attributes: { locale, ...desiredVersion }, relationships: { appStoreVersion: { data: { type: "appStoreVersions", id: versionId } } } } }); existingVersion = firstResource(response, `creating ${locale} version localization`); operations.push(applied(`version-locale.${locale}`, "create", `Version localization ${locale}`, "Created localized version metadata and URLs.")); }
+      catch (error) {
+        existingVersion = await recoverDuplicateLocalization(client, `/appStoreVersions/${versionId}/appStoreVersionLocalizations?limit=200`, locale, error);
+        const changed = changedAttributes(existingVersion, desiredVersion);
+        if (Object.keys(changed).length) await client.patch(`/appStoreVersionLocalizations/${requiredId(existingVersion, "version localization")}`, updateBody("appStoreVersionLocalizations", existingVersion, changed));
+        operations.push(applied(`version-locale.${locale}`, "update", `Version localization ${locale}`, "Recovered Apple's duplicate-locale create response and synchronized localized version metadata and URLs."));
+      }
+    }
     else { const changed = changedAttributes(existingVersion, desiredVersion); if (Object.keys(changed).length) { await client.patch(`/appStoreVersionLocalizations/${requiredId(existingVersion, "version localization")}`, updateBody("appStoreVersionLocalizations", existingVersion, changed)); operations.push(applied(`version-locale.${locale}`, "update", `Version localization ${locale}`, "Updated localized version metadata and URLs.")); } else operations.push(matched(`version-locale.${locale}`, `Version localization ${locale}`, "Already matches.")); }
     versionIds.set(locale, requiredId(existingVersion, "version localization"));
   }
   return versionIds;
+}
+
+async function recoverDuplicateLocalization(client: AppStoreConnectClient, resourcePath: string, locale: string, error: unknown): Promise<AscResource> {
+  if (!(error instanceof Error) || !/\(409\):[\s\S]*ENTITY_ERROR\.ATTRIBUTE\.INVALID\.DUPLICATE/.test(error.message)) throw error;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    if (attempt) await new Promise((resolve) => setTimeout(resolve, 500));
+    const localization = byLocale(dataOf(await client.get(resourcePath)) as AscResource[], locale);
+    if (localization) return localization;
+  }
+  throw error;
 }
 
 async function syncReviewDetails(client: AppStoreConnectClient, manifest: ShipLayerManifest, discovery: RemoteDiscovery, versionId: string, notes: string, environment: NodeJS.ProcessEnv, operations: AscOperation[]): Promise<void> {
