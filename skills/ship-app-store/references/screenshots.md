@@ -50,7 +50,7 @@ SHIPLAYER_PW_CHANNEL=chrome npm run export
 
 (`export.mjs` prints this exact suggestion on failure too, but setting it up front avoids the failed attempt.) Any already-installed Chromium-based browser channel works, not only Chrome.
 
-An authorized repository workflow using ShipLayer's composite action may instead set `render-screenshots: "true"`. The action runs `prepare`, installs the generated project's exactly pinned dependency without lifecycle scripts, and renders with the runner's Chrome before `plan` or `apply`; it remains opt-in because 50 locales across iPhone and iPad can generate hundreds of images.
+An authorized repository workflow using ShipLayer's composite action may instead set `render-screenshots: "true"`. The action runs `prepare`, installs the generated project's exactly pinned dependency without lifecycle scripts, preserves any already-complete reviewed final deck byte-for-byte, and renders only missing decks with the runner's Chrome before `plan` or `apply`; it remains opt-in because 50 locales across iPhone and iPad can generate hundreds of images.
 
 `export.mjs` renders to `screenshots/final/{family}/{locale}/<scenario-id>.png`; `strip-alpha.mjs` unconditionally re-encodes every PNG without an alpha channel, since Apple rejects transparency. A scenario missing its raw screenshot renders a "Screenshot pending" placeholder instead of failing — re-run `capture --from` (step 3) then re-run `npm run export`.
 

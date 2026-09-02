@@ -7,5 +7,6 @@ test("composite action renders screenshots only behind an explicit input", async
   assert.match(action, /render-screenshots:\n[\s\S]*?default: "false"/);
   assert.match(action, /if: \$\{\{ inputs\['render-screenshots'\] == 'true' \}\}/);
   assert.match(action, /npm install --ignore-scripts --no-audit --no-fund --package-lock=false --prefix "\$\{marketing_path\}"/);
+  assert.match(action, /SHIPLAYER_PRESERVE_COMPLETE_DECKS=true SHIPLAYER_PW_CHANNEL=chrome npm run export/);
   assert.match(action, /SHIPLAYER_PW_CHANNEL=chrome npm run export --prefix "\$\{marketing_path\}"/);
 });

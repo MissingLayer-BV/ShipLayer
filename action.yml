@@ -58,7 +58,7 @@ runs:
         node "${{ github.action_path }}/dist/index.js" prepare "${repository_path}"
         marketing_path="${repository_path}/shiplayer-release/screenshots/marketing"
         npm install --ignore-scripts --no-audit --no-fund --package-lock=false --prefix "${marketing_path}"
-        SHIPLAYER_PW_CHANNEL=chrome npm run export --prefix "${marketing_path}"
+        SHIPLAYER_PRESERVE_COMPLETE_DECKS=true SHIPLAYER_PW_CHANNEL=chrome npm run export --prefix "${marketing_path}"
 
     - name: Run ShipLayer
       id: shiplayer
