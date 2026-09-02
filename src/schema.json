@@ -932,6 +932,9 @@
               "locale": {
                 "$ref": "#/$defs/locale"
               },
+              "sourceLocale": {
+                "$ref": "#/$defs/locale"
+              },
               "requiredDimensions": {
                 "type": "object",
                 "additionalProperties": false,

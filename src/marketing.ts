@@ -163,7 +163,7 @@ export const DEFAULT_MARKETING_FINAL_DIR = `${DEFAULT_OUTPUT_DIRECTORY}/screensh
  * relative-path math is done against a shared synthetic "/" root so it is independent of
  * process.cwd() and stays deterministic/testable without touching disk.
  */
-export function buildMarketingSlideEntries(params: { outputDirectory: string; rawOutputDir: string; finalOutputDir: string; configurations: Array<{ device: string; family: "iphone" | "ipad"; locale: string; requiredDimensions: { width: number; height: number } }>; scenarios: Array<{ id: string; title: string; caption?: string; confirmation?: string; localizations?: Record<string, { title?: string; caption: string; confirmation?: string }> }> }): MarketingSlideEntry[] {
+export function buildMarketingSlideEntries(params: { outputDirectory: string; rawOutputDir: string; finalOutputDir: string; configurations: Array<{ device: string; family: "iphone" | "ipad"; locale: string; sourceLocale?: string; requiredDimensions: { width: number; height: number } }>; scenarios: Array<{ id: string; title: string; caption?: string; confirmation?: string; localizations?: Record<string, { title?: string; caption: string; confirmation?: string }> }> }): MarketingSlideEntry[] {
   const abs = (relative: string): string => path.posix.join("/", relative);
   const relativeFrom = (fromDir: string, to: string): string => path.posix.relative(abs(fromDir), abs(to));
   const marketingRoot = path.posix.join(params.outputDirectory, MARKETING_PROJECT_ROOT);
@@ -173,8 +173,9 @@ export function buildMarketingSlideEntries(params: { outputDirectory: string; ra
     for (const scenario of params.scenarios) {
       const localized = scenario.localizations?.[config.locale];
       const htmlAbsolute = path.posix.join(slideDir, `${scenario.id}.html`);
-      const screenshotPngAbsolute = path.posix.join(params.rawOutputDir, config.family, config.locale, `${scenario.id}.png`);
-      const screenshotJpgAbsolute = path.posix.join(params.rawOutputDir, config.family, config.locale, `${scenario.id}.jpg`);
+      const rawLocale = config.sourceLocale ?? config.locale;
+      const screenshotPngAbsolute = path.posix.join(params.rawOutputDir, config.family, rawLocale, `${scenario.id}.png`);
+      const screenshotJpgAbsolute = path.posix.join(params.rawOutputDir, config.family, rawLocale, `${scenario.id}.jpg`);
       const frameAbsolute = path.posix.join(marketingRoot, "assets", `${config.family}-frame.png`);
       const outputAbsolute = path.posix.join(params.finalOutputDir, config.family, config.locale, `${scenario.id}.png`);
       entries.push({
@@ -512,23 +513,29 @@ try {
   console.error("here without first trying the channel override above.");
   process.exit(1);
 }
+const pages = new Map();
 try {
   for (const slide of manifest.slides) {
     const htmlPath = path.join(scriptDir, slide.html);
     const outputPath = path.join(scriptDir, slide.output);
     await mkdir(path.dirname(outputPath), { recursive: true });
-    const context = await browser.newContext({ viewport: { width: slide.width, height: slide.height }, deviceScaleFactor: 1 });
-    const page = await context.newPage();
+    const viewportKey = \`\${slide.width}x\${slide.height}\`;
+    let page = pages.get(viewportKey);
+    if (!page) {
+      const context = await browser.newContext({ viewport: { width: slide.width, height: slide.height }, deviceScaleFactor: 1 });
+      page = await context.newPage();
+      pages.set(viewportKey, page);
+    }
     await page.goto(pathToFileURL(htmlPath).href);
     // See strip-alpha.mjs for why the raw Chromium PNG is always re-encoded, unconditionally,
     // before being written to disk: this is the one invariant App Store submission depends on.
     const raw = await page.screenshot({ type: "png" });
     const flattened = stripAlphaPng(raw);
     await writeFile(outputPath, flattened);
-    await context.close();
     console.log(\`\${slide.id} (\${slide.family}/\${slide.locale}) -> \${path.relative(scriptDir, outputPath)} [\${slide.width}x\${slide.height}]\`);
   }
 } finally {
+  for (const page of pages.values()) await page.context().close();
   await browser.close();
 }
 `;

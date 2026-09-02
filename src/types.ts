@@ -309,7 +309,7 @@ export interface ShipLayerManifest {
   sourceContradictionOverrides: SourceContradictionOverride[];
   secondaryTargetConfirmations: SecondaryTargetConfirmation[];
   review: { contact?: { firstName?: string; lastName?: string; email?: string; phone?: string }; demoAccount?: { required: boolean; usernameEnv?: string; passwordEnv?: string; setupInstructions?: string; /** Human confirmed these environment-backed credentials work and may be sent during a separately authorized apply. */ credentialsEnteredConfirmation?: Confirmation }; notes?: string; recordingScenarios: ScreenshotScenario[]; sampleData?: string[] };
-  screenshots: { scenarios: ScreenshotScenario[]; configurations: Array<{ device: string; family: "iphone" | "ipad"; locale: string; requiredDimensions: { width: number; height: number } }>; /** App-specific arguments required to launch the UI in each App Store locale. These are appended
+  screenshots: { scenarios: ScreenshotScenario[]; configurations: Array<{ device: string; family: "iphone" | "ipad"; locale: string; /** Optional reviewed fallback for the app pixels inside a localized marketing slide. The headline and App Store destination still use locale; only the raw in-frame capture is read from sourceLocale. */ sourceLocale?: string; requiredDimensions: { width: number; height: number } }>; /** App-specific arguments required to launch the UI in each App Store locale. These are appended
      * to every scenario's launchArguments by generated capture artifacts. */
     localizations?: Record<string, { launchArguments?: string[] }>;
     rawOutputDir: string; marketingProjectPath?: string;

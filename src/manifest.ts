@@ -105,6 +105,8 @@ export function validateManifest(candidate: unknown): asserts candidate is ShipL
   for (const configuration of manifest.screenshots.configurations) {
     if (!APPLE_LOCALES.has(configuration.locale)) errors.push(`screenshots.configurations contains unsupported App Store localization '${configuration.locale}'`);
     else if (!manifest.app.locales.includes(configuration.locale)) errors.push(`screenshots.configurations contains ${configuration.locale}, which is not declared in app.locales`);
+    if (configuration.sourceLocale && !APPLE_LOCALES.has(configuration.sourceLocale)) errors.push(`screenshots.configurations contains unsupported source localization '${configuration.sourceLocale}'`);
+    else if (configuration.sourceLocale && !manifest.app.locales.includes(configuration.sourceLocale)) errors.push(`screenshots.configurations sourceLocale '${configuration.sourceLocale}' is not declared in app.locales`);
   }
   for (const [label, candidatePath] of [["screenshots.rawOutputDir", manifest.screenshots.rawOutputDir], ["screenshots.marketingProjectPath", manifest.screenshots.marketingProjectPath], ["screenshots.finalOutputDir", manifest.screenshots.finalOutputDir]] as const) {
     if (!candidatePath) continue;

@@ -1,6 +1,6 @@
 # Screenshots: harness, CI hand-off, ingestion, marketing composition
 
-ShipLayer never invents app navigation and never runs a simulator itself. This is the full, ordered contract for getting real App Store screenshots, start to finish. Run `shiplayer capture <repo>` at any point to see current state and next steps; it never mutates anything.
+ShipLayer never invents app navigation and the CLI never runs a simulator itself. This is the full, ordered contract for getting real App Store screenshots, start to finish. Run `shiplayer capture <repo>` at any point to see current state and next steps; it never mutates anything.
 
 ## 1. Detect or generate the UI-test harness
 
@@ -8,11 +8,11 @@ ShipLayer never invents app navigation and never runs a simulator itself. This i
 - If `shiplayer capture <repo>` reports no harness, run `shiplayer prepare <repo>`: it always emits a fillable `screenshots/ui-test-harness-template.swift` and its contract `screenshots/ui-test-harness-contract.md` in the release package, one TODO-navigation stub per declared scenario.
 - Fill in the real navigation yourself, using actual knowledge of the app (you have this; ShipLayer does not). Add the file to a UI Testing target, then re-run `shiplayer init --force` (or hand-edit `shiplayer.yml`) so `screenshots.scenarios` reflects it.
 
-## 2. Hand off simulator execution — do not run it yourself
+## 2. Run or hand off the reviewed harness
 
-`prepare` also emits `screenshots/capture-workflow.yml`: a `workflow_dispatch`-only, single-simulator, concurrency-guarded GitHub Actions workflow. Each manual run chooses one `screenshots.configurations` family/locale pair. It safely injects `screenshots.localizations.<locale>.launchArguments` through the generated harness helper and uploads namespaced output. It deliberately has no all-locales matrix. It is **not installed anywhere** — a human must copy it into the target app repository's own `.github/workflows/` and press "Run workflow" themselves. macOS CI runners bill roughly 10x; the generated file's header says so.
+`prepare` also emits `screenshots/capture-workflow.yml`: a `workflow_dispatch`-only, single-simulator, concurrency-guarded GitHub Actions workflow. Each manual run chooses one `screenshots.configurations` family/locale pair. It creates an ephemeral simulator matching the configuration's device type and latest available iOS runtime, injects the locale and base64 launch arguments into simulator `launchd`, runs the repository-owned harness by simulator ID, uploads namespaced output, and deletes the simulator in a cleanup trap. The `launchd` bridge is required because ordinary shell environment variables do not reliably reach XCTest. It deliberately has no all-locales matrix. It is **not installed anywhere** — a human must copy it into the target app repository's own `.github/workflows/` and press "Run workflow" themselves. macOS CI runners bill roughly 10x; the generated file's header says so.
 
-**If this environment has no macOS/Xcode simulator available (true on this machine as of this install), do not attempt `xcodebuild`, `xcrun simctl`, or any other simulator command.** Tell the user the workflow artifact is ready, ask them to run it (via that generated workflow on a macOS CI runner, or manually on their own Mac), and wait for exported PNGs before continuing. `shiplayer capture <repo>` reports this exact prerequisite gap itself — "Simulator capture requires macOS with Xcode" and/or a missing `xcodebuild`/`xcrun` — so check its output first rather than assuming.
+If the current environment has macOS, Xcode, a compatible simulator runtime, and the repository-owned harness has been reviewed, the same harness may be run locally. Otherwise tell the user the workflow artifact is ready and hand it to a macOS CI runner. `shiplayer capture <repo>` reports missing prerequisites — for example "Simulator capture requires macOS with Xcode" or a missing `xcodebuild`/`xcrun` — so check its output first rather than assuming.
 
 ## 3. Ingest exported screenshots
 
@@ -26,7 +26,7 @@ This recursively finds image files under `<dir>`, validates format, rejects an a
 
 ## 4. Draft captions
 
-For the primary locale, draft `screenshots.scenarios[].caption`. For every localized deck, draft `screenshots.scenarios[].localizations.<locale>.caption` and leave its separate confirmation pending until a human reviews the rendered translation. ShipLayer never invents these. Once `screenshots.localizations.<locale>` opts a locale into localized capture, `check` blocks a missing or unconfirmed translated caption instead of silently shipping the primary caption.
+For the primary locale, draft `screenshots.scenarios[].caption`. For every localized deck, draft `screenshots.scenarios[].localizations.<locale>.caption` and leave its separate confirmation pending until a human reviews the rendered translation. ShipLayer never invents these. Once `screenshots.localizations.<locale>` opts a locale into localized capture, `check` blocks a missing or unconfirmed translated caption instead of silently shipping the primary caption. A configuration may set `sourceLocale` to reuse a reviewed raw in-app deck when the target storefront language is not available in the app; the target locale still owns the output path, copy, direction, and App Store relationship, and `check` warns that the in-frame UI is not translated.
 
 - Max 100 characters, no line breaks. A wide-script caption (CJK, kana, hangul, fullwidth forms) should be noticeably shorter — those glyphs render close to full width.
 - Sell one outcome per slide, not a feature list.
@@ -42,13 +42,15 @@ npx playwright install chromium
 npm run export
 ```
 
-**On this machine, skip the Chromium download — it will not launch.** macOS here (12.7.6) is below Playwright's bundled-Chromium floor. Set the browser channel up front instead:
+When bundled Chromium is unavailable or unsupported, select an already-installed browser channel instead:
 
 ```
 SHIPLAYER_PW_CHANNEL=chrome npm run export
 ```
 
 (`export.mjs` prints this exact suggestion on failure too, but setting it up front avoids the failed attempt.) Any already-installed Chromium-based browser channel works, not only Chrome.
+
+An authorized repository workflow using ShipLayer's composite action may instead set `render-screenshots: "true"`. The action runs `prepare`, installs the generated project's locked dependencies without lifecycle scripts, and renders with the runner's Chrome before `plan` or `apply`; it remains opt-in because 50 locales across iPhone and iPad can generate hundreds of images.
 
 `export.mjs` renders to `screenshots/final/{family}/{locale}/<scenario-id>.png`; `strip-alpha.mjs` unconditionally re-encodes every PNG without an alpha channel, since Apple rejects transparency. A scenario missing its raw screenshot renders a "Screenshot pending" placeholder instead of failing — re-run `capture --from` (step 3) then re-run `npm run export`.
 
