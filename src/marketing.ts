@@ -481,7 +481,7 @@ export const EXPORT_MJS = `#!/usr/bin/env node
 // Playwright. This script has no network dependency at render time: every slide references only
 // local files by relative path. Playwright itself is installed from npm by "npm install" (a
 // one-time setup step a human runs; ShipLayer itself never runs it).
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { access, readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { chromium } from "playwright";
@@ -489,6 +489,7 @@ import { stripAlphaPng } from "./strip-alpha.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const manifest = JSON.parse(await readFile(path.join(scriptDir, "slides.json"), "utf8"));
+const preserveCompleteDecks = process.env.SHIPLAYER_PRESERVE_COMPLETE_DECKS === "true";
 
 if (!manifest.slides.length) {
   console.log("No slides declared in slides.json (no screenshot scenarios yet). Nothing to export.");
@@ -513,9 +514,33 @@ try {
   console.error("here without first trying the channel override above.");
   process.exit(1);
 }
+const preservedDecks = new Set();
+if (preserveCompleteDecks) {
+  const deckOutputs = new Map();
+  for (const slide of manifest.slides) {
+    const key = \`\${slide.family}/\${slide.locale}\`;
+    const outputs = deckOutputs.get(key) || [];
+    outputs.push(path.join(scriptDir, slide.output));
+    deckOutputs.set(key, outputs);
+  }
+  for (const [key, outputs] of deckOutputs) {
+    let complete = true;
+    for (const output of outputs) {
+      try { await access(output); }
+      catch { complete = false; break; }
+    }
+    if (complete) preservedDecks.add(key);
+  }
+}
+
 const pages = new Map();
 try {
   for (const slide of manifest.slides) {
+    const deckKey = \`\${slide.family}/\${slide.locale}\`;
+    if (preservedDecks.has(deckKey)) {
+      console.log(\`\${slide.id} (\${deckKey}) -> preserved existing reviewed deck\`);
+      continue;
+    }
     const htmlPath = path.join(scriptDir, slide.html);
     const outputPath = path.join(scriptDir, slide.output);
     await mkdir(path.dirname(outputPath), { recursive: true });

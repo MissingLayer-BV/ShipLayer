@@ -339,6 +339,12 @@ test("export reuses one browser page per viewport for large multilingual decks",
   assert.ok(EXPORT_MJS.includes("for (const page of pages.values()) await page.context().close()"));
 });
 
+test("export can preserve an already complete reviewed family/locale deck", () => {
+  assert.ok(EXPORT_MJS.includes('process.env.SHIPLAYER_PRESERVE_COMPLETE_DECKS === "true"'));
+  assert.ok(EXPORT_MJS.includes("if (complete) preservedDecks.add(key)"));
+  assert.ok(EXPORT_MJS.includes("if (preservedDecks.has(deckKey))"));
+});
+
 // --- F3: re-running prepare must not destroy a prior render or npm install --------------------
 
 test("F3: prepare preserves a prior render (screenshots/final) and npm install (marketing/node_modules) across a second prepare", async () => {
