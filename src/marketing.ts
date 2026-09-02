@@ -551,10 +551,30 @@ try {
       page = await context.newPage();
       pages.set(viewportKey, page);
     }
-    await page.goto(pathToFileURL(htmlPath).href);
+    await page.goto(pathToFileURL(htmlPath).href, { waitUntil: "load" });
+    // A completed navigation only guarantees that image bytes were fetched. Chromium may still
+    // be decoding a large device screenshot or promoting its paint layer, which previously made
+    // a small, random subset of iPad exports capture a pre-decode frame. Wait for every image,
+    // every font, and two full paint opportunities so identical slides remain byte-stable across
+    // fresh CI workspaces.
+    await page.evaluate(async () => {
+      const images = Array.from(document.images);
+      await Promise.all(images.map(async (image) => {
+        if (!image.complete) {
+          await new Promise((resolve, reject) => {
+            image.addEventListener("load", resolve, { once: true });
+            image.addEventListener("error", () => reject(new Error(\`Failed to load image: \${image.currentSrc || image.src}\`)), { once: true });
+          });
+        }
+        if (!image.naturalWidth || !image.naturalHeight) throw new Error(\`Image has no decoded pixels: \${image.currentSrc || image.src}\`);
+        await image.decode();
+      }));
+      await document.fonts.ready;
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    });
     // See strip-alpha.mjs for why the raw Chromium PNG is always re-encoded, unconditionally,
     // before being written to disk: this is the one invariant App Store submission depends on.
-    const raw = await page.screenshot({ type: "png" });
+    const raw = await page.screenshot({ type: "png", animations: "disabled", caret: "hide" });
     const flattened = stripAlphaPng(raw);
     await writeFile(outputPath, flattened);
     console.log(\`\${slide.id} (\${slide.family}/\${slide.locale}) -> \${path.relative(scriptDir, outputPath)} [\${slide.width}x\${slide.height}]\`);
