@@ -38,6 +38,11 @@ export interface LocaleCopy {
   description?: string;
   keywords?: string[];
   whatsNew?: string;
+  /** Optional localized URL overrides. When absent, App Store Connect synchronization falls
+   * back to the corresponding global contacts URL for backward compatibility. */
+  supportUrl?: string;
+  marketingUrl?: string;
+  privacyPolicyUrl?: string;
   /** Every field above is a human-reviewable proposal, never a fact ShipLayer invents: `init`
    * always leaves this whole object absent for a locale and records an unresolved question naming
    * exactly what an agent/human must draft (see manifestFromAnalysis in src/index.ts). Absent is
@@ -264,6 +269,10 @@ export interface ScreenshotScenario {
    * entirely in a wide script (CJK ideographs, kana, hangul, fullwidth forms) can still visibly
    * clip even under that limit — keep those noticeably shorter and check the rendered PNG. */
   caption?: string;
+  /** Locale-specific marketing copy. The scenario's navigation/steps remain shared, while each
+   * translated caption has its own human-review gate. The global caption remains the fallback for
+   * legacy manifests and for locales without an override. */
+  localizations?: Record<string, { title?: string; caption: string; confirmation?: Confirmation }>;
 }
 
 export interface ShipLayerManifest {
@@ -300,7 +309,10 @@ export interface ShipLayerManifest {
   sourceContradictionOverrides: SourceContradictionOverride[];
   secondaryTargetConfirmations: SecondaryTargetConfirmation[];
   review: { contact?: { firstName?: string; lastName?: string; email?: string; phone?: string }; demoAccount?: { required: boolean; usernameEnv?: string; passwordEnv?: string; setupInstructions?: string; /** Human confirmed these environment-backed credentials work and may be sent during a separately authorized apply. */ credentialsEnteredConfirmation?: Confirmation }; notes?: string; recordingScenarios: ScreenshotScenario[]; sampleData?: string[] };
-  screenshots: { scenarios: ScreenshotScenario[]; configurations: Array<{ device: string; family: "iphone" | "ipad"; locale: string; requiredDimensions: { width: number; height: number } }>; rawOutputDir: string; marketingProjectPath?: string;
+  screenshots: { scenarios: ScreenshotScenario[]; configurations: Array<{ device: string; family: "iphone" | "ipad"; locale: string; requiredDimensions: { width: number; height: number } }>; /** App-specific arguments required to launch the UI in each App Store locale. These are appended
+     * to every scenario's launchArguments by generated capture artifacts. */
+    localizations?: Record<string, { launchArguments?: string[] }>;
+    rawOutputDir: string; marketingProjectPath?: string;
     /** Repo-root-relative directory the marketing composition project (screenshots/marketing/) renders final PNGs into, independent of whatever --out was used at generation time — see DEFAULT_MARKETING_FINAL_DIR in src/marketing.ts. Absent falls back to that default for manifests written before this field existed. */
     finalOutputDir?: string; };
   monetization: Monetization;

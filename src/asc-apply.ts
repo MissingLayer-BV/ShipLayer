@@ -123,7 +123,7 @@ function buildPlan(manifest: ShipLayerManifest, discovery: RemoteDiscovery, desi
   planCategories(manifest, discovery, operations);
   for (const [locale, copy] of Object.entries(manifest.metadata.localizations)) {
     const appLocalization = byLocale(discovery.appInfoLocalizations, locale);
-    const appAttributes = compact({ name: copy.name, subtitle: copy.subtitle, privacyPolicyUrl: manifest.contacts.privacyUrl });
+    const appAttributes = appInfoLocalizationAttributes(copy, manifest);
     operations.push(!appLocalization ? planned(`app-info-locale.${locale}`, "create", `App Info localization ${locale}`, "Create name, subtitle, and Privacy Policy URL.") : Object.keys(changedAttributes(appLocalization, appAttributes)).length ? planned(`app-info-locale.${locale}`, "update", `App Info localization ${locale}`, "Update name, subtitle, and Privacy Policy URL.") : matched(`app-info-locale.${locale}`, `App Info localization ${locale}`, "Name, subtitle, and Privacy Policy URL already match."));
     const versionLocalization = byLocale(discovery.versionLocalizations, locale);
     const versionAttributes = versionLocalizationAttributes(copy, manifest);
@@ -157,7 +157,7 @@ async function syncCategories(client: AppStoreConnectClient, manifest: ShipLayer
 async function syncLocalizations(client: AppStoreConnectClient, manifest: ShipLayerManifest, discovery: RemoteDiscovery, versionId: string, operations: AscOperation[]): Promise<Map<string, string>> {
   const appInfo = discovery.appInfos[0]; const appInfoId = requiredId(appInfo, "App Info"); const versionIds = new Map<string, string>();
   for (const [locale, copy] of Object.entries(manifest.metadata.localizations)) {
-    const desiredApp = compact({ name: copy.name, subtitle: copy.subtitle, privacyPolicyUrl: manifest.contacts.privacyUrl });
+    const desiredApp = appInfoLocalizationAttributes(copy, manifest);
     const existingApp = byLocale(discovery.appInfoLocalizations, locale);
     if (!existingApp) { await client.post("/appInfoLocalizations", { data: { type: "appInfoLocalizations", attributes: { locale, ...desiredApp }, relationships: { appInfo: { data: { type: "appInfos", id: appInfoId } } } } }); operations.push(applied(`app-info-locale.${locale}`, "create", `App Info localization ${locale}`, "Created name, subtitle, and Privacy Policy URL.")); }
     else { const changed = changedAttributes(existingApp, desiredApp); if (Object.keys(changed).length) { await client.patch(`/appInfoLocalizations/${requiredId(existingApp, "App Info localization")}`, updateBody("appInfoLocalizations", existingApp, changed)); operations.push(applied(`app-info-locale.${locale}`, "update", `App Info localization ${locale}`, "Updated name, subtitle, and Privacy Policy URL.")); } else operations.push(matched(`app-info-locale.${locale}`, `App Info localization ${locale}`, "Already matches.")); }
@@ -275,7 +275,8 @@ function planScreenshots(discovery: RemoteDiscovery, localSets: LocalScreenshotS
   }
 }
 
-function versionLocalizationAttributes(copy: ShipLayerManifest["metadata"]["localizations"][string], manifest: ShipLayerManifest): Record<string, unknown> { return compact({ description: copy.description, keywords: copy.keywords?.join(","), marketingUrl: manifest.contacts.marketingUrl, promotionalText: copy.promotionalText, supportUrl: manifest.contacts.supportUrl, whatsNew: copy.whatsNew }); }
+function appInfoLocalizationAttributes(copy: ShipLayerManifest["metadata"]["localizations"][string], manifest: ShipLayerManifest): Record<string, unknown> { return compact({ name: copy.name, subtitle: copy.subtitle, privacyPolicyUrl: copy.privacyPolicyUrl ?? manifest.contacts.privacyUrl }); }
+function versionLocalizationAttributes(copy: ShipLayerManifest["metadata"]["localizations"][string], manifest: ShipLayerManifest): Record<string, unknown> { return compact({ description: copy.description, keywords: copy.keywords?.join(","), marketingUrl: copy.marketingUrl ?? manifest.contacts.marketingUrl, promotionalText: copy.promotionalText, supportUrl: copy.supportUrl ?? manifest.contacts.supportUrl, whatsNew: copy.whatsNew }); }
 function changedAttributes(resource: AscResource, desired: Record<string, unknown>): Record<string, unknown> { const changed: Record<string, unknown> = {}; for (const [key, value] of Object.entries(compact(desired))) if (!same(attribute(resource, key), value)) changed[key] = value; return changed; }
 function compact(value: Record<string, unknown>): Record<string, unknown> { return Object.fromEntries(Object.entries(value).filter(([, child]) => child !== undefined)); }
 function same(left: unknown, right: unknown): boolean { return JSON.stringify(left ?? null) === JSON.stringify(right ?? null); }

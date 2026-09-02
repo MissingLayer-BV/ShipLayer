@@ -13,7 +13,7 @@ const ajv = new Ajv2020({ allErrors: true, strict: false });
 const validateSchema = ajv.compile(schema);
 // Update these allow-lists against the current App Store Connect localization and
 // availability reference before changing release policy.
-const APPLE_LOCALES = new Set("ar-SA ca hr cs da nl-NL en-AU en-CA en-GB en-US fi fr-CA fr-FR de-DE el he hi hu id it ja ko ms nb pl pt-BR pt-PT ro ru sk es-ES es-MX sv th tr uk vi zh-Hans zh-Hant".split(" "));
+const APPLE_LOCALES = new Set("ar-SA bn-BD ca zh-Hans zh-Hant hr cs da nl-NL en-AU en-CA en-GB en-US fi fr-CA fr-FR de-DE el gu-IN he hi hu id it ja kn-IN ko ms ml-IN mr-IN no or-IN pl pt-BR pt-PT pa-IN ro ru sk sl-SI es-MX es-ES sv ta-IN te-IN th tr uk ur-PK vi".split(" "));
 // ISO codes are only syntax validation. Storefront availability changes and must
 // be human-confirmed against the current App Store Connect territory picker.
 const ISO_TERRITORIES = new Set("AFG ALB DZA ASM AND AGO AIA ATA ATG ARG ARM ABW AUS AUT AZE BHS BHR BGD BRB BLR BEL BLZ BEN BMU BTN BOL BES BIH BWA BVT BRA IOT BRN BGR BFA BDI CPV KHM CMR CAN CYM CAF TCD CHL CHN CXR CCK COL COM COG COD COK COL COM COG COD COK CRI CIV HRV CUB CUW CYP CZE DNK DJI DMA DOM ECU EGY SLV GNQ ERI EST SWZ ETH FLK FRO FJI FIN FRA GUF PYF ATF GAB GMB GEO DEU GHA GIB GRC GRL GRD GLP GUM GTM GGY GIN GNB GUY HTI HMD VAT HND HKG HUN ISL IND IDN IRN IRQ IRL IMN ISR ITA JAM JPN JEY JOR KAZ KEN KIR PRK KOR KWT KGZ LAO LVA LBN LSO LBR LBY LIE LTU LUX MAC MDG MWI MYS MDV MLI MLT MHL MTQ MRT MUS MYT MEX FSM MDA MCO MNG MNE MSR MAR MOZ MMR NAM NRU NPL NLD NCL NZL NIC NER NGA NIU NFK MKD MNP NOR OMN PAK PLW PSE PAN PNG PRY PER PHL PCN POL PRT PRI QAT ROU RUS RWA REU BLM SHN KNA LCA MAF SPM VCT WSM SMR STP SAU SEN SRB SYC SLE SGP SXM SVK SVN SLB SOM ZAF SGS SSD ESP LKA SDN SUR SJM SWE CHE SYR TWN TJK TZA THA TLS TGO TKL TON TTO TUN TUR TKM TCA TUV UGA UKR ARE GBR USA UMI URY UZB VUT VEN VNM VGB VIR WLF ESH YEM ZMB ZWE XKX".split(" "));
@@ -94,7 +94,18 @@ export function validateManifest(candidate: unknown): asserts candidate is ShipL
     }
   };
   validateLocalizationMap("metadata.localizations", manifest.metadata.localizations);
+  for (const [locale, copy] of Object.entries(manifest.metadata.localizations)) {
+    requireHttpsUrl(`metadata.localizations.${locale}.supportUrl`, copy.supportUrl);
+    requireHttpsUrl(`metadata.localizations.${locale}.marketingUrl`, copy.marketingUrl);
+    requireHttpsUrl(`metadata.localizations.${locale}.privacyPolicyUrl`, copy.privacyPolicyUrl);
+  }
   for (const locale of manifest.app.locales) if (!manifest.metadata.localizations[locale]) errors.push(`metadata.localizations is missing configured locale ${locale}`);
+  validateLocalizationMap("screenshots.localizations", manifest.screenshots.localizations || {});
+  for (const scenario of manifest.screenshots.scenarios) validateLocalizationMap(`screenshot scenario ${scenario.id} localizations`, scenario.localizations || {});
+  for (const configuration of manifest.screenshots.configurations) {
+    if (!APPLE_LOCALES.has(configuration.locale)) errors.push(`screenshots.configurations contains unsupported App Store localization '${configuration.locale}'`);
+    else if (!manifest.app.locales.includes(configuration.locale)) errors.push(`screenshots.configurations contains ${configuration.locale}, which is not declared in app.locales`);
+  }
   for (const [label, candidatePath] of [["screenshots.rawOutputDir", manifest.screenshots.rawOutputDir], ["screenshots.marketingProjectPath", manifest.screenshots.marketingProjectPath], ["screenshots.finalOutputDir", manifest.screenshots.finalOutputDir]] as const) {
     if (!candidatePath) continue;
     try { safeRelativePath(candidatePath, label); } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }

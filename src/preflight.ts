@@ -155,10 +155,13 @@ function metadataChecks(manifest: ShipLayerManifest, add: Add): void {
   for (const [locale, values] of Object.entries(manifest.metadata.localizations)) {
     for (const [field, limit] of Object.entries(limits)) {
       const value = values[field as keyof typeof values];
-      if (typeof value === "string" && value.length > limit) add(`metadata.${locale}.${field}`, "block", `${locale} ${field} has ${value.length} characters; Apple limit is ${limit}.`, "Shorten the text.");
+      if (typeof value === "string") {
+        const characters = [...value].length;
+        if (characters > limit) add(`metadata.${locale}.${field}`, "block", `${locale} ${field} has ${characters} characters; Apple limit is ${limit}.`, "Shorten the text.");
+      }
     }
-    if (values.name && values.name.length < 2) add(`metadata.${locale}.name.minimum`, "block", `${locale} app name must have at least 2 characters.`, "Use an App Store display name with 2–30 characters.");
-    for (const keyword of values.keywords || []) if (keyword.length < 3) add(`metadata.${locale}.keyword.minimum`, "block", `${locale} keyword '${keyword}' must have more than 2 characters.`, "Remove short keywords.");
+    if (values.name && [...values.name].length < 2) add(`metadata.${locale}.name.minimum`, "block", `${locale} app name must have at least 2 characters.`, "Use an App Store display name with 2–30 characters.");
+    for (const keyword of values.keywords || []) if ([...keyword].length < 3) add(`metadata.${locale}.keyword.minimum`, "block", `${locale} keyword '${keyword}' must have more than 2 characters.`, "Replace short keywords with Apple-compliant search terms.");
     const keywords = values.keywords?.join(",") || ""; const keywordBytes = Buffer.byteLength(keywords, "utf8");
     if (keywordBytes > 100) add(`metadata.${locale}.keywords`, "block", `${locale} keywords use ${keywordBytes} UTF-8 bytes; Apple limit is 100 bytes.`, "Shorten keywords.");
     keywordHygieneChecks(locale, values, add);
@@ -198,7 +201,7 @@ function keywordHygieneChecks(locale: string, values: LocaleCopy, add: Add): voi
   for (const group of byCandidate.values()) {
     const distinct = [...new Set(group)];
     if (distinct.length < 2) continue;
-    const key = distinct.slice().sort().join(" ");
+    const key = distinct.slice().sort().join("\u0000");
     if (reportedGroups.has(key)) continue;
     reportedGroups.add(key);
     add(`metadata.${locale}.keywords.plural-duplicate`, "warn", `${locale} keywords contain likely plural/singular duplicates of the same word: ${distinct.map((keyword) => `'${keyword}'`).join(", ")}.`, "Apple treats keywords as a bag of words already; keep only one form and use the freed budget for a new term.");
@@ -1133,7 +1136,20 @@ function screenshotConfigurationChecks(manifest: ShipLayerManifest, add: Add): v
     // here too means `check` -- the one command actually re-run before every submission -- says
     // so as well, not just a one-time init message an agent may not still have in context.
     if (!scenario.caption) add(`screenshots.scenarios.${scenario.id}.caption`, "warn", `Screenshot scenario '${scenario.id}' has no drafted caption yet; its marketing slide falls back to the scenario title as a placeholder.`, "Draft a concise, human-reviewed caption (one idea per slide, max 100 characters, no line breaks) in screenshots.scenarios[].caption.");
+    for (const [locale, localized] of Object.entries(scenario.localizations || {})) {
+      if (localized.confirmation !== "confirmed") add(`screenshots.scenarios.${scenario.id}.localizations.${locale}.confirmation`, "block", `Localized screenshot caption '${scenario.id}' (${locale}) is not human-confirmed.`, "Review the translated caption in its rendered slide, then set confirmation: confirmed.");
+    }
   }
+  const configuredLocales = new Set(manifest.screenshots.configurations.map((configuration) => configuration.locale));
+  for (const locale of configuredLocales) {
+    if (locale === manifest.app.primaryLocale) continue;
+    for (const scenario of manifest.screenshots.scenarios) {
+      if (scenario.localizations?.[locale]) continue;
+      const explicitLocaleCapture = Boolean(manifest.screenshots.localizations?.[locale]);
+      add(`screenshots.scenarios.${scenario.id}.localizations.${locale}.caption`, explicitLocaleCapture ? "block" : "warn", `Screenshot scenario '${scenario.id}' has no ${locale} caption; its marketing slide would fall back to '${scenario.caption || scenario.title}'.`, explicitLocaleCapture ? `Add and confirm screenshots.scenarios[].localizations.${locale}.caption before treating this as a localized deck.` : `Add screenshots.scenarios[].localizations.${locale} when this locale needs translated marketing copy.`);
+    }
+  }
+  for (const locale of Object.keys(manifest.screenshots.localizations || {})) if (!configuredLocales.has(locale)) add(`screenshots.localizations.${locale}.configuration`, "warn", `${locale} screenshot launch arguments are configured, but no screenshot configuration uses that locale.`, `Add a screenshots.configurations entry for ${locale}, or remove the unused launch arguments.`);
 }
 
 async function screenshotChecks(repository: string, manifest: ShipLayerManifest, add: Add): Promise<void> {
@@ -1208,8 +1224,8 @@ async function screenshotChecks(repository: string, manifest: ShipLayerManifest,
 // (see PR review finding F4).
 //
 // Unlike the raw-capture gate, an absent/empty final directory is never a blocker: rendering the
-// marketing project is an optional, additional step in v0.1 (nothing in `apply`/`submit` consumes
-// it yet), so a repository that has not run the export project must not be blocked by this check.
+// marketing project is optional. When it exists, apply prefers these reviewed composited assets;
+// otherwise it uses the raw screenshot deck that the required gate already validated.
 async function marketingScreenshotChecks(repository: string, manifest: ShipLayerManifest, add: Add): Promise<void> {
   const finalOutputDir = manifest.screenshots.finalOutputDir || DEFAULT_MARKETING_FINAL_DIR;
   // export.mjs always writes exactly `${scenario.id}.png` (no wildcard/suffix convention, unlike

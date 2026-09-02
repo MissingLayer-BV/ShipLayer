@@ -411,10 +411,12 @@ function recordingScript(manifest: ShipLayerManifest, analysis: AnalysisReport):
 function localeMetadataJson(locale: string, copy: LocaleCopy): object {
   const keywordsJoined = copy.keywords?.join(",") || "";
   const characterLimits = { name: 30, subtitle: 30, promotionalText: 170, description: 4000, keywords: 100, whatsNew: 4000 };
-  const characterCounts = { name: copy.name?.length ?? 0, subtitle: copy.subtitle?.length ?? 0, promotionalText: copy.promotionalText?.length ?? 0, description: copy.description?.length ?? 0, keywords: Buffer.byteLength(keywordsJoined, "utf8"), whatsNew: copy.whatsNew?.length ?? 0 };
+  const count = (value: string | undefined): number => value ? [...value].length : 0;
+  const characterCounts = { name: count(copy.name), subtitle: count(copy.subtitle), promotionalText: count(copy.promotionalText), description: count(copy.description), keywords: Buffer.byteLength(keywordsJoined, "utf8"), whatsNew: count(copy.whatsNew) };
   return { locale, ...copy, confirmation: copy.confirmation ?? "needs-human-confirmation", characterLimits, characterCounts };
 }
-function capturePlan(manifest: ShipLayerManifest): object { return { command: "shiplayer capture <repo>", prerequisites: ["macOS with Xcode for direct simulator capture", "Configured scheme and launch arguments", "No paid CI is used automatically"], configurations: manifest.screenshots.configurations.map((configuration) => ({ ...configuration, outputDirectory: `${manifest.screenshots.rawOutputDir}/${configuration.family}/${configuration.locale}`, scenarios: manifest.screenshots.scenarios.map((scenario) => ({ id: scenario.id, outputFile: `${scenario.id}.png`, title: scenario.title, launchArguments: scenario.launchArguments || [], steps: scenario.steps, confirmation: scenario.confirmation ?? "needs-human-confirmation" })) })), note: "This is a neutral hand-off. Create or use a separate app-store-screenshots scaffold/template; this JSON is not directly importable by that editor. Raw device screenshots must show the actual app and use each scenario ID as the filename. A scenario whose confirmation is not \"confirmed\" is an unverified proposal, not a fact." }; }
+function localizedLaunchArguments(manifest: ShipLayerManifest, locale: string): string[] { return manifest.screenshots.localizations?.[locale]?.launchArguments || []; }
+function capturePlan(manifest: ShipLayerManifest): object { return { command: "shiplayer capture <repo>", prerequisites: ["macOS with Xcode for direct simulator capture", "Configured scheme and launch arguments", "No paid CI is used automatically"], configurations: manifest.screenshots.configurations.map((configuration) => ({ ...configuration, localeLaunchArguments: localizedLaunchArguments(manifest, configuration.locale), outputDirectory: `${manifest.screenshots.rawOutputDir}/${configuration.family}/${configuration.locale}`, scenarios: manifest.screenshots.scenarios.map((scenario) => { const localized = scenario.localizations?.[configuration.locale]; return { id: scenario.id, outputFile: `${scenario.id}.png`, title: localized?.title ?? scenario.title, caption: localized?.caption ?? scenario.caption, launchArguments: [...(scenario.launchArguments || []), ...localizedLaunchArguments(manifest, configuration.locale)], steps: scenario.steps, confirmation: scenario.confirmation ?? "needs-human-confirmation", localizationConfirmation: localized?.confirmation ?? (configuration.locale === manifest.app.primaryLocale ? scenario.confirmation ?? "needs-human-confirmation" : "needs-human-confirmation") }; }) })), note: "This is a neutral hand-off. Create or use a separate app-store-screenshots scaffold/template; this JSON is not directly importable by that editor. Raw device screenshots must show the actual app and use each scenario ID as the filename. Scenario and localized-caption confirmations must both be \"confirmed\" before an explicitly localized deck is release-ready." }; }
 // Repository-root-relative "assets/device-frames/" sits next to both src/ (dev, run via tsx) and
 // dist/ (built) — one level up from this compiled/source module's own directory either way — so
 // this resolves the same way whether ShipLayer is run from a checkout or installed as a package
@@ -504,6 +506,7 @@ function screenshotHarnessTemplate(manifest: ShipLayerManifest, harnessAlreadyEx
     "// - Add this file to a dedicated UI Testing target in Xcode; it must never ship in the app",
     "//   target itself.",
     "",
+    "import Foundation",
     "import XCTest",
     "",
     `final class ${className}: XCTestCase {`,
@@ -516,7 +519,7 @@ function screenshotHarnessTemplate(manifest: ShipLayerManifest, harnessAlreadyEx
       "    @MainActor",
       `    func ${uniqueSwiftTestName(scenario.id, usedTestNames)}() {`,
       "        let app = XCUIApplication()",
-      `        app.launchArguments = [${args}] // TODO: confirm/extend the launch arguments this app state actually needs`,
+      `        configureLaunchArguments(app, scenario: [${args}]) // Appends the selected locale's arguments from the generated workflow`,
       "        app.launch()",
       `        // TODO: navigate to the exact screen for "${scenario.title.replace(/"/g, "'")}" and wait for it to`,
       "        // finish loading (e.g. XCTAssertTrue(app.staticTexts[\"...\"].waitForExistence(timeout: 5))).",
@@ -527,6 +530,18 @@ function screenshotHarnessTemplate(manifest: ShipLayerManifest, harnessAlreadyEx
     );
   }
   lines.push(
+    "    /// The generated workflow injects locale-wide arguments as base64-encoded JSON so values",
+    "    /// never pass through shell evaluation. Keep this helper when adopting multilingual capture.",
+    "    private func configureLaunchArguments(_ app: XCUIApplication, scenario: [String]) {",
+    "        var arguments = scenario",
+    "        if let encoded = ProcessInfo.processInfo.environment[\"SHIPLAYER_SCREENSHOT_LAUNCH_ARGUMENTS_BASE64\"],",
+    "           let data = Data(base64Encoded: encoded),",
+    "           let localized = try? JSONDecoder().decode([String].self, from: data) {",
+    "            arguments.append(contentsOf: localized)",
+    "        }",
+    "        app.launchArguments = arguments",
+    "    }",
+    "",
     "    /// Required helper: keeps a full-screen simulator screenshot as a named, permanently",
     "    /// retained Xcode test attachment. Do not change this shape — both ShipLayer's detection",
     "    /// (`shiplayer init`) and the generated capture workflow depend on it exactly as written.",
@@ -551,7 +566,8 @@ function screenshotHarnessContract(manifest: ShipLayerManifest, harness: { scena
     "",
     "- A single helper, `keepScreenshot(named:)`, that builds `XCTAttachment(screenshot: XCUIScreen.main.screenshot())`, sets `.name`, sets `.lifetime = .keepAlways`, and calls `add(attachment)`.",
     "- Every screenshot scenario test calls it exactly once, with a string literal (not a computed/interpolated value) — `shiplayer init` only parses literals.",
-    "- Each test sets `app.launchArguments` before `app.launch()`, so the scenario is deterministic and reproducible on a clean simulator.",
+    "- Each test calls `configureLaunchArguments(_:scenario:)` before `app.launch()`. It combines the scenario arguments with locale-wide arguments from `screenshots.localizations.<locale>.launchArguments`.",
+    "- The generated manual workflow passes locale arguments as base64-encoded JSON in `SHIPLAYER_SCREENSHOT_LAUNCH_ARGUMENTS_BASE64`; an existing custom harness must decode and append that value as shown in the generated template or its screenshots will not actually change language.",
     "",
     "## Naming convention",
     "",
@@ -573,8 +589,13 @@ function screenshotHarnessContract(manifest: ShipLayerManifest, harness: { scena
 }
 
 function screenshotCaptureWorkflow(manifest: ShipLayerManifest, harness: { sourceFiles: string[] }, xcodeGenSpecs: string[]): string {
-  const primaryConfig = manifest.screenshots.configurations.find((configuration) => configuration.family === "iphone") || manifest.screenshots.configurations[0];
-  const simulatorDefault = primaryConfig?.device || "iPhone 16 Pro Max";
+  const fallbackConfigurations: ShipLayerManifest["screenshots"]["configurations"] = [{ device: "iPhone 16 Pro Max", family: "iphone", locale: manifest.app.primaryLocale, requiredDimensions: { width: 1320, height: 2868 } }];
+  const captureConfigurations = (manifest.screenshots.configurations.length ? manifest.screenshots.configurations : fallbackConfigurations).map((configuration, index) => ({
+    ...configuration,
+    id: `${String(index + 1).padStart(2, "0")}-${configuration.family}-${configuration.locale}`,
+    deviceBase64: Buffer.from(configuration.device, "utf8").toString("base64"),
+    launchArgumentsBase64: Buffer.from(JSON.stringify(localizedLaunchArguments(manifest, configuration.locale)), "utf8").toString("base64")
+  }));
   const schemeDefault = manifest.app.name || "";
   // A bare class name (e.g. "ScreenshotTests") is not, by itself, valid -only-testing: syntax —
   // xcodebuild resolves an unqualified name as a TARGET, so a class-only guess for a target whose
@@ -612,10 +633,13 @@ function screenshotCaptureWorkflow(manifest: ShipLayerManifest, harness: { sourc
     "        description: \"Xcode scheme to test\"",
     "        required: true",
     `        default: ${yamlDoubleQuoted(schemeDefault)}`,
-    "      simulator_device:",
-    "        description: \"Simulator device name (must match an available runner simulator)\"",
+    "      capture_configuration:",
+    "        description: \"One device family and App Store locale to capture in this manual run\"",
     "        required: true",
-    `        default: ${yamlDoubleQuoted(simulatorDefault)}`,
+    `        default: ${yamlDoubleQuoted(captureConfigurations[0].id)}`,
+    "        type: choice",
+    "        options:",
+    ...captureConfigurations.map((configuration) => `          - ${yamlDoubleQuoted(configuration.id)}`),
     "      only_testing:",
     "        description: \"xcodebuild -only-testing Target/Class, e.g. MyAppUITests/MyAppScreenshotUITests. The default is a best-effort guess from the detected source file and directory name — verify it names your real UI Testing target before running, or every UI test in the scheme runs on this 10x-billed runner. Leave blank only if you accept that cost.\"",
     "        required: false",
@@ -658,31 +682,61 @@ function screenshotCaptureWorkflow(manifest: ShipLayerManifest, harness: { sourc
       "          xcodegen generate --spec \"$XCODEGEN_SPEC\"",
       ""
     ] : []),
+    "      - name: Resolve screenshot configuration",
+    "        id: screenshot_config",
+    "        env:",
+    "          CAPTURE_CONFIGURATION: ${{ inputs.capture_configuration }}",
+    "        run: |",
+    "          case \"$CAPTURE_CONFIGURATION\" in",
+    ...captureConfigurations.flatMap((configuration) => [
+      `            ${yamlDoubleQuoted(configuration.id)})`,
+      `              echo "device_base64=${configuration.deviceBase64}" >> "$GITHUB_OUTPUT"`,
+      `              echo "family=${configuration.family}" >> "$GITHUB_OUTPUT"`,
+      `              echo "locale=${configuration.locale}" >> "$GITHUB_OUTPUT"`,
+      `              echo "launch_arguments_base64=${configuration.launchArgumentsBase64}" >> "$GITHUB_OUTPUT"`,
+      "              ;;"
+    ]),
+    "            *)",
+    "              echo \"::error::Unknown screenshot configuration: $CAPTURE_CONFIGURATION\"",
+    "              exit 1",
+    "              ;;",
+    "          esac",
+    "",
     "      - name: Run screenshot UI tests",
     "        env:",
     "          SCHEME: ${{ inputs.scheme }}",
-    "          SIMULATOR_DEVICE: ${{ inputs.simulator_device }}",
     "          ONLY_TESTING: ${{ inputs.only_testing }}",
+    "          SIMULATOR_DEVICE_BASE64: ${{ steps.screenshot_config.outputs.device_base64 }}",
+    "          SHIPLAYER_SCREENSHOT_FAMILY: ${{ steps.screenshot_config.outputs.family }}",
+    "          SHIPLAYER_SCREENSHOT_LOCALE: ${{ steps.screenshot_config.outputs.locale }}",
+    "          SHIPLAYER_SCREENSHOT_LAUNCH_ARGUMENTS_BASE64: ${{ steps.screenshot_config.outputs.launch_arguments_base64 }}",
     ...(xcodeGenSpecs.length ? ["          XCODEGEN_SPEC: ${{ inputs.xcodegen_spec }}"] : []),
     "        run: |",
+    "          SIMULATOR_DEVICE=\"$(printf '%s' \"$SIMULATOR_DEVICE_BASE64\" | base64 -D)\"",
+    "          mkdir -p \"$GITHUB_WORKSPACE/TestResults/$SHIPLAYER_SCREENSHOT_FAMILY/$SHIPLAYER_SCREENSHOT_LOCALE\"",
     "          EXTRA=()",
     "          if [ -n \"$ONLY_TESTING\" ]; then EXTRA+=(-only-testing:\"$ONLY_TESTING\"); fi",
     ...(xcodeGenSpecs.length ? ["          cd \"$(dirname \"$XCODEGEN_SPEC\")\""] : []),
     "          xcodebuild test \\",
     "            -scheme \"$SCHEME\" \\",
     "            -destination \"platform=iOS Simulator,name=$SIMULATOR_DEVICE\" \\",
-    "            -resultBundlePath \"$GITHUB_WORKSPACE/TestResults/ShipLayerScreenshots.xcresult\" \\",
+    "            -resultBundlePath \"$GITHUB_WORKSPACE/TestResults/$SHIPLAYER_SCREENSHOT_FAMILY/$SHIPLAYER_SCREENSHOT_LOCALE/ShipLayerScreenshots.xcresult\" \\",
     "            \"${EXTRA[@]}\"",
     "",
     "      - name: Extract screenshot attachments from the .xcresult",
     "        id: extract",
     "        if: always()",
+    "        env:",
+    "          SHIPLAYER_SCREENSHOT_FAMILY: ${{ steps.screenshot_config.outputs.family }}",
+    "          SHIPLAYER_SCREENSHOT_LOCALE: ${{ steps.screenshot_config.outputs.locale }}",
     "        run: |",
-    "          mkdir -p RawScreenshots",
-    "          xcrun xcresulttool export attachments --path TestResults/ShipLayerScreenshots.xcresult --output-path RawScreenshots \\",
-    "            || xcrun xcresulttool export attachments --path TestResults/ShipLayerScreenshots.xcresult --output-path RawScreenshots --legacy \\",
+    "          RESULT_BUNDLE=\"TestResults/$SHIPLAYER_SCREENSHOT_FAMILY/$SHIPLAYER_SCREENSHOT_LOCALE/ShipLayerScreenshots.xcresult\"",
+    "          RAW_OUTPUT=\"RawScreenshots/$SHIPLAYER_SCREENSHOT_FAMILY/$SHIPLAYER_SCREENSHOT_LOCALE\"",
+    "          mkdir -p \"$RAW_OUTPUT\"",
+    "          xcrun xcresulttool export attachments --path \"$RESULT_BUNDLE\" --output-path \"$RAW_OUTPUT\" \\",
+    "            || xcrun xcresulttool export attachments --path \"$RESULT_BUNDLE\" --output-path \"$RAW_OUTPUT\" --legacy \\",
     "            || echo \"::warning::Automatic attachment extraction failed; download the uploaded .xcresult artifact below and extract manually.\"",
-    "          if find RawScreenshots -type f \\( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' \\) -print -quit 2>/dev/null | grep -q .; then",
+    "          if find \"$RAW_OUTPUT\" -type f \\( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' \\) -print -quit 2>/dev/null | grep -q .; then",
     "            echo \"found=true\" >> \"$GITHUB_OUTPUT\"",
     "          else",
     "            echo \"found=false\" >> \"$GITHUB_OUTPUT\"",
@@ -694,8 +748,8 @@ function screenshotCaptureWorkflow(manifest: ShipLayerManifest, harness: { sourc
     "        if: always() && steps.extract.outputs.found == 'true'",
     "        uses: actions/upload-artifact@v7",
     "        with:",
-    `          name: ${artifactName}`,
-    "          path: RawScreenshots",
+    `          name: ${artifactName}-\${{ inputs.capture_configuration }}`,
+    "          path: RawScreenshots/${{ steps.screenshot_config.outputs.family }}/${{ steps.screenshot_config.outputs.locale }}",
     "          if-no-files-found: error",
     "          retention-days: 14",
     "",
@@ -703,8 +757,8 @@ function screenshotCaptureWorkflow(manifest: ShipLayerManifest, harness: { sourc
     "        if: always() && steps.extract.outputs.found != 'true'",
     "        uses: actions/upload-artifact@v7",
     "        with:",
-    `          name: ${artifactName}-xcresult`,
-    "          path: TestResults/ShipLayerScreenshots.xcresult",
+    `          name: ${artifactName}-\${{ inputs.capture_configuration }}-xcresult`,
+    "          path: TestResults/${{ steps.screenshot_config.outputs.family }}/${{ steps.screenshot_config.outputs.locale }}/ShipLayerScreenshots.xcresult",
     "          if-no-files-found: warn",
     "          retention-days: 5"
   ];

@@ -10,7 +10,7 @@ ShipLayer never invents app navigation and never runs a simulator itself. This i
 
 ## 2. Hand off simulator execution — do not run it yourself
 
-`prepare` also emits `screenshots/capture-workflow.yml`: a `workflow_dispatch`-only, single-simulator, concurrency-guarded GitHub Actions workflow that runs the UI-test harness and uploads the exported `.xcresult` attachments as an artifact. It is **not installed anywhere** — a human must copy it into the target app repository's own `.github/workflows/` and press "Run workflow" themselves. macOS CI runners bill roughly 10x; the generated file's header says so.
+`prepare` also emits `screenshots/capture-workflow.yml`: a `workflow_dispatch`-only, single-simulator, concurrency-guarded GitHub Actions workflow. Each manual run chooses one `screenshots.configurations` family/locale pair. It safely injects `screenshots.localizations.<locale>.launchArguments` through the generated harness helper and uploads namespaced output. It deliberately has no all-locales matrix. It is **not installed anywhere** — a human must copy it into the target app repository's own `.github/workflows/` and press "Run workflow" themselves. macOS CI runners bill roughly 10x; the generated file's header says so.
 
 **If this environment has no macOS/Xcode simulator available (true on this machine as of this install), do not attempt `xcodebuild`, `xcrun simctl`, or any other simulator command.** Tell the user the workflow artifact is ready, ask them to run it (via that generated workflow on a macOS CI runner, or manually on their own Mac), and wait for exported PNGs before continuing. `shiplayer capture <repo>` reports this exact prerequisite gap itself — "Simulator capture requires macOS with Xcode" and/or a missing `xcodebuild`/`xcrun` — so check its output first rather than assuming.
 
@@ -26,11 +26,11 @@ This recursively finds image files under `<dir>`, validates format, rejects an a
 
 ## 4. Draft captions
 
-For each scenario, draft `screenshots.scenarios[].caption` in `shiplayer.yml` yourself — ShipLayer never invents these; `init`'s unresolved questions name which scenarios still need one.
+For the primary locale, draft `screenshots.scenarios[].caption`. For every localized deck, draft `screenshots.scenarios[].localizations.<locale>.caption` and leave its separate confirmation pending until a human reviews the rendered translation. ShipLayer never invents these. Once `screenshots.localizations.<locale>` opts a locale into localized capture, `check` blocks a missing or unconfirmed translated caption instead of silently shipping the primary caption.
 
 - Max 100 characters, no line breaks. A wide-script caption (CJK, kana, hangul, fullwidth forms) should be noticeably shorter — those glyphs render close to full width.
 - Sell one outcome per slide, not a feature list.
-- A caption on an unconfirmed scenario still renders, but with a visible "Draft — needs confirmation" badge — don't treat it as finished until `screenshots.scenarios[].confirmation` is `confirmed`.
+- A caption on an unconfirmed scenario or with an unconfirmed locale override still renders, but with a visible "Draft — needs confirmation" badge — both confirmations must be reviewed.
 
 ## 5. Render the marketing composition project
 

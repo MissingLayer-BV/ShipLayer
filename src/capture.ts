@@ -15,15 +15,18 @@ export async function createCapturePlan(repository: string, manifest: ShipLayerM
   if (!project && !workspace) prerequisites.push("No Xcode project/workspace was found.");
   const harness = await detectScreenshotHarness(repository);
   const unconfirmed = manifest.screenshots.scenarios.filter((scenario) => scenario.confirmation !== "confirmed");
+  const unconfirmedLocalized = manifest.screenshots.scenarios.flatMap((scenario) => Object.entries(scenario.localizations || {}).filter(([, copy]) => copy.confirmation !== "confirmed").map(([locale]) => `${scenario.id}/${locale}`));
   const instructions: string[] = [];
   if (harness.sourceFiles.length) {
     instructions.push(`Detected an existing screenshot UI-test harness in ${harness.sourceFiles.join(", ")} (${harness.scenarios.length} keepScreenshot(named:) call(s)).`);
     if (unconfirmed.length) instructions.push(`${unconfirmed.length} declared screenshot scenario(s) are still needs-human-confirmation: ${unconfirmed.map((scenario) => scenario.id).join(", ")}. Verify each one's real on-screen navigation, then set confirmation: confirmed in shiplayer.yml before check will pass.`);
+    if (unconfirmedLocalized.length) instructions.push(`${unconfirmedLocalized.length} localized screenshot caption(s) are still unconfirmed: ${unconfirmedLocalized.join(", ")}. Review each rendered translation before release.`);
   } else {
     instructions.push("No screenshot UI-test harness was detected (no keepScreenshot(named:)-shaped XCTAttachment(screenshot:)/XCUIScreen.main.screenshot() call in a *UITests source). ShipLayer cannot infer test actions or fabricate screenshots from launch arguments.");
     instructions.push("Run shiplayer prepare to generate a fillable template and its contract at screenshots/ui-test-harness-template.swift and screenshots/ui-test-harness-contract.md in the release package. Add real, verified navigation, add the file to a UI Testing target, then re-run shiplayer init --force (or hand-edit shiplayer.yml) so screenshots.scenarios reflects it.");
   }
   instructions.push("Run shiplayer prepare to also generate a manually-installed, workflow_dispatch-only capture workflow at screenshots/capture-workflow.yml. A human must copy it into the app repository's own .github/workflows/, review it, and press \"Run workflow\" themselves — ShipLayer never installs, commits, or dispatches it.");
+  instructions.push(`The workflow offers one explicit configuration per run: ${manifest.screenshots.configurations.map((configuration) => `${configuration.family}/${configuration.locale}`).join(", ") || "none configured"}. It appends screenshots.localizations.<locale>.launchArguments to each scenario's launch arguments; an existing custom harness must adopt the generated configureLaunchArguments helper.`);
   instructions.push(`Once you have exported PNG screenshot attachments (from the workflow's uploaded artifact, or a local .xcresult export), ingest them with: shiplayer capture <repo> --from <dir> --family <iphone|ipad> --locale <locale>. This copies and validates each file (readable PNG/JPEG, no alpha, an accepted App Store dimension, and internal consistency with what is already ingested) into ${manifest.screenshots.rawOutputDir}/{family}/{locale}/<scenario-id>.png; it never fabricates or invents a screenshot.`);
   instructions.push("No paid cloud CI is used automatically; the generated workflow is workflow_dispatch-only and stays uninstalled until a human copies and runs it.");
   return { executable: false, prerequisites, commands: [], instructions, detectedHarness: { sourceFiles: harness.sourceFiles, scenarioCount: harness.scenarios.length } };
