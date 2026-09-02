@@ -88,6 +88,7 @@ test("apply stops without mutation when the remote diff changes after review", a
 test("explicit apply synchronizes metadata, review details, build, and screenshot upload without sending JWT to the asset host", async () => {
   const { root, environment } = await fixture(); const manifest = readyManifest(); manifest.sync.mode = "apply";
   manifest.metadata.localizations["en-US"] = { ...manifest.metadata.localizations["en-US"], promotionalText: "A localized promotion", supportUrl: "https://example.com/en/support", marketingUrl: "https://example.com/en", privacyPolicyUrl: "https://example.com/en/privacy" };
+  let versionLocalizationVisible = false;
   const calls: Array<{ url: string; method: string; headers: Record<string, string>; body?: unknown }> = [];
   const fetcher: FetchLike = async (url, init) => {
     const method = init?.method || "GET"; const headers = (init?.headers || {}) as Record<string, string>; let body: unknown;
@@ -95,11 +96,12 @@ test("explicit apply synchronizes metadata, review details, build, and screensho
     if (url.startsWith("https://upload.example.test/")) { assert.equal(method, "PUT"); assert.equal(headers.Authorization, undefined); assert.equal(headers["Content-Type"], "image/png"); return { ok: true, status: 200, text: async () => "" }; }
     assert.match(headers.Authorization || "", /^Bearer /);
     if (method === "GET") {
+      if (url.includes("/appStoreVersions/version/appStoreVersionLocalizations") && versionLocalizationVisible) return json({ data: [{ type: "appStoreVersionLocalizations", id: "version-locale", attributes: { locale: "en-US" } }] }, 200);
       const discovered = discoveryBody(url); if (discovered) return { ok: true, status: 200, text: async () => JSON.stringify(discovered) };
       if (url.includes("/appScreenshots/screenshot")) return { ok: true, status: 200, text: async () => JSON.stringify({ data: { type: "appScreenshots", id: "screenshot", attributes: { assetDeliveryState: { state: "COMPLETE", errors: [] } } } }) };
     }
     if (method === "POST" && url.endsWith("/appInfoLocalizations")) return json({ data: { type: "appInfoLocalizations", id: "app-locale", attributes: { locale: "en-US" } } }, 201);
-    if (method === "POST" && url.endsWith("/appStoreVersionLocalizations")) return json({ data: { type: "appStoreVersionLocalizations", id: "version-locale", attributes: { locale: "en-US" } } }, 201);
+    if (method === "POST" && url.endsWith("/appStoreVersionLocalizations")) { versionLocalizationVisible = true; return json({ errors: [{ status: "409", code: "ENTITY_ERROR.ATTRIBUTE.INVALID.DUPLICATE", detail: "Entity with locale: en-US already exists. Try updating." }] }, 409); }
     if (method === "POST" && url.endsWith("/appStoreReviewDetails")) return json({ data: { type: "appStoreReviewDetails", id: "review" } }, 201);
     if (method === "POST" && url.endsWith("/appScreenshotSets")) return json({ data: { type: "appScreenshotSets", id: "set", attributes: { screenshotDisplayType: "APP_IPHONE_67" } } }, 201);
     if (method === "POST" && url.endsWith("/appScreenshots")) {
@@ -117,6 +119,7 @@ test("explicit apply synchronizes metadata, review details, build, and screensho
   assert.equal((appLocalization?.body as { data: { attributes: { privacyPolicyUrl: string } } }).data.attributes.privacyPolicyUrl, "https://example.com/en/privacy");
   const versionLocalization = calls.find((call) => call.method === "POST" && call.url.endsWith("/appStoreVersionLocalizations"));
   assert.deepEqual((versionLocalization?.body as { data: { attributes: Record<string, string> } }).data.attributes, { locale: "en-US", description: "A complete App Store description.", keywords: "example", marketingUrl: "https://example.com/en", promotionalText: "A localized promotion", supportUrl: "https://example.com/en/support" });
+  assert.ok(calls.some((call) => call.method === "PATCH" && call.url.endsWith("/appStoreVersionLocalizations/version-locale")));
   const commit = calls.find((call) => call.method === "PATCH" && call.url.endsWith("/appScreenshots/screenshot")); assert.match((commit?.body as { data: { attributes: { sourceFileChecksum: string } } }).data.attributes.sourceFileChecksum, /^[a-f0-9]{32}$/);
   assert.ok(!JSON.stringify(calls.map((call) => ({ method: call.method, url: call.url, body: call.body }))).includes("BEGIN PRIVATE"));
 });
