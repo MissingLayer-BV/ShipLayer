@@ -332,6 +332,15 @@
           "type": "string",
           "maxLength": 4000
         },
+        "supportUrl": {
+          "$ref": "#/$defs/url"
+        },
+        "marketingUrl": {
+          "$ref": "#/$defs/url"
+        },
+        "privacyPolicyUrl": {
+          "$ref": "#/$defs/url"
+        },
         "confirmation": {
           "$ref": "#/$defs/confirmation"
         }
@@ -776,6 +785,38 @@
           "minLength": 1,
           "maxLength": 100,
           "pattern": "^[^\\r\\n]+$"
+        },
+        "localizations": {
+          "type": "object",
+          "patternProperties": {
+            "^[a-z]{2,3}(?:-[A-Z][a-z]{3}|-[A-Z]{2})?(?:-[A-Z]{2})?$": {
+              "$ref": "#/$defs/screenshotLocalization"
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    "screenshotLocalization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "caption"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "caption": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[^\\r\\n]+$"
+        },
+        "confirmation": {
+          "$ref": "#/$defs/confirmation"
         }
       }
     },
@@ -911,6 +952,26 @@
               }
             }
           }
+        },
+        "localizations": {
+          "type": "object",
+          "patternProperties": {
+            "^[a-z]{2,3}(?:-[A-Z][a-z]{3}|-[A-Z]{2})?(?:-[A-Z]{2})?$": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "launchArguments": {
+                  "type": "array",
+                  "maxItems": 20,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 200
+                  }
+                }
+              }
+            }
+          },
+          "additionalProperties": false
         },
         "rawOutputDir": {
           "$ref": "#/$defs/repoPath"

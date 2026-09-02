@@ -86,7 +86,9 @@ test("apply stops without mutation when the remote diff changes after review", a
 });
 
 test("explicit apply synchronizes metadata, review details, build, and screenshot upload without sending JWT to the asset host", async () => {
-  const { root, environment } = await fixture(); const manifest = readyManifest(); manifest.sync.mode = "apply"; const calls: Array<{ url: string; method: string; headers: Record<string, string>; body?: unknown }> = [];
+  const { root, environment } = await fixture(); const manifest = readyManifest(); manifest.sync.mode = "apply";
+  manifest.metadata.localizations["en-US"] = { ...manifest.metadata.localizations["en-US"], promotionalText: "A localized promotion", supportUrl: "https://example.com/en/support", marketingUrl: "https://example.com/en", privacyPolicyUrl: "https://example.com/en/privacy" };
+  const calls: Array<{ url: string; method: string; headers: Record<string, string>; body?: unknown }> = [];
   const fetcher: FetchLike = async (url, init) => {
     const method = init?.method || "GET"; const headers = (init?.headers || {}) as Record<string, string>; let body: unknown;
     if (typeof init?.body === "string") body = JSON.parse(init.body); calls.push({ url, method, headers, body });
@@ -111,6 +113,10 @@ test("explicit apply synchronizes metadata, review details, build, and screensho
   assert.equal(result.applied, true); assert.ok(result.operations.some((operation) => operation.id === "build.attach" && operation.status === "applied")); assert.ok(result.operations.some((operation) => operation.id === "screenshots.iphone.en-US" && operation.status === "applied"));
   assert.ok(calls.some((call) => call.method === "PATCH" && call.url.endsWith("/appStoreVersions/version/relationships/build")));
   const set = calls.find((call) => call.method === "POST" && call.url.endsWith("/appScreenshotSets")); assert.equal((set?.body as { data: { attributes: { screenshotDisplayType: string } } }).data.attributes.screenshotDisplayType, "APP_IPHONE_67");
+  const appLocalization = calls.find((call) => call.method === "POST" && call.url.endsWith("/appInfoLocalizations"));
+  assert.equal((appLocalization?.body as { data: { attributes: { privacyPolicyUrl: string } } }).data.attributes.privacyPolicyUrl, "https://example.com/en/privacy");
+  const versionLocalization = calls.find((call) => call.method === "POST" && call.url.endsWith("/appStoreVersionLocalizations"));
+  assert.deepEqual((versionLocalization?.body as { data: { attributes: Record<string, string> } }).data.attributes, { locale: "en-US", description: "A complete App Store description.", keywords: "example", marketingUrl: "https://example.com/en", promotionalText: "A localized promotion", supportUrl: "https://example.com/en/support" });
   const commit = calls.find((call) => call.method === "PATCH" && call.url.endsWith("/appScreenshots/screenshot")); assert.match((commit?.body as { data: { attributes: { sourceFileChecksum: string } } }).data.attributes.sourceFileChecksum, /^[a-f0-9]{32}$/);
   assert.ok(!JSON.stringify(calls.map((call) => ({ method: call.method, url: call.url, body: call.body }))).includes("BEGIN PRIVATE"));
 });

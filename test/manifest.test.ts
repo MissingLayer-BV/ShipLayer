@@ -45,6 +45,7 @@ test("subscription offer semantics reject invalid price combinations and missing
 test("Apple script locales and modeled introductory offers validate precisely", () => {
   const manifest = defaultManifest({ name: "Example", bundleId: "com.example.app", locales: ["zh-Hans"] });
   manifest.app.primaryLocale = "zh-Hans"; manifest.metadata.localizations = { "zh-Hans": {} };
+  manifest.screenshots.configurations = manifest.screenshots.configurations.map((configuration) => ({ ...configuration, locale: "zh-Hans" }));
   manifest.monetization = { type: "subscriptions", group: { referenceName: "Pro", localizations: { "zh-Hans": { displayName: "Pro" } } }, baseTerritory: "USA", baseTerritoryConfirmation: "confirmed", paywallNavigation: "Tap Upgrade", restorePath: "Tap Restore", purchasePresentation: readyPurchasePresentation(true), termsUrl: "https://example.com/terms", termsOfUse: { type: "apple-standard-eula", confirmation: "confirmed" }, privacyUrl: "https://example.com/privacy", disclosureConfirmation: "confirmed", confirmation: "confirmed", products: [{ productId: "com.example.pro", referenceName: "Pro", duration: "P1M", level: 1, pricePointReference: "P1", familySharing: true, reviewNotes: "Tap Upgrade", reviewScreenshot: "review/pro.png", introductoryOffer: { type: "free-trial", duration: "P3D" }, localizations: { "zh-Hans": { displayName: "Pro", description: "Monthly" } } }] };
   validateManifest(manifest);
   manifest.monetization.products[0].introductoryOffer = { type: "pay-as-you-go", duration: "P1M", pricePointReference: "P1", numberOfPeriods: 3 };
@@ -53,6 +54,26 @@ test("Apple script locales and modeled introductory offers validate precisely", 
   assert.throws(() => validateManifest(manifest), /numberOfPeriods/);
   const badUrl = defaultManifest({ name: "Example", bundleId: "com.example.app" }); badUrl.contacts.supportUrl = "https://:";
   assert.throws(() => validateManifest(badUrl), /Invalid shiplayer/);
+});
+
+test("current Apple locale shortcodes and localized screenshot/listing fields validate without weakening locale containment", () => {
+  for (const locale of ["bn-BD", "ur-PK", "no", "sl-SI", "ta-IN"]) {
+    const manifest = defaultManifest({ name: "Example", bundleId: "com.example.app", locales: [locale], primaryLocale: locale });
+    manifest.metadata.localizations = { [locale]: { name: "Example", description: "Description", supportUrl: `https://example.com/${locale}/support`, marketingUrl: `https://example.com/${locale}`, privacyPolicyUrl: `https://example.com/${locale}/privacy` } };
+    manifest.screenshots.configurations = manifest.screenshots.configurations.map((configuration) => ({ ...configuration, locale }));
+    manifest.screenshots.localizations = { [locale]: { launchArguments: ["-translation", locale] } };
+    manifest.screenshots.scenarios = [{ id: "home", title: "Home", steps: ["Launch"], confirmation: "confirmed", localizations: { [locale]: { caption: "Localized caption", confirmation: "confirmed" } } }];
+    validateManifest(manifest);
+  }
+  const unsupported = defaultManifest({ name: "Example", bundleId: "com.example.app", locales: ["nb"], primaryLocale: "nb" });
+  unsupported.metadata.localizations = { nb: {} };
+  unsupported.screenshots.configurations = unsupported.screenshots.configurations.map((configuration) => ({ ...configuration, locale: "nb" }));
+  assert.throws(() => validateManifest(unsupported), /unsupported App Store localization 'nb'/);
+
+  const undeclared = readyManifest();
+  undeclared.screenshots.localizations = { tr: { launchArguments: ["-translation", "tr.rowwad"] } };
+  assert.throws(() => validateManifest(undeclared), /screenshots\.localizations contains tr, which is not declared/);
+
 });
 
 test("scenario IDs are unique across screenshot and review workflows", () => {

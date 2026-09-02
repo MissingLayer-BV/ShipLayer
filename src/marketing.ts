@@ -126,6 +126,9 @@ export interface MarketingSlideEntry {
   outputRelativePath: string;
 }
 
+const RTL_LANGUAGE_CODES = new Set(["ar", "he", "ur"]);
+function textDirection(locale: string): "ltr" | "rtl" { return RTL_LANGUAGE_CODES.has(locale.split("-")[0]) ? "rtl" : "ltr"; }
+
 /** Relative to the emitted release package's own output directory (e.g. "shiplayer-release"). */
 export const MARKETING_PROJECT_ROOT = "screenshots/marketing";
 /**
@@ -160,7 +163,7 @@ export const DEFAULT_MARKETING_FINAL_DIR = `${DEFAULT_OUTPUT_DIRECTORY}/screensh
  * relative-path math is done against a shared synthetic "/" root so it is independent of
  * process.cwd() and stays deterministic/testable without touching disk.
  */
-export function buildMarketingSlideEntries(params: { outputDirectory: string; rawOutputDir: string; finalOutputDir: string; configurations: Array<{ device: string; family: "iphone" | "ipad"; locale: string; requiredDimensions: { width: number; height: number } }>; scenarios: Array<{ id: string; title: string; caption?: string; confirmation?: string }> }): MarketingSlideEntry[] {
+export function buildMarketingSlideEntries(params: { outputDirectory: string; rawOutputDir: string; finalOutputDir: string; configurations: Array<{ device: string; family: "iphone" | "ipad"; locale: string; requiredDimensions: { width: number; height: number } }>; scenarios: Array<{ id: string; title: string; caption?: string; confirmation?: string; localizations?: Record<string, { title?: string; caption: string; confirmation?: string }> }> }): MarketingSlideEntry[] {
   const abs = (relative: string): string => path.posix.join("/", relative);
   const relativeFrom = (fromDir: string, to: string): string => path.posix.relative(abs(fromDir), abs(to));
   const marketingRoot = path.posix.join(params.outputDirectory, MARKETING_PROJECT_ROOT);
@@ -168,13 +171,14 @@ export function buildMarketingSlideEntries(params: { outputDirectory: string; ra
   for (const config of params.configurations) {
     const slideDir = path.posix.join(marketingRoot, "slides", config.family, config.locale);
     for (const scenario of params.scenarios) {
+      const localized = scenario.localizations?.[config.locale];
       const htmlAbsolute = path.posix.join(slideDir, `${scenario.id}.html`);
       const screenshotPngAbsolute = path.posix.join(params.rawOutputDir, config.family, config.locale, `${scenario.id}.png`);
       const screenshotJpgAbsolute = path.posix.join(params.rawOutputDir, config.family, config.locale, `${scenario.id}.jpg`);
       const frameAbsolute = path.posix.join(marketingRoot, "assets", `${config.family}-frame.png`);
       const outputAbsolute = path.posix.join(params.finalOutputDir, config.family, config.locale, `${scenario.id}.png`);
       entries.push({
-        id: scenario.id, title: scenario.title, caption: scenario.caption, confirmed: scenario.confirmation === "confirmed",
+        id: scenario.id, title: localized?.title ?? scenario.title, caption: localized?.caption ?? scenario.caption, confirmed: scenario.confirmation === "confirmed" && (!localized || localized.confirmation === "confirmed"),
         family: config.family, device: config.device, locale: config.locale,
         width: config.requiredDimensions.width, height: config.requiredDimensions.height,
         screenshotPngHref: relativeFrom(slideDir, screenshotPngAbsolute),
@@ -208,7 +212,7 @@ export function renderSlideHtml(entry: MarketingSlideEntry): string {
   const fontSize = fitCaptionFontSize(entry.width, entry.width - 2 * captionSide, captionText);
   const round = (value: number): number => Math.round(value * 100) / 100;
   return `<!doctype html>
-<html lang="${escapeAttr(entry.locale)}">
+<html lang="${escapeAttr(entry.locale)}" dir="${textDirection(entry.locale)}">
 <head>
 <meta charset="utf-8">
 <title>${escapeHtml(entry.id)}</title>

@@ -41,3 +41,17 @@ test("complete free, paid, lifetime, and subscription fixtures pass preflight", 
     assert.equal(report.summary.block, 0, `${type}: ${report.results.filter((item) => item.severity === "block").map((item) => item.message).join("; ")}`);
   }
 });
+
+test("localized metadata counts Unicode characters consistently with JSON Schema", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-unicode-count-"));
+  const manifest = readyManifest();
+  manifest.metadata.localizations["en-US"].name = "🌿".repeat(30);
+  validateManifest(manifest);
+  await writeReadyAssets(root, manifest);
+  const analysis = await analyzeRepository(root);
+  const report = await preflight(root, manifest, false, analysis);
+  assert.equal(report.results.some((item) => item.id === "metadata.en-US.name" && item.severity === "block"), false);
+  const pkg = await generateReleasePackage(root, manifest, analysis, report, "shiplayer-release");
+  const metadata = JSON.parse(await readFile(path.join(pkg.directory, "metadata/en-US.json"), "utf8"));
+  assert.equal(metadata.characterCounts.name, 30);
+});

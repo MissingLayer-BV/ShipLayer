@@ -216,6 +216,21 @@ test("preflight blocks a screenshot scenario whose confirmation is absent or any
   assert.equal(report.results.filter((item) => item.id === "screenshots.scenarios.home.confirmation").length, 0);
 });
 
+test("an explicitly localized screenshot deck blocks missing or unreviewed translated captions", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-localized-caption-gate-"));
+  const manifest = readyManifest();
+  manifest.app.locales.push("tr");
+  manifest.metadata.localizations.tr = { name: "Example", description: "Türkçe açıklama", keywords: ["örnek"], confirmation: "confirmed" };
+  manifest.screenshots.localizations = { tr: { launchArguments: ["-translation", "tr.rowwad"] } };
+  manifest.screenshots.configurations.push({ device: "iPhone 16 Pro Max", family: "iphone", locale: "tr", requiredDimensions: { width: 1320, height: 2868 } });
+  await writeReadyAssets(root, manifest);
+  let report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "screenshots.scenarios.home.localizations.tr.caption" && item.severity === "block"));
+  manifest.screenshots.scenarios[0].localizations = { tr: { caption: "Kur’an’ı huzurla okuyun", confirmation: "needs-human-confirmation" } };
+  report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "screenshots.scenarios.home.localizations.tr.confirmation" && item.severity === "block"));
+});
+
 test("preflight accepts any Apple-accepted dimension within the configured display class instead of only the exact configured value", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-dimension-fix-"));
   const manifest = readyManifest(); await writeReadyAssets(root, manifest);
@@ -468,7 +483,14 @@ test("prepare refuses to write the release package under a .github path", async 
 
 test("prepare emits a manually-installed workflow_dispatch-only capture workflow with a cost-guard header, plus the harness template/contract", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-workflow-"));
-  const manifest = readyManifest(); await writeReadyAssets(root, manifest);
+  const manifest = readyManifest();
+  manifest.app.locales.push("tr");
+  manifest.metadata.localizations.tr = { name: "Example", description: "Türkçe açıklama", keywords: ["örnek"], confirmation: "confirmed" };
+  manifest.screenshots.localizations = { tr: { launchArguments: ["-translation", "tr.rowwad"] } };
+  manifest.screenshots.configurations.push({ device: "iPhone 16 Pro Max", family: "iphone", locale: "tr", requiredDimensions: { width: 1320, height: 2868 } });
+  manifest.screenshots.scenarios[0].caption = "Read with clarity";
+  manifest.screenshots.scenarios[0].localizations = { tr: { caption: "Kur’an’ı huzurla okuyun", confirmation: "confirmed" } };
+  await writeReadyAssets(root, manifest);
   const analysis = await analyzeRepository(root);
   const report = await preflight(root, manifest, false, analysis);
   const pkg = await generateReleasePackage(root, manifest, analysis, report, "shiplayer-release");
@@ -486,6 +508,8 @@ test("prepare emits a manually-installed workflow_dispatch-only capture workflow
   assert.equal(inputs.xcodegen_spec.type, "choice");
   assert.equal(inputs.xcodegen_spec.default, "project.yml");
   assert.deepEqual(inputs.xcodegen_spec.options, ["project.yml"]);
+  assert.equal(inputs.capture_configuration.type, "choice");
+  assert.deepEqual(inputs.capture_configuration.options, ["01-iphone-en-US", "02-iphone-tr"]);
   const jobs = workflow.jobs as Record<string, { "runs-on": string; "timeout-minutes": number; steps: Array<{ name: string; run?: string; env?: Record<string, string>; with?: Record<string, unknown>; if?: string }> }>;
   const job = Object.values(jobs)[0];
   assert.equal(job["runs-on"], "macos-latest");
@@ -498,7 +522,8 @@ test("prepare emits a manually-installed workflow_dispatch-only capture workflow
   assert.ok(job.steps.indexOf(generateProject!) < job.steps.findIndex((step) => step.name === "Run screenshot UI tests"));
   const runTests = job.steps.find((step) => step.name === "Run screenshot UI tests");
   assert.match(runTests?.run || "", /cd "\$\(dirname "\$XCODEGEN_SPEC"\)"/);
-  assert.match(runTests?.run || "", /\$GITHUB_WORKSPACE\/TestResults\/ShipLayerScreenshots\.xcresult/);
+  assert.match(runTests?.run || "", /\$GITHUB_WORKSPACE\/TestResults\/\$SHIPLAYER_SCREENSHOT_FAMILY\/\$SHIPLAYER_SCREENSHOT_LOCALE\/ShipLayerScreenshots\.xcresult/);
+  assert.equal(runTests?.env?.SHIPLAYER_SCREENSHOT_LAUNCH_ARGUMENTS_BASE64, "${{ steps.screenshot_config.outputs.launch_arguments_base64 }}");
   assert.doesNotMatch(runTests?.run || "", /\$\{\{\s*inputs\./, "manual inputs must reach the shell through env, not expression interpolation");
   // A zero-screenshot extraction must fail the job loudly rather than finish green with only an
   // annotation, and the current (non-"--legacy") xcresulttool invocation must be tried first.
@@ -515,6 +540,9 @@ test("prepare emits a manually-installed workflow_dispatch-only capture workflow
   const template = await readFile(path.join(pkg.directory, "screenshots/ui-test-harness-template.swift"), "utf8");
   assert.ok(template.includes("keepScreenshot(named:"));
   assert.ok(template.includes("XCTAttachment(screenshot: XCUIScreen.main.screenshot())"));
+  assert.ok(template.includes("SHIPLAYER_SCREENSHOT_LAUNCH_ARGUMENTS_BASE64"));
+  const capturePlan = JSON.parse(await readFile(path.join(pkg.directory, "screenshots/capture-plan.json"), "utf8"));
+  assert.deepEqual(capturePlan.configurations.find((configuration: { locale: string }) => configuration.locale === "tr").scenarios[0].launchArguments, ["-translation", "tr.rowwad"]);
   const contract = await readFile(path.join(pkg.directory, "screenshots/ui-test-harness-contract.md"), "utf8");
   assert.ok(contract.includes("keepScreenshot(named:)"));
 });

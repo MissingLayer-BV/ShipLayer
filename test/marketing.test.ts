@@ -112,6 +112,31 @@ test("buildMarketingSlideEntries computes correct relative hrefs for every confi
   assert.equal(detail.frameHref, "../../../assets/ipad-frame.png");
 });
 
+test("localized screenshot copy resolves per locale, remains draft until reviewed, and marks RTL HTML", () => {
+  const entries = buildMarketingSlideEntries({
+    outputDirectory: "shiplayer-release",
+    rawOutputDir: "release/raw-screenshots",
+    finalOutputDir: "shiplayer-release/screenshots/final",
+    configurations: [
+      { device: "iPhone", family: "iphone", locale: "en-US", requiredDimensions: { width: 1320, height: 2868 } },
+      { device: "iPhone", family: "iphone", locale: "tr", requiredDimensions: { width: 1320, height: 2868 } },
+      { device: "iPhone", family: "iphone", locale: "ur-PK", requiredDimensions: { width: 1320, height: 2868 } }
+    ],
+    scenarios: [{ id: "reader", title: "Reader", caption: "Read with clarity", confirmation: "confirmed", localizations: {
+      tr: { title: "Okuyucu", caption: "Kur’an’ı huzurla okuyun", confirmation: "confirmed" },
+      "ur-PK": { caption: "قرآن سکون سے پڑھیں", confirmation: "needs-human-confirmation" }
+    } }]
+  });
+  assert.equal(entries.find((entry) => entry.locale === "en-US")?.caption, "Read with clarity");
+  assert.equal(entries.find((entry) => entry.locale === "tr")?.caption, "Kur’an’ı huzurla okuyun");
+  assert.equal(entries.find((entry) => entry.locale === "tr")?.title, "Okuyucu");
+  assert.equal(entries.find((entry) => entry.locale === "tr")?.confirmed, true);
+  const urdu = entries.find((entry) => entry.locale === "ur-PK")!;
+  assert.equal(urdu.confirmed, false);
+  assert.match(renderSlideHtml(urdu), /<html lang="ur-PK" dir="rtl">/);
+  assert.match(renderSlideHtml(urdu), /Draft/);
+});
+
 // ---------------------------------------------------------------------------------------------
 // Generated project shape: playwright as the only dependency, per-family frame assets only,
 // deterministic slide count.
