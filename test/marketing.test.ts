@@ -312,10 +312,11 @@ test("preflight rejects more than 10 rendered marketing screenshots in one set",
 // --- F1/F2: no redundant/broken postinstall; export.mjs fails with actionable advice ----------
 
 test("F1: the generated package.json has no postinstall script (current Playwright has none of its own; a redundant one only breaks npm install)", () => {
-  const packageJson = JSON.parse(renderPackageJson()) as { scripts: Record<string, string> };
+  const packageJson = JSON.parse(renderPackageJson()) as { scripts: Record<string, string>; dependencies: Record<string, string> };
   assert.equal(packageJson.scripts.postinstall, undefined);
   assert.equal(packageJson.scripts.export, "node export.mjs");
   assert.deepEqual(Object.keys(packageJson.dependencies || {}), ["playwright"]);
+  assert.match(packageJson.dependencies.playwright, /^\d+\.\d+\.\d+$/);
 });
 
 test("F1: the generated README documents an explicit playwright install step, not a nonexistent postinstall hook", () => {
