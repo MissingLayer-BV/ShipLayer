@@ -416,7 +416,7 @@ function localeMetadataJson(locale: string, copy: LocaleCopy): object {
   return { locale, ...copy, confirmation: copy.confirmation ?? "needs-human-confirmation", characterLimits, characterCounts };
 }
 function localizedLaunchArguments(manifest: ShipLayerManifest, locale: string): string[] { return manifest.screenshots.localizations?.[locale]?.launchArguments || []; }
-function capturePlan(manifest: ShipLayerManifest): object { return { command: "shiplayer capture <repo>", prerequisites: ["macOS with Xcode for direct simulator capture", "Configured scheme and launch arguments", "No paid CI is used automatically"], configurations: manifest.screenshots.configurations.map((configuration) => ({ ...configuration, localeLaunchArguments: localizedLaunchArguments(manifest, configuration.locale), outputDirectory: `${manifest.screenshots.rawOutputDir}/${configuration.family}/${configuration.locale}`, reviewedRawSourceDirectory: `${manifest.screenshots.rawOutputDir}/${configuration.family}/${configuration.sourceLocale ?? configuration.locale}`, scenarios: manifest.screenshots.scenarios.map((scenario) => { const localized = scenario.localizations?.[configuration.locale]; return { id: scenario.id, outputFile: `${scenario.id}.png`, title: localized?.title ?? scenario.title, caption: localized?.caption ?? scenario.caption, launchArguments: [...(scenario.launchArguments || []), ...localizedLaunchArguments(manifest, configuration.locale)], steps: scenario.steps, confirmation: scenario.confirmation ?? "needs-human-confirmation", localizationConfirmation: localized?.confirmation ?? (configuration.locale === manifest.app.primaryLocale ? scenario.confirmation ?? "needs-human-confirmation" : "needs-human-confirmation") }; }) })), note: "This is a neutral hand-off. Create or use a separate app-store-screenshots scaffold/template; this JSON is not directly importable by that editor. Raw device screenshots must show the actual app and use each scenario ID as the filename. sourceLocale may intentionally reuse reviewed app pixels for a localized marketing slide, but does not translate the in-frame UI. Scenario and localized-caption confirmations must both be \"confirmed\" before an explicitly localized deck is release-ready." }; }
+function capturePlan(manifest: ShipLayerManifest): object { return { command: "shiplayer capture <repo>", prerequisites: ["macOS with Xcode for direct simulator capture", "Configured scheme and launch arguments", "No paid CI is used automatically"], configurations: manifest.screenshots.configurations.map((configuration) => { const captureLocale = configuration.sourceLocale ?? configuration.locale; return { ...configuration, targetLocale: configuration.locale, captureLocale, targetLocaleLaunchArguments: localizedLaunchArguments(manifest, configuration.locale), localeLaunchArguments: localizedLaunchArguments(manifest, captureLocale), outputDirectory: `${manifest.screenshots.rawOutputDir}/${configuration.family}/${captureLocale}`, reviewedRawSourceDirectory: `${manifest.screenshots.rawOutputDir}/${configuration.family}/${captureLocale}`, scenarios: manifest.screenshots.scenarios.map((scenario) => { const localized = scenario.localizations?.[configuration.locale]; return { id: scenario.id, outputFile: `${scenario.id}.png`, title: localized?.title ?? scenario.title, caption: localized?.caption ?? scenario.caption, launchArguments: [...(scenario.launchArguments || []), ...localizedLaunchArguments(manifest, captureLocale)], steps: scenario.steps, confirmation: scenario.confirmation ?? "needs-human-confirmation", localizationConfirmation: localized?.confirmation ?? (configuration.locale === manifest.app.primaryLocale ? scenario.confirmation ?? "needs-human-confirmation" : "needs-human-confirmation") }; }) }; }), note: "This is a neutral hand-off. Create or use a separate app-store-screenshots scaffold/template; this JSON is not directly importable by that editor. Raw device screenshots must show the actual app and use each scenario ID as the filename. sourceLocale may intentionally reuse reviewed app pixels for a localized marketing slide, but does not translate the in-frame UI; captureLocale and outputDirectory identify the real raw source. Scenario and localized-caption confirmations must both be \"confirmed\" before an explicitly localized deck is release-ready." }; }
 // Repository-root-relative "assets/device-frames/" sits next to both src/ (dev, run via tsx) and
 // dist/ (built) — one level up from this compiled/source module's own directory either way — so
 // this resolves the same way whether ShipLayer is run from a checkout or installed as a package
@@ -590,12 +590,16 @@ function screenshotHarnessContract(manifest: ShipLayerManifest, harness: { scena
 
 function screenshotCaptureWorkflow(manifest: ShipLayerManifest, harness: { sourceFiles: string[] }, xcodeGenSpecs: string[]): string {
   const fallbackConfigurations: ShipLayerManifest["screenshots"]["configurations"] = [{ device: "iPhone 16 Pro Max", family: "iphone", locale: manifest.app.primaryLocale, requiredDimensions: { width: 1320, height: 2868 } }];
-  const captureConfigurations = (manifest.screenshots.configurations.length ? manifest.screenshots.configurations : fallbackConfigurations).map((configuration, index) => ({
-    ...configuration,
-    id: `${String(index + 1).padStart(2, "0")}-${configuration.family}-${configuration.locale}`,
-    deviceBase64: Buffer.from(configuration.device, "utf8").toString("base64"),
-    launchArgumentsBase64: Buffer.from(JSON.stringify(localizedLaunchArguments(manifest, configuration.locale)), "utf8").toString("base64")
-  }));
+  const captureConfigurations = (manifest.screenshots.configurations.length ? manifest.screenshots.configurations : fallbackConfigurations).map((configuration, index) => {
+    const captureLocale = configuration.sourceLocale ?? configuration.locale;
+    return {
+      ...configuration,
+      captureLocale,
+      id: `${String(index + 1).padStart(2, "0")}-${configuration.family}-${configuration.locale}`,
+      deviceBase64: Buffer.from(configuration.device, "utf8").toString("base64"),
+      launchArgumentsBase64: Buffer.from(JSON.stringify(localizedLaunchArguments(manifest, captureLocale)), "utf8").toString("base64")
+    };
+  });
   const schemeDefault = manifest.app.name || "";
   // A bare class name (e.g. "ScreenshotTests") is not, by itself, valid -only-testing: syntax —
   // xcodebuild resolves an unqualified name as a TARGET, so a class-only guess for a target whose
@@ -692,7 +696,7 @@ function screenshotCaptureWorkflow(manifest: ShipLayerManifest, harness: { sourc
       `            ${yamlDoubleQuoted(configuration.id)})`,
       `              echo "device_base64=${configuration.deviceBase64}" >> "$GITHUB_OUTPUT"`,
       `              echo "family=${configuration.family}" >> "$GITHUB_OUTPUT"`,
-      `              echo "locale=${configuration.locale}" >> "$GITHUB_OUTPUT"`,
+      `              echo "locale=${configuration.captureLocale}" >> "$GITHUB_OUTPUT"`,
       `              echo "launch_arguments_base64=${configuration.launchArgumentsBase64}" >> "$GITHUB_OUTPUT"`,
       "              ;;"
     ]),

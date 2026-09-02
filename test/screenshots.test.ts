@@ -487,7 +487,7 @@ test("prepare emits a manually-installed workflow_dispatch-only capture workflow
   manifest.app.locales.push("tr");
   manifest.metadata.localizations.tr = { name: "Example", description: "Türkçe açıklama", keywords: ["örnek"], confirmation: "confirmed" };
   manifest.screenshots.localizations = { tr: { launchArguments: ["-translation", "tr.rowwad"] } };
-  manifest.screenshots.configurations.push({ device: "iPhone 16 Pro Max", family: "iphone", locale: "tr", requiredDimensions: { width: 1320, height: 2868 } });
+  manifest.screenshots.configurations.push({ device: "iPhone 16 Pro Max", family: "iphone", locale: "tr", sourceLocale: "en-US", requiredDimensions: { width: 1320, height: 2868 } });
   manifest.screenshots.scenarios[0].caption = "Read with clarity";
   manifest.screenshots.scenarios[0].localizations = { tr: { caption: "Kur’an’ı huzurla okuyun", confirmation: "confirmed" } };
   await writeReadyAssets(root, manifest);
@@ -527,6 +527,8 @@ test("prepare emits a manually-installed workflow_dispatch-only capture workflow
   assert.match(runTests?.run || "", /simctl spawn "\$SIMULATOR_UDID" launchctl setenv SHIPLAYER_SCREENSHOT_LAUNCH_ARGUMENTS_BASE64/);
   assert.match(runTests?.run || "", /-destination "platform=iOS Simulator,id=\$SIMULATOR_UDID"/);
   assert.match(runTests?.run || "", /trap cleanup_simulator EXIT/);
+  const resolveConfiguration = job.steps.find((step) => step.name === "Resolve screenshot configuration");
+  assert.match(resolveConfiguration?.run || "", /"02-iphone-tr"\)[\s\S]*?echo "locale=en-US"/);
   assert.doesNotMatch(runTests?.run || "", /\$\{\{\s*inputs\./, "manual inputs must reach the shell through env, not expression interpolation");
   // A zero-screenshot extraction must fail the job loudly rather than finish green with only an
   // annotation, and the current (non-"--legacy") xcresulttool invocation must be tried first.
@@ -545,7 +547,11 @@ test("prepare emits a manually-installed workflow_dispatch-only capture workflow
   assert.ok(template.includes("XCTAttachment(screenshot: XCUIScreen.main.screenshot())"));
   assert.ok(template.includes("SHIPLAYER_SCREENSHOT_LAUNCH_ARGUMENTS_BASE64"));
   const capturePlan = JSON.parse(await readFile(path.join(pkg.directory, "screenshots/capture-plan.json"), "utf8"));
-  assert.deepEqual(capturePlan.configurations.find((configuration: { locale: string }) => configuration.locale === "tr").scenarios[0].launchArguments, ["-translation", "tr.rowwad"]);
+  const turkishTarget = capturePlan.configurations.find((configuration: { locale: string }) => configuration.locale === "tr");
+  assert.equal(turkishTarget.captureLocale, "en-US");
+  assert.equal(turkishTarget.outputDirectory, "release/raw-screenshots/iphone/en-US");
+  assert.deepEqual(turkishTarget.targetLocaleLaunchArguments, ["-translation", "tr.rowwad"]);
+  assert.deepEqual(turkishTarget.scenarios[0].launchArguments, []);
   const contract = await readFile(path.join(pkg.directory, "screenshots/ui-test-harness-contract.md"), "utf8");
   assert.ok(contract.includes("keepScreenshot(named:)"));
 });
