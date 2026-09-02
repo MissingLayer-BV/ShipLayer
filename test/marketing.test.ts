@@ -339,6 +339,14 @@ test("export reuses one browser page per viewport for large multilingual decks",
   assert.ok(EXPORT_MJS.includes("for (const page of pages.values()) await page.context().close()"));
 });
 
+test("export waits for decoded images, fonts, and paint before taking a screenshot", () => {
+  assert.ok(EXPORT_MJS.includes('page.goto(pathToFileURL(htmlPath).href, { waitUntil: "load" })'));
+  assert.ok(EXPORT_MJS.includes("await image.decode()"));
+  assert.ok(EXPORT_MJS.includes("await document.fonts.ready"));
+  assert.ok(EXPORT_MJS.includes("requestAnimationFrame(() => requestAnimationFrame(resolve))"));
+  assert.ok(EXPORT_MJS.includes('page.screenshot({ type: "png", animations: "disabled", caret: "hide" })'));
+});
+
 test("export can preserve an already complete reviewed family/locale deck", () => {
   assert.ok(EXPORT_MJS.includes('process.env.SHIPLAYER_PRESERVE_COMPLETE_DECKS === "true"'));
   assert.ok(EXPORT_MJS.includes("if (complete) preservedDecks.add(key)"));
