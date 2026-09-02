@@ -416,7 +416,7 @@ function localeMetadataJson(locale: string, copy: LocaleCopy): object {
   return { locale, ...copy, confirmation: copy.confirmation ?? "needs-human-confirmation", characterLimits, characterCounts };
 }
 function localizedLaunchArguments(manifest: ShipLayerManifest, locale: string): string[] { return manifest.screenshots.localizations?.[locale]?.launchArguments || []; }
-function capturePlan(manifest: ShipLayerManifest): object { return { command: "shiplayer capture <repo>", prerequisites: ["macOS with Xcode for direct simulator capture", "Configured scheme and launch arguments", "No paid CI is used automatically"], configurations: manifest.screenshots.configurations.map((configuration) => ({ ...configuration, localeLaunchArguments: localizedLaunchArguments(manifest, configuration.locale), outputDirectory: `${manifest.screenshots.rawOutputDir}/${configuration.family}/${configuration.locale}`, scenarios: manifest.screenshots.scenarios.map((scenario) => { const localized = scenario.localizations?.[configuration.locale]; return { id: scenario.id, outputFile: `${scenario.id}.png`, title: localized?.title ?? scenario.title, caption: localized?.caption ?? scenario.caption, launchArguments: [...(scenario.launchArguments || []), ...localizedLaunchArguments(manifest, configuration.locale)], steps: scenario.steps, confirmation: scenario.confirmation ?? "needs-human-confirmation", localizationConfirmation: localized?.confirmation ?? (configuration.locale === manifest.app.primaryLocale ? scenario.confirmation ?? "needs-human-confirmation" : "needs-human-confirmation") }; }) })), note: "This is a neutral hand-off. Create or use a separate app-store-screenshots scaffold/template; this JSON is not directly importable by that editor. Raw device screenshots must show the actual app and use each scenario ID as the filename. Scenario and localized-caption confirmations must both be \"confirmed\" before an explicitly localized deck is release-ready." }; }
+function capturePlan(manifest: ShipLayerManifest): object { return { command: "shiplayer capture <repo>", prerequisites: ["macOS with Xcode for direct simulator capture", "Configured scheme and launch arguments", "No paid CI is used automatically"], configurations: manifest.screenshots.configurations.map((configuration) => ({ ...configuration, localeLaunchArguments: localizedLaunchArguments(manifest, configuration.locale), outputDirectory: `${manifest.screenshots.rawOutputDir}/${configuration.family}/${configuration.locale}`, reviewedRawSourceDirectory: `${manifest.screenshots.rawOutputDir}/${configuration.family}/${configuration.sourceLocale ?? configuration.locale}`, scenarios: manifest.screenshots.scenarios.map((scenario) => { const localized = scenario.localizations?.[configuration.locale]; return { id: scenario.id, outputFile: `${scenario.id}.png`, title: localized?.title ?? scenario.title, caption: localized?.caption ?? scenario.caption, launchArguments: [...(scenario.launchArguments || []), ...localizedLaunchArguments(manifest, configuration.locale)], steps: scenario.steps, confirmation: scenario.confirmation ?? "needs-human-confirmation", localizationConfirmation: localized?.confirmation ?? (configuration.locale === manifest.app.primaryLocale ? scenario.confirmation ?? "needs-human-confirmation" : "needs-human-confirmation") }; }) })), note: "This is a neutral hand-off. Create or use a separate app-store-screenshots scaffold/template; this JSON is not directly importable by that editor. Raw device screenshots must show the actual app and use each scenario ID as the filename. sourceLocale may intentionally reuse reviewed app pixels for a localized marketing slide, but does not translate the in-frame UI. Scenario and localized-caption confirmations must both be \"confirmed\" before an explicitly localized deck is release-ready." }; }
 // Repository-root-relative "assets/device-frames/" sits next to both src/ (dev, run via tsx) and
 // dist/ (built) — one level up from this compiled/source module's own directory either way — so
 // this resolves the same way whether ShipLayer is run from a checkout or installed as a package
@@ -713,13 +713,26 @@ function screenshotCaptureWorkflow(manifest: ShipLayerManifest, harness: { sourc
     ...(xcodeGenSpecs.length ? ["          XCODEGEN_SPEC: ${{ inputs.xcodegen_spec }}"] : []),
     "        run: |",
     "          SIMULATOR_DEVICE=\"$(printf '%s' \"$SIMULATOR_DEVICE_BASE64\" | base64 -D)\"",
+    "          DEVICE_TYPE_ID=\"$(xcrun simctl list devicetypes --json | jq -r --arg name \"$SIMULATOR_DEVICE\" '.devicetypes[] | select(.name == $name) | .identifier' | head -1)\"",
+    "          RUNTIME_ID=\"$(xcrun simctl list runtimes --json | jq -r '[.runtimes[] | select(.isAvailable == true and (.identifier | contains(\"iOS\")))] | sort_by(.version | split(\".\") | map(tonumber)) | last.identifier')\"",
+    "          if [ -z \"$DEVICE_TYPE_ID\" ] || [ \"$DEVICE_TYPE_ID\" = \"null\" ] || [ -z \"$RUNTIME_ID\" ] || [ \"$RUNTIME_ID\" = \"null\" ]; then",
+    "            echo \"::error::Could not resolve simulator device type '$SIMULATOR_DEVICE' and latest available iOS runtime.\"",
+    "            exit 1",
+    "          fi",
+    "          SIMULATOR_UDID=\"$(xcrun simctl create \"ShipLayer-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}\" \"$DEVICE_TYPE_ID\" \"$RUNTIME_ID\")\"",
+    "          cleanup_simulator() { xcrun simctl shutdown \"$SIMULATOR_UDID\" >/dev/null 2>&1 || true; xcrun simctl delete \"$SIMULATOR_UDID\" >/dev/null 2>&1 || true; }",
+    "          trap cleanup_simulator EXIT",
+    "          xcrun simctl boot \"$SIMULATOR_UDID\"",
+    "          xcrun simctl bootstatus \"$SIMULATOR_UDID\" -b",
+    "          xcrun simctl spawn \"$SIMULATOR_UDID\" launchctl setenv SHIPLAYER_SCREENSHOT_LOCALE \"$SHIPLAYER_SCREENSHOT_LOCALE\"",
+    "          xcrun simctl spawn \"$SIMULATOR_UDID\" launchctl setenv SHIPLAYER_SCREENSHOT_LAUNCH_ARGUMENTS_BASE64 \"$SHIPLAYER_SCREENSHOT_LAUNCH_ARGUMENTS_BASE64\"",
     "          mkdir -p \"$GITHUB_WORKSPACE/TestResults/$SHIPLAYER_SCREENSHOT_FAMILY/$SHIPLAYER_SCREENSHOT_LOCALE\"",
     "          EXTRA=()",
     "          if [ -n \"$ONLY_TESTING\" ]; then EXTRA+=(-only-testing:\"$ONLY_TESTING\"); fi",
     ...(xcodeGenSpecs.length ? ["          cd \"$(dirname \"$XCODEGEN_SPEC\")\""] : []),
     "          xcodebuild test \\",
     "            -scheme \"$SCHEME\" \\",
-    "            -destination \"platform=iOS Simulator,name=$SIMULATOR_DEVICE\" \\",
+    "            -destination \"platform=iOS Simulator,id=$SIMULATOR_UDID\" \\",
     "            -resultBundlePath \"$GITHUB_WORKSPACE/TestResults/$SHIPLAYER_SCREENSHOT_FAMILY/$SHIPLAYER_SCREENSHOT_LOCALE/ShipLayerScreenshots.xcresult\" \\",
     "            \"${EXTRA[@]}\"",
     "",

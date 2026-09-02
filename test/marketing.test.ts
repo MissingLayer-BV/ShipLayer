@@ -119,7 +119,7 @@ test("localized screenshot copy resolves per locale, remains draft until reviewe
     finalOutputDir: "shiplayer-release/screenshots/final",
     configurations: [
       { device: "iPhone", family: "iphone", locale: "en-US", requiredDimensions: { width: 1320, height: 2868 } },
-      { device: "iPhone", family: "iphone", locale: "tr", requiredDimensions: { width: 1320, height: 2868 } },
+      { device: "iPhone", family: "iphone", locale: "tr", sourceLocale: "en-US", requiredDimensions: { width: 1320, height: 2868 } },
       { device: "iPhone", family: "iphone", locale: "ur-PK", requiredDimensions: { width: 1320, height: 2868 } }
     ],
     scenarios: [{ id: "reader", title: "Reader", caption: "Read with clarity", confirmation: "confirmed", localizations: {
@@ -131,6 +131,8 @@ test("localized screenshot copy resolves per locale, remains draft until reviewe
   assert.equal(entries.find((entry) => entry.locale === "tr")?.caption, "Kur’an’ı huzurla okuyun");
   assert.equal(entries.find((entry) => entry.locale === "tr")?.title, "Okuyucu");
   assert.equal(entries.find((entry) => entry.locale === "tr")?.confirmed, true);
+  assert.equal(entries.find((entry) => entry.locale === "tr")?.screenshotPngHref, "../../../../../../release/raw-screenshots/iphone/en-US/reader.png");
+  assert.equal(entries.find((entry) => entry.locale === "tr")?.outputRelativePath, "../final/iphone/tr/reader.png");
   const urdu = entries.find((entry) => entry.locale === "ur-PK")!;
   assert.equal(urdu.confirmed, false);
   assert.match(renderSlideHtml(urdu), /<html lang="ur-PK" dir="rtl">/);
@@ -327,6 +329,13 @@ test("F2: export.mjs wraps the browser launch in try/catch and prints the SHIPLA
   assert.ok(EXPORT_MJS.includes("catch (error)"));
   assert.ok(EXPORT_MJS.includes("SHIPLAYER_PW_CHANNEL=chrome npm run export"));
   assert.ok(EXPORT_MJS.includes("process.exit(1)"));
+});
+
+test("export reuses one browser page per viewport for large multilingual decks", () => {
+  assert.ok(EXPORT_MJS.includes("const pages = new Map()"));
+  assert.ok(EXPORT_MJS.includes("const viewportKey = `${slide.width}x${slide.height}`"));
+  assert.ok(EXPORT_MJS.includes("pages.set(viewportKey, page)"));
+  assert.ok(EXPORT_MJS.includes("for (const page of pages.values()) await page.context().close()"));
 });
 
 // --- F3: re-running prepare must not destroy a prior render or npm install --------------------

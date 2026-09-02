@@ -1099,15 +1099,19 @@ function productChecks(prefix: string, product: { productId: string; pricePointR
 
 function screenshotConfigurationChecks(manifest: ShipLayerManifest, add: Add): void {
   const seen = new Set<string>();
+  const sharedSources: string[] = [];
   for (const config of manifest.screenshots.configurations) {
     const key = `${config.family}/${config.locale}`;
     if (seen.has(key)) add(`screenshots.${key}.duplicate`, "block", `Duplicate screenshot configuration for ${key}.`, "Keep one deterministic configuration per family and locale.");
     seen.add(key);
     if (!manifest.app.deviceFamilies.includes(config.family)) add(`screenshots.${key}.unsupported-family`, "block", `${config.family} screenshots are configured but the app does not declare that device family.`);
     if (!manifest.app.locales.includes(config.locale)) add(`screenshots.${key}.unsupported-locale`, "block", `${config.locale} screenshots are configured but app.locales does not include it.`);
+    if (config.sourceLocale && !manifest.app.locales.includes(config.sourceLocale)) add(`screenshots.${key}.unsupported-source-locale`, "block", `${config.sourceLocale} is used as a screenshot source but app.locales does not include it.`);
+    if (config.sourceLocale && config.sourceLocale !== config.locale) sharedSources.push(`${key}←${config.sourceLocale}`);
     const dimensions = `${config.requiredDimensions.width}x${config.requiredDimensions.height}`;
     if (!isFamilyScreenshotDimensions(config.family, config.requiredDimensions.width, config.requiredDimensions.height)) add(`screenshots.${key}.accepted-dimensions`, "block", `${dimensions} is not a supported ${config.family} App Store screenshot dimension.`, "Use a supported device class or update ShipLayer after verifying Apple's current requirements.");
   }
+  if (sharedSources.length) add("screenshots.shared-source-locales", "warn", `${sharedSources.length} localized deck(s) intentionally reuse reviewed app pixels from another locale: ${sharedSources.join(", ")}.`, "The marketing headline is localized, but sourceLocale means the in-frame app UI is not translated for that storefront. Remove sourceLocale after capturing real localized app pixels.");
   for (const family of manifest.app.deviceFamilies) {
     if (!manifest.screenshots.configurations.some((item) => item.family === family && item.locale === manifest.app.primaryLocale)) add(`screenshots.${family}.${manifest.app.primaryLocale}`, "block", `No primary-locale screenshot configuration exists for supported ${family}.`, "Add actual App Store screenshot coverage for the primary locale.");
     for (const locale of manifest.app.locales.filter((item) => item !== manifest.app.primaryLocale)) if (!manifest.screenshots.configurations.some((item) => item.family === family && item.locale === locale)) add(`screenshots.${family}.${locale}`, "warn", `No localized screenshot deck exists for ${family}/${locale}; App Store Connect may fall back to the primary locale.`, "Add a localized deck only when that locale requires distinct marketing screenshots.");
@@ -1155,7 +1159,8 @@ function screenshotConfigurationChecks(manifest: ShipLayerManifest, add: Add): v
 async function screenshotChecks(repository: string, manifest: ShipLayerManifest, add: Add): Promise<void> {
   for (const config of manifest.screenshots.configurations) {
     const id = `screenshots.${config.family}.${config.locale}`;
-    const relativeDirectory = `${manifest.screenshots.rawOutputDir}/${config.family}/${config.locale}`;
+    const rawLocale = config.sourceLocale ?? config.locale;
+    const relativeDirectory = `${manifest.screenshots.rawOutputDir}/${config.family}/${rawLocale}`;
     let directory: string;
     try { directory = await resolveContained(repository, relativeDirectory, `screenshots for ${config.family}`); }
     catch (error) { add(id, "block", error instanceof Error ? error.message : String(error)); continue; }
@@ -1163,7 +1168,7 @@ async function screenshotChecks(repository: string, manifest: ShipLayerManifest,
     let imageFiles: string[];
     try { imageFiles = (await readdir(directory)).filter((file) => /\.(png|jpe?g)$/i.test(file)).sort(); }
     catch { add(id, "block", `Screenshot directory is unreadable: ${relativeDirectory}.`); continue; }
-    if (!imageFiles.length) { add(id, "block", `No PNG/JPEG screenshots found for ${config.family}/${config.locale}.`, "Capture at least one actual app screenshot."); continue; }
+    if (!imageFiles.length) { add(id, "block", `No PNG/JPEG screenshots found for ${config.family}/${rawLocale}.`, "Capture at least one actual app screenshot."); continue; }
     if (imageFiles.length > 10) add(`${id}.count`, "block", `${imageFiles.length} screenshots found; App Store allows at most 10.`);
     else add(`${id}.count`, "pass", `${imageFiles.length} screenshot(s) found.`);
     // Apple accepts multiple dimensions per required DISPLAY CLASS (a 6.9" iPhone capture may

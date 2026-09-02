@@ -74,6 +74,14 @@ test("current Apple locale shortcodes and localized screenshot/listing fields va
   undeclared.screenshots.localizations = { tr: { launchArguments: ["-translation", "tr.rowwad"] } };
   assert.throws(() => validateManifest(undeclared), /screenshots\.localizations contains tr, which is not declared/);
 
+  const sharedSource = readyManifest();
+  sharedSource.app.locales.push("tr");
+  sharedSource.metadata.localizations.tr = {};
+  sharedSource.screenshots.configurations.push({ device: "iPhone", family: "iphone", locale: "tr", sourceLocale: "en-US", requiredDimensions: { width: 1320, height: 2868 } });
+  validateManifest(sharedSource);
+  sharedSource.screenshots.configurations[1].sourceLocale = "fr-FR";
+  assert.throws(() => validateManifest(sharedSource), /sourceLocale 'fr-FR' is not declared/);
+
 });
 
 test("scenario IDs are unique across screenshot and review workflows", () => {

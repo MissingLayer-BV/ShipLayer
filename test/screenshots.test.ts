@@ -524,6 +524,9 @@ test("prepare emits a manually-installed workflow_dispatch-only capture workflow
   assert.match(runTests?.run || "", /cd "\$\(dirname "\$XCODEGEN_SPEC"\)"/);
   assert.match(runTests?.run || "", /\$GITHUB_WORKSPACE\/TestResults\/\$SHIPLAYER_SCREENSHOT_FAMILY\/\$SHIPLAYER_SCREENSHOT_LOCALE\/ShipLayerScreenshots\.xcresult/);
   assert.equal(runTests?.env?.SHIPLAYER_SCREENSHOT_LAUNCH_ARGUMENTS_BASE64, "${{ steps.screenshot_config.outputs.launch_arguments_base64 }}");
+  assert.match(runTests?.run || "", /simctl spawn "\$SIMULATOR_UDID" launchctl setenv SHIPLAYER_SCREENSHOT_LAUNCH_ARGUMENTS_BASE64/);
+  assert.match(runTests?.run || "", /-destination "platform=iOS Simulator,id=\$SIMULATOR_UDID"/);
+  assert.match(runTests?.run || "", /trap cleanup_simulator EXIT/);
   assert.doesNotMatch(runTests?.run || "", /\$\{\{\s*inputs\./, "manual inputs must reach the shell through env, not expression interpolation");
   // A zero-screenshot extraction must fail the job loudly rather than finish green with only an
   // annotation, and the current (non-"--legacy") xcresulttool invocation must be tried first.

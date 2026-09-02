@@ -10,6 +10,10 @@ inputs:
     description: Repository directory relative to GITHUB_WORKSPACE.
     required: true
     default: .
+  render-screenshots:
+    description: Generate and render every configured localized marketing screenshot before planning or applying.
+    required: false
+    default: "false"
 
 outputs:
   result-path:
@@ -26,6 +30,35 @@ runs:
         set -euo pipefail
         npm ci --ignore-scripts
         npm run build
+
+    - name: Render localized marketing screenshots
+      if: ${{ inputs['render-screenshots'] == 'true' }}
+      shell: bash
+      env:
+        SHIPLAYER_ACTION_REPOSITORY: ${{ inputs.repository }}
+      run: |
+        set -euo pipefail
+
+        case "${SHIPLAYER_ACTION_REPOSITORY}" in
+          ""|/*|*..*)
+            echo "repository must be a contained relative workspace path" >&2
+            exit 1
+            ;;
+        esac
+
+        repository_path="$(cd "${GITHUB_WORKSPACE}/${SHIPLAYER_ACTION_REPOSITORY}" && pwd -P)"
+        case "${repository_path}" in
+          "${GITHUB_WORKSPACE}"|"${GITHUB_WORKSPACE}"/*) ;;
+          *)
+            echo "repository resolves outside GITHUB_WORKSPACE" >&2
+            exit 1
+            ;;
+        esac
+
+        node "${{ github.action_path }}/dist/index.js" prepare "${repository_path}"
+        marketing_path="${repository_path}/shiplayer-release/screenshots/marketing"
+        npm ci --ignore-scripts --prefix "${marketing_path}"
+        SHIPLAYER_PW_CHANNEL=chrome npm run export --prefix "${marketing_path}"
 
     - name: Run ShipLayer
       id: shiplayer

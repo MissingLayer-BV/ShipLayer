@@ -263,7 +263,8 @@ async function localScreenshotSets(repository: string, manifest: ShipLayerManife
   for (const configuration of manifest.screenshots.configurations) {
     const finalRoot = manifest.screenshots.finalOutputDir || DEFAULT_MARKETING_FINAL_DIR;
     const finalRelative = `${finalRoot}/${configuration.family}/${configuration.locale}`;
-    const rawRelative = `${manifest.screenshots.rawOutputDir}/${configuration.family}/${configuration.locale}`;
+    const rawLocale = configuration.sourceLocale ?? configuration.locale;
+    const rawRelative = `${manifest.screenshots.rawOutputDir}/${configuration.family}/${rawLocale}`;
     const finalFiles = await listImages(repository, finalRelative);
     const finalComplete = manifest.screenshots.scenarios.every((scenario) => finalFiles.some((file) => path.basename(file, path.extname(file)) === scenario.id));
     const source = finalComplete ? "marketing" as const : "raw" as const; const relativeDirectory = source === "marketing" ? finalRelative : rawRelative; const files = source === "marketing" ? finalFiles : await listImages(repository, rawRelative);
