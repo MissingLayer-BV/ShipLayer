@@ -102,6 +102,8 @@ shiplayer apply /path/to/MySwiftApp --apply --yes-i-understand
 
 This synchronizes the supported fields and screenshots but does **not** submit for review. If the user does not explicitly authorize the apply step, leave `sync.mode: dry-run` and stop after the preview.
 
+For repositories whose App Store Connect credentials live in a protected GitHub environment, ShipLayer also exposes a composite action. Reference a pinned ShipLayer commit, map the three documented credential environment variables, and pass `command: plan` for the default GET-only preview. Use `command: apply` only from a manually dispatched, protected workflow after reviewing that preview; the manifest `sync.mode: apply` and ShipLayer's normal preflight gates still apply.
+
 ## Manifest
 
 The checked-in [JSON Schema](src/schema.json) and runtime validation cover identity, metadata, permissions, permission flows, processors, review access, screenshot matrices, signing, release settings, monetization, and evidence-contradiction overrides.
