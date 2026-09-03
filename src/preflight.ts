@@ -66,6 +66,9 @@ export async function preflight(repository: string, manifest: ShipLayerManifest,
   if (manifest.contacts.copyright && !/^\d{4}\s+\S/.test(manifest.contacts.copyright.trim())) add("contacts.copyright.format", "block", "Copyright must begin with a four-digit year followed by the rights-holder name.", "Use a human-confirmed value such as '2026 Example, Inc.'; do not fabricate the rights holder.");
   if (app.availability === "selected") add("availability.selected", "block", "Selected-territory availability is not modeled in v0.1.", "Choose territories manually in App Store Connect and record the decision before submission.");
   else add("availability", "pass", "Availability is configured for all territories.");
+  if (app.releaseKind === "first-release") add("release.kind", "pass", "This is declared as the app's first iOS App Store release; What's New must be omitted.");
+  else if (app.releaseKind === "update") add("release.kind", "pass", "This is declared as an iOS App Store update; localized What's New copy is required.");
+  else add("release.kind", "block", "It is not confirmed whether this is the app's first iOS App Store release or an update.", "Run a read-only remote plan to inspect App Store version history, then set app.releaseKind to first-release or update. Do not infer it from the version number.");
   if (app.releaseMode === "scheduled") add("release.scheduled", "block", "Scheduled release requires a human-confirmed date/time and is not modeled in v0.1.", "Set the release schedule manually in App Store Connect before submission.");
   else add("release.mode", "pass", `Release mode is ${app.releaseMode}.`);
   if (manifest.contacts.supportEmail) add("contacts.support-email", "pass", "Support email is present.");
@@ -135,6 +138,11 @@ function summarize(results: CheckResult[]): PreflightReport["summary"] { return 
 function metadataChecks(manifest: ShipLayerManifest, add: Add): void {
   const limits: Record<string, number> = { name: 30, subtitle: 30, promotionalText: 170, description: 4000, whatsNew: 4000 };
   const primary = manifest.metadata.localizations[manifest.app.primaryLocale];
+  const whatsNewConfirmation = manifest.metadata.whatsNewConfirmation;
+  if (manifest.app.releaseKind === "update") {
+    if (!whatsNewConfirmation || whatsNewConfirmation.version !== manifest.app.version || whatsNewConfirmation.confirmation !== "confirmed") add("metadata.whatsNewConfirmation", "block", `What's New copy for version ${manifest.app.version || "UNKNOWN"} is not separately human-confirmed.`, "After reviewing every localized release note, set metadata.whatsNewConfirmation.version to the exact app.version and confirmation to confirmed. A listing-copy confirmation from an earlier release does not approve new release notes.");
+    else add("metadata.whatsNewConfirmation", "pass", `Localized What's New copy is human-confirmed for version ${manifest.app.version}.`);
+  } else if (manifest.app.releaseKind === "first-release" && whatsNewConfirmation) add("metadata.whatsNewConfirmation", "block", "A What's New confirmation is present for the first App Store release.", "Remove metadata.whatsNewConfirmation; first releases do not have release notes.");
   for (const field of ["name", "description", "keywords"] as const) {
     const value = field === "keywords" ? primary?.keywords?.join(",") : primary?.[field];
     addRequired(add, `metadata.${field}`, value, `Primary locale ${manifest.app.primaryLocale} has no ${field}.`, `Add ${field} for App Store metadata.`);
@@ -146,11 +154,13 @@ function metadataChecks(manifest: ShipLayerManifest, add: Add): void {
       const value = field === "keywords" ? localized.keywords?.join(",") : localized[field];
       if (!value) add(`metadata.${locale}.${field}`, "block", `${locale} metadata has no ${field}.`, "Provide complete metadata for every configured locale, or remove that locale.");
     }
+    if (manifest.app.releaseKind === "update" && !localized.whatsNew?.trim()) add(`metadata.${locale}.whatsNew`, "block", `${locale} metadata has no What's New copy for this App Store update.`, "Draft localized release notes from the real changes in this version, have a human approve them, and set metadata.localizations.<locale>.whatsNew before submission.");
+    if (manifest.app.releaseKind === "first-release" && localized.whatsNew?.trim()) add(`metadata.${locale}.whatsNew`, "block", `${locale} includes What's New copy even though this is the first App Store release.`, "Remove whatsNew for the first release. ShipLayer sends it only for updates.");
     // Copy is a human-reviewable proposal (an agent drafts it; ShipLayer only validates it), not a
     // fact — the same trust rule every other proposal in this manifest follows (monetization,
     // permissions, external processors, ...). Absent is never read as approved: only a literal
     // "confirmed" passes.
-    if (localized.confirmation !== "confirmed") add(`metadata.${locale}.confirmation`, "block", `${locale} App Store copy is not human-confirmed.`, "Review every drafted field (name, subtitle, description, keywords, promotionalText, whatsNew) against what the app actually does, then set metadata.localizations[locale].confirmation: confirmed.");
+    if (localized.confirmation !== "confirmed") add(`metadata.${locale}.confirmation`, "block", `${locale} App Store copy is not human-confirmed.`, "Review the localized listing copy against what the app actually does, then set metadata.localizations[locale].confirmation: confirmed. Update release notes have their own version-bound confirmation.");
   }
   for (const [locale, values] of Object.entries(manifest.metadata.localizations)) {
     for (const [field, limit] of Object.entries(limits)) {
@@ -167,7 +177,20 @@ function metadataChecks(manifest: ShipLayerManifest, add: Add): void {
     keywordHygieneChecks(locale, values, add);
     copyContentChecks(locale, values, add);
   }
+  if (manifest.app.releaseKind === "update") duplicatedReleaseNoteChecks(manifest, add);
   metadataContradictionChecks(manifest, add);
+}
+
+function duplicatedReleaseNoteChecks(manifest: ShipLayerManifest, add: Add): void {
+  const localesByCopy = new Map<string, string[]>();
+  for (const locale of manifest.app.locales) {
+    const copy = manifest.metadata.localizations[locale]?.whatsNew?.trim();
+    if (copy) localesByCopy.set(copy, [...(localesByCopy.get(copy) || []), locale]);
+  }
+  for (const locales of localesByCopy.values()) {
+    if (new Set(locales.map((locale) => locale.split("-")[0])).size < 2) continue;
+    add("metadata.whatsNew.cross-locale-duplicate", "warn", `Identical What's New copy is used across different language groups: ${locales.join(", ")}.`, "Verify that each storefront received language-appropriate release notes. ShipLayer does not machine-translate copy.");
+  }
 }
 
 // --- keyword hygiene (2.3.7: keywords must be relevant; wasted budget is a real submission cost,

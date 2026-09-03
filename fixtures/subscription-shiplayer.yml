@@ -13,6 +13,7 @@ app:
   primaryLocale: en-US
   primaryCategory: Productivity
   availability: all
+  releaseKind: update
   releaseMode: manual
 contacts:
   supportEmail: support@example.com
@@ -20,6 +21,9 @@ contacts:
   privacyUrl: https://example.com/privacy
   copyright: "2026 Example B.V."
 metadata:
+  whatsNewConfirmation:
+    version: "2.3"
+    confirmation: confirmed
   localizations:
     en-US:
       name: ReceiptLoop
@@ -27,6 +31,7 @@ metadata:
       promotionalText: Keep claims organized.
       description: Create and track receipt-based claims with reminders.
       keywords: [receipt, claim, reminder]
+      whatsNew: Improved receipt capture and reminder reliability.
 permissions:
   - key: NSCameraUsageDescription
     purpose: Capture a receipt to create a record.

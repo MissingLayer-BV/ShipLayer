@@ -12,6 +12,47 @@ function metadataResults(report: Awaited<ReturnType<typeof preflight>>): { sever
   return report.results.filter((item) => item.id.startsWith("metadata."));
 }
 
+test("What's New is required per locale for updates, omitted for first releases, and lifecycle uncertainty blocks", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-copy-release-kind-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+
+  delete manifest.app.releaseKind;
+  let report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "release.kind" && item.severity === "block"));
+
+  manifest.app.releaseKind = "first-release";
+  report = await preflight(root, manifest);
+  assert.equal(report.results.some((item) => item.id === "metadata.en-US.whatsNew"), false);
+  manifest.metadata.localizations["en-US"].whatsNew = "Translations in store listings.";
+  report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "metadata.en-US.whatsNew" && item.severity === "block"));
+
+  manifest.app.releaseKind = "update";
+  manifest.metadata.localizations["en-US"].whatsNew = "   ";
+  manifest.app.locales.push("tr");
+  manifest.metadata.localizations.tr = { name: "Örnek", description: "Eksiksiz bir App Store açıklaması.", keywords: ["örnek"], confirmation: "confirmed" };
+  report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "metadata.en-US.whatsNew" && item.severity === "block"));
+  assert.ok(report.results.some((item) => item.id === "metadata.tr.whatsNew" && item.severity === "block"));
+
+  manifest.metadata.localizations["en-US"].whatsNew = "Translations in store listings.";
+  manifest.metadata.localizations.tr.whatsNew = "Mağaza sayfalarında çeviriler.";
+  report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "metadata.whatsNewConfirmation" && item.severity === "block"), "old listing approval must not approve newly added release notes");
+  manifest.metadata.whatsNewConfirmation = { version: "1.1", confirmation: "confirmed" };
+  report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "metadata.whatsNewConfirmation" && item.severity === "block"), "approval for another version must not carry forward");
+  manifest.metadata.whatsNewConfirmation = { version: "1.0", confirmation: "confirmed" };
+  report = await preflight(root, manifest);
+  assert.equal(report.results.some((item) => item.id.endsWith(".whatsNew") && item.severity === "block"), false);
+  assert.equal(report.results.some((item) => item.id === "metadata.whatsNewConfirmation" && item.severity === "block"), false);
+
+  manifest.metadata.localizations.tr.whatsNew = "Translations in store listings.";
+  report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "metadata.whatsNew.cross-locale-duplicate" && item.severity === "warn"));
+});
+
 test("App Store copy blocks readiness unless metadata.localizations.<locale>.confirmation is exactly 'confirmed'", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-copy-confirmation-"));
   const manifest = readyManifest();
@@ -285,6 +326,9 @@ test("prepare writes the drafted copy, character counts, and honest confirmation
   assert.equal(json.characterCounts.name, "Example".length);
   assert.equal(json.characterCounts.subtitle, "Track every receipt".length);
   assert.equal(json.characterCounts.keywords, Buffer.byteLength("example,receipts", "utf8"));
+  assert.equal(json.releaseKind, "first-release");
+  assert.equal(json.whatsNewRequired, false);
+  assert.equal(json.whatsNewConfirmation.confirmation, "needs-human-confirmation");
 
   manifest.metadata.localizations["en-US"].confirmation = "confirmed";
   const confirmedReport = await preflight(root, manifest, false, analysis);
