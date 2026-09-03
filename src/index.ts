@@ -112,6 +112,11 @@ function manifestFromAnalysis(report: AnalysisReport, harness: DetectedScreensho
   // guardrail: it fires loudly on `check` whenever this default disagrees with StoreKit evidence.
   const storekitEvidence = storekitPurchaseEvidence(report);
   if (storekitEvidence.length) report.unresolvedQuestions.push(`StoreKit purchase evidence was found (${[...new Set(storekitEvidence.flatMap((finding) => finding.evidence.map((item) => item.source)))].sort().join(", ")}) but monetization.type defaults to 'free' here. Declare the real IAP/subscription model in shiplayer.yml; \`check\` blocks on this contradiction until it is resolved.`);
+  // A repository version number cannot establish whether the target is the first App Store
+  // version or an update. Keep the lifecycle pending until an agent checks the read-only remote
+  // plan (or a human confirms the actual store history); apply independently verifies this value
+  // against every discovered iOS version before making any write.
+  report.unresolvedQuestions.push("Determine whether the target is the app's first iOS App Store release or an update. Do not infer this from the version number. Run shiplayer plan <repo> --remote to inspect App Store version history, then set app.releaseKind to first-release or update; apply verifies the declaration again before any write.");
   // ShipLayer never drafts App Store copy — see metadata.localizations in src/types.ts and
   // metadataChecks/metadataContradictionChecks in src/preflight.ts. `init` always leaves every
   // locale's name/subtitle/description/keywords/promotionalText/whatsNew absent and records this
@@ -120,7 +125,7 @@ function manifestFromAnalysis(report: AnalysisReport, harness: DetectedScreensho
   // reference another platform, never leave placeholder text. `shiplayer check` blocks until the
   // drafted copy is filled in AND metadata.localizations[locale].confirmation is explicitly
   // "confirmed" by a human — see skills/ship-app-store/SKILL.md for the full drafting guidance.
-  for (const locale of manifest.app.locales) report.unresolvedQuestions.push(`No App Store copy has been drafted for locale ${locale}. Draft metadata.localizations.${locale}.name (max 30 chars), subtitle (max 30), description (max 4000), keywords (max 100 chars total incl. commas), promotionalText (max 170), and whatsNew (max 4000) from the app's real source/screenshots, then set metadata.localizations.${locale}.confirmation: confirmed after human review. ShipLayer never writes this copy itself.`);
+  for (const locale of manifest.app.locales) report.unresolvedQuestions.push(`No App Store copy has been drafted for locale ${locale}. Draft metadata.localizations.${locale}.name (max 30 chars), subtitle (max 30), description (max 4000), keywords (max 100 chars total incl. commas), and promotionalText (max 170) from the app's real source/screenshots. If app.releaseKind is update, also draft localized whatsNew (max 4000) from this version's real changes; omit it for first-release. Then set metadata.localizations.${locale}.confirmation: confirmed after human review. After every update locale has been reviewed, separately bind that approval to this exact version with metadata.whatsNewConfirmation. ShipLayer never writes this copy itself.`);
   return manifest; }
 /** Endpoint/SDK findings become needs-human-confirmation externalProcessors proposals, never a confirmed disposition. */
 function externalProcessorProposals(report: AnalysisReport): ShipLayerManifest["externalProcessors"] {

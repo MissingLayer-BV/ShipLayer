@@ -27,7 +27,7 @@ export function png(width: number, height: number, alpha = false): Buffer {
 function crc32(bytes: Buffer): number { let crc = 0xffffffff; for (const byte of bytes) { crc ^= byte; for (let index = 0; index < 8; index++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0); } return (crc ^ 0xffffffff) >>> 0; }
 
 export function readyManifest(type: "free" | "paid-app" | "non-consumables" | "subscriptions" = "free"): ShipLayerManifest {
-  const manifest = defaultManifest({ name: "Example", bundleId: "com.example.app", version: "1.0", build: "1", deviceFamilies: ["iphone"] });
+  const manifest = defaultManifest({ name: "Example", bundleId: "com.example.app", version: "1.0", build: "1", deviceFamilies: ["iphone"], releaseKind: "first-release" });
   manifest.app.primaryCategory = "Productivity"; manifest.app.appStoreAppId = "1234567890"; manifest.contacts = { supportEmail: "support@example.com", supportUrl: "https://example.com/support", privacyUrl: "https://example.com/privacy", copyright: "2026 Example" };
   manifest.metadata.localizations["en-US"] = { name: "Example", description: "A complete App Store description.", keywords: ["example"], confirmation: "confirmed" };
   manifest.review = { contact: { firstName: "Ada", lastName: "Reviewer", email: "ada@example.com", phone: "+12025550123" }, demoAccount: { required: false }, recordingScenarios: [{ id: "home", title: "Home", steps: ["Launch"] }] };

@@ -296,10 +296,19 @@ export interface ShipLayerManifest {
     primaryCategory?: string;
     secondaryCategory?: string;
     availability: "all" | "selected";
+    /** Whether this App Store version is the app's first iOS release or an update. Repository
+     * version numbers cannot prove this lifecycle fact, so `init` leaves it pending and the
+     * remote plan cross-checks it against the app's iOS version history before any write. */
+    releaseKind?: "first-release" | "update" | "needs-human-confirmation";
     releaseMode: "manual" | "automatic" | "scheduled";
   };
   contacts: { supportEmail?: string; supportUrl?: string; marketingUrl?: string; privacyUrl?: string; copyright?: string };
-  metadata: { localizations: Record<string, LocaleCopy> };
+  metadata: {
+    localizations: Record<string, LocaleCopy>;
+    /** A separate, version-bound review gate for the complete localized What's New set. An old
+     * listing-copy confirmation must never approve release notes introduced for a later version. */
+    whatsNewConfirmation?: { version: string; confirmation: Confirmation };
+  };
   permissions: Array<{ key: string; purpose?: string; confirmation: Confirmation; evidence?: string[] }>;
   permissionFlows: PermissionFlowDeclaration[];
   dataProcessing: DataProcessing[];

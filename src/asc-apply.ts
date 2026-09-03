@@ -36,6 +36,7 @@ export async function applyAppStoreChanges(repository: string, manifest: ShipLay
   const context = await createContext(repository, manifest, environment, options.fetcher, analysis);
   let discovery = context.discovery;
   assertTarget(manifest, discovery);
+  assertReleaseKind(manifest, discovery);
   assertCategoriesAvailable(manifest, discovery);
   let build = uniqueBuild(manifest, discovery);
   if (!build) throw new Error(`Build ${manifest.app.build} for iOS version ${manifest.app.version} was not found in exactly one valid App Store-eligible state; no changes were made.`);
@@ -103,6 +104,15 @@ function buildPlan(manifest: ShipLayerManifest, discovery: RemoteDiscovery, desi
     return { mode: "remote", operations, credentialsPresent: true, warnings };
   }
   operations.push(matched("app.identity", "App identity", `Bundle ID ${manifest.app.bundleId} resolves to app ${discovery.appId}.`));
+  const remoteReleaseKind = releaseKindFromHistory(manifest, discovery);
+  if (manifest.app.releaseKind !== remoteReleaseKind) {
+    const declared = manifest.app.releaseKind && manifest.app.releaseKind !== "needs-human-confirmation" ? manifest.app.releaseKind : "unconfirmed";
+    operations.push(unsupported("release.kind", "App Store version lifecycle", `App Store Connect history identifies ${manifest.app.version} as ${remoteReleaseKind}, but the manifest declares ${declared}. Update app.releaseKind before apply.`));
+    operations.push(unsupported("submit.final", "Review submission", "Final App Review submission remains a separate human-controlled gate."));
+    warnings.unshift("Release lifecycle mismatch blocks apply before any write.");
+    return { mode: "remote", operations, credentialsPresent: true, warnings };
+  }
+  operations.push(matched("release.kind", "App Store version lifecycle", `App Store Connect history confirms ${manifest.app.version} is ${remoteReleaseKind}.`));
   if (manifest.app.releaseMode === "scheduled") {
     operations.push(unsupported("version.release-schedule", "App Store version", "Scheduled release requires a confirmed date and time, which the current manifest does not model. Apply is blocked."));
     operations.push(unsupported("submit.final", "Review submission", "Final App Review submission remains a separate human-controlled gate."));
@@ -121,13 +131,14 @@ function buildPlan(manifest: ShipLayerManifest, discovery: RemoteDiscovery, desi
   else operations.push(Object.keys(changedAttributes(version, { copyright: manifest.contacts.copyright, releaseType: desired.releaseType })).length ? planned("version.update", "update", "App Store version", `Update copyright/release mode for ${manifest.app.version}.`) : matched("version.update", "App Store version", `Version ${manifest.app.version} copyright/release mode already match.`));
 
   planCategories(manifest, discovery, operations);
+  const versionCopyDescription = manifest.app.releaseKind === "update" ? "description, keywords, promotional text, What's New, and support/marketing URLs" : "description, keywords, promotional text, and support/marketing URLs";
   for (const [locale, copy] of Object.entries(manifest.metadata.localizations)) {
     const appLocalization = byLocale(discovery.appInfoLocalizations, locale);
     const appAttributes = appInfoLocalizationAttributes(copy, manifest);
     operations.push(!appLocalization ? planned(`app-info-locale.${locale}`, "create", `App Info localization ${locale}`, "Create name, subtitle, and Privacy Policy URL.") : Object.keys(changedAttributes(appLocalization, appAttributes)).length ? planned(`app-info-locale.${locale}`, "update", `App Info localization ${locale}`, "Update name, subtitle, and Privacy Policy URL.") : matched(`app-info-locale.${locale}`, `App Info localization ${locale}`, "Name, subtitle, and Privacy Policy URL already match."));
     const versionLocalization = byLocale(discovery.versionLocalizations, locale);
     const versionAttributes = versionLocalizationAttributes(copy, manifest);
-    operations.push(!versionLocalization ? planned(`version-locale.${locale}`, "create", `Version localization ${locale}`, "Create description, keywords, promotional text, What's New, and support/marketing URLs.") : Object.keys(changedAttributes(versionLocalization, versionAttributes)).length ? planned(`version-locale.${locale}`, "update", `Version localization ${locale}`, "Update localized version metadata and URLs.") : matched(`version-locale.${locale}`, `Version localization ${locale}`, "Localized version metadata and URLs already match."));
+    operations.push(!versionLocalization ? planned(`version-locale.${locale}`, "create", `Version localization ${locale}`, `Create ${versionCopyDescription}.`) : Object.keys(changedAttributes(versionLocalization, versionAttributes)).length ? planned(`version-locale.${locale}`, "update", `Version localization ${locale}`, `Update ${versionCopyDescription}.`) : matched(`version-locale.${locale}`, `Version localization ${locale}`, "Localized version metadata and URLs already match."));
   }
   planReview(manifest, discovery, desired, operations);
   planBuild(manifest, discovery, operations);
@@ -140,6 +151,15 @@ function assertTarget(manifest: ShipLayerManifest, discovery: RemoteDiscovery): 
   if (!discovery.appId) throw new Error("No App Store Connect app matches the manifest bundle ID. Create the initial app record manually; no changes were made.");
   if (!manifest.app.appStoreAppId) throw new Error("app.appStoreAppId is required before apply; no changes were made.");
   if (discovery.appId !== manifest.app.appStoreAppId) throw new Error(`App identity mismatch: bundle ID resolved to ${discovery.appId}, not manifest appStoreAppId ${manifest.app.appStoreAppId}. No changes were made.`);
+}
+
+function releaseKindFromHistory(manifest: ShipLayerManifest, discovery: RemoteDiscovery): "first-release" | "update" {
+  return discovery.allIosVersions.some((version) => attribute(version, "versionString") !== manifest.app.version) ? "update" : "first-release";
+}
+
+function assertReleaseKind(manifest: ShipLayerManifest, discovery: RemoteDiscovery): void {
+  const remote = releaseKindFromHistory(manifest, discovery);
+  if (manifest.app.releaseKind !== remote) throw new Error(`App Store Connect history identifies ${manifest.app.version} as ${remote}, but app.releaseKind is ${manifest.app.releaseKind || "absent"}. Update the manifest and review a new remote plan. No changes were made.`);
 }
 
 async function syncCategories(client: AppStoreConnectClient, manifest: ShipLayerManifest, discovery: RemoteDiscovery, appInfo: AscResource, operations: AscOperation[]): Promise<void> {
@@ -303,7 +323,7 @@ function planScreenshots(discovery: RemoteDiscovery, localSets: LocalScreenshotS
 }
 
 function appInfoLocalizationAttributes(copy: ShipLayerManifest["metadata"]["localizations"][string], manifest: ShipLayerManifest): Record<string, unknown> { return compact({ name: copy.name, subtitle: copy.subtitle, privacyPolicyUrl: copy.privacyPolicyUrl ?? manifest.contacts.privacyUrl }); }
-function versionLocalizationAttributes(copy: ShipLayerManifest["metadata"]["localizations"][string], manifest: ShipLayerManifest): Record<string, unknown> { return compact({ description: copy.description, keywords: copy.keywords?.join(","), marketingUrl: copy.marketingUrl ?? manifest.contacts.marketingUrl, promotionalText: copy.promotionalText, supportUrl: copy.supportUrl ?? manifest.contacts.supportUrl, whatsNew: copy.whatsNew }); }
+function versionLocalizationAttributes(copy: ShipLayerManifest["metadata"]["localizations"][string], manifest: ShipLayerManifest): Record<string, unknown> { return compact({ description: copy.description, keywords: copy.keywords?.join(","), marketingUrl: copy.marketingUrl ?? manifest.contacts.marketingUrl, promotionalText: copy.promotionalText, supportUrl: copy.supportUrl ?? manifest.contacts.supportUrl, whatsNew: manifest.app.releaseKind === "update" ? copy.whatsNew : undefined }); }
 function changedAttributes(resource: AscResource, desired: Record<string, unknown>): Record<string, unknown> { const changed: Record<string, unknown> = {}; for (const [key, value] of Object.entries(compact(desired))) if (!same(attribute(resource, key), value)) changed[key] = value; return changed; }
 function compact(value: Record<string, unknown>): Record<string, unknown> { return Object.fromEntries(Object.entries(value).filter(([, child]) => child !== undefined)); }
 function same(left: unknown, right: unknown): boolean { return JSON.stringify(left ?? null) === JSON.stringify(right ?? null); }

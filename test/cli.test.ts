@@ -9,6 +9,9 @@ test("CLI init is safe and analyze JSON is stable", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-cli-")); await cp(path.resolve("fixtures/SwiftSubscriptionApp"), root, { recursive: true });
   const command = ["./node_modules/.bin/tsx", "src/index.ts"];
   const init = spawnSync(command[0], [...command.slice(1), "init", root, "--json"], { encoding: "utf8" }); assert.equal(init.status, 0, init.stderr); assert.match(init.stdout, /shiplayer\.yml/);
+  const initialized = JSON.parse(init.stdout) as { unresolvedQuestions: string[] };
+  assert.ok(initialized.unresolvedQuestions.some((question) => question.includes("app.releaseKind") && question.includes("Do not infer this from the version number")));
+  assert.match(await readFile(path.join(root, "shiplayer.yml"), "utf8"), /releaseKind: needs-human-confirmation/);
   const again = spawnSync(command[0], [...command.slice(1), "init", root], { encoding: "utf8" }); assert.equal(again.status, 1); assert.match(again.stderr, /Refusing to overwrite/);
   const scan = spawnSync(command[0], [...command.slice(1), "analyze", root, "--json"], { encoding: "utf8" }); assert.equal(scan.status, 0, scan.stderr); assert.equal(JSON.parse(scan.stdout).schemaVersion, 1);
 });

@@ -24,7 +24,7 @@ test("remote discovery selects IOS version and reads screenshot sets through ver
   const client = new AppStoreConnectClient({ issuerId: "issuer", keyId: "kid", privateKeyPath }, async (url, init) => {
     paths.push(url); assert.match(String(init?.headers && (init.headers as Record<string, string>).Authorization), /^Bearer /);
     const body = url.includes("/apps?") ? { data: [{ id: "app-id" }] }
-      : url.includes("/appStoreVersions?") ? { data: [{ id: "mac", attributes: { platform: "MAC_OS", versionString: "1.0" } }, { id: "ios", attributes: { platform: "IOS", versionString: "1.0", appStoreState: "PREPARE_FOR_SUBMISSION" } }] }
+      : url.includes("/appStoreVersions?") ? { data: [{ id: "mac", attributes: { platform: "MAC_OS", versionString: "1.0" } }, { id: "old-ios", attributes: { platform: "IOS", versionString: "0.9", appStoreState: "READY_FOR_DISTRIBUTION" } }, { id: "ios", attributes: { platform: "IOS", versionString: "1.0", appStoreState: "PREPARE_FOR_SUBMISSION" } }] }
       : url.includes("/apps/app-id/appInfos") ? { data: [{ id: "live-info", attributes: { appStoreState: "READY_FOR_DISTRIBUTION" } }, { id: "draft-info", attributes: { appStoreState: "PREPARE_FOR_SUBMISSION" } }] }
       : url.includes("/appStoreVersions/ios/appStoreVersionLocalizations") ? { data: [{ id: "localization" }] }
       : url.includes("/appScreenshotSets/set/appScreenshots") ? { data: [{ id: "image", type: "appScreenshots" }] }
@@ -33,7 +33,7 @@ test("remote discovery selects IOS version and reads screenshot sets through ver
     return { ok: true, status: 200, text: async () => JSON.stringify(body) };
   });
   const result = await client.discover("com.example.app", { version: "1.0" });
-  assert.equal(result.versions.length, 1); assert.equal(result.appInfos[0]?.id, "draft-info"); assert.equal(result.screenshotSets.length, 1); assert.equal(result.screenshots.length, 1); assert.ok(paths.some((item) => item.includes("/appInfos/draft-info/appInfoLocalizations"))); assert.ok(!paths.some((item) => item.includes("/appInfos/live-info/appInfoLocalizations"))); assert.ok(paths.some((item) => item.includes("/appStoreVersionLocalizations/localization/appScreenshotSets"))); assert.ok(!paths.some((item) => item.includes("/appStoreVersions/ios/appScreenshotSets")));
+  assert.equal(result.versions.length, 1); assert.equal(result.allIosVersions.length, 2); assert.equal(result.appInfos[0]?.id, "draft-info"); assert.equal(result.screenshotSets.length, 1); assert.equal(result.screenshots.length, 1); assert.ok(paths.some((item) => item.includes("/appInfos/draft-info/appInfoLocalizations"))); assert.ok(!paths.some((item) => item.includes("/appInfos/live-info/appInfoLocalizations"))); assert.ok(paths.some((item) => item.includes("/appStoreVersionLocalizations/localization/appScreenshotSets"))); assert.ok(!paths.some((item) => item.includes("/appStoreVersions/ios/appScreenshotSets")));
 });
 test("discovery preserves included pagination, one review-detail objects, and subscription products", async () => {
   const privateKeyPath = await keyPath(); const paths: string[] = [];

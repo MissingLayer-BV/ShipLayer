@@ -39,8 +39,77 @@ test("remote App Store Connect change plan performs GET requests only", async ()
   const fetcher: FetchLike = async (url, init) => { const method = init?.method || "GET"; calls.push({ url, method }); const body = discoveryBody(url); assert.ok(body, `unexpected request ${method} ${url}`); return { ok: true, status: 200, text: async () => JSON.stringify(body) }; };
   const plan = await planAppStoreChanges(root, manifest, environment, fetcher);
   assert.equal(plan.credentialsPresent, true); assert.ok(plan.operations.some((operation) => operation.id === "version.update" && operation.status === "planned"));
+  assert.ok(plan.operations.filter((operation) => operation.id.startsWith("version-locale.")).every((operation) => !operation.description.includes("What's New")));
   assert.ok(plan.operations.some((operation) => operation.id === "screenshots.iphone.en-US.set" && operation.action === "create")); assert.ok(plan.operations.some((operation) => operation.id === "screenshots.iphone.en-US.upload.1" && operation.action === "upload" && operation.description.includes("home.png")));
   assert.ok(calls.length > 0); assert.deepEqual(new Set(calls.map((call) => call.method)), new Set(["GET"])); assert.ok(calls.some((call) => call.url.includes("/appStoreReviewDetail"))); assert.ok(!calls.some((call) => call.url.includes("appStoreVersionAppReviewDetail")));
+});
+
+test("remote lifecycle verification blocks a wrong declaration and apply makes no mutation", async () => {
+  const { root, environment } = await fixture(); const manifest = readyManifest(); manifest.sync.mode = "apply"; const methods: string[] = [];
+  const fetcher: FetchLike = async (url, init) => {
+    const method = init?.method || "GET"; methods.push(method); assert.equal(method, "GET");
+    if (url.includes("/apps/1234567890/appStoreVersions")) return json({ data: [
+      { type: "appStoreVersions", id: "old-version", attributes: { platform: "IOS", versionString: "0.9", appStoreState: "READY_FOR_DISTRIBUTION" } },
+      { type: "appStoreVersions", id: "version", attributes: { platform: "IOS", versionString: "1.0", appStoreState: "PREPARE_FOR_SUBMISSION" } }
+    ] }, 200);
+    const body = discoveryBody(url); assert.ok(body, `unexpected request ${method} ${url}`); return json(body, 200);
+  };
+  const plan = await planAppStoreChanges(root, manifest, environment, fetcher);
+  assert.ok(plan.operations.some((operation) => operation.id === "release.kind" && operation.status === "unsupported" && operation.description.includes("update")));
+  assert.equal(plan.operations.some((operation) => operation.safety === "requires-apply"), false);
+  await assert.rejects(() => applyAppStoreChanges(root, manifest, { environment, fetcher, reviewedPlan: plan, userConfirmed: true }), /identifies 1\.0 as update/);
+  assert.deepEqual(new Set(methods), new Set(["GET"]));
+});
+
+test("remote lifecycle verification tells an unconfirmed manifest that a target-only draft is the first release", async () => {
+  const { root, environment } = await fixture(); const manifest = readyManifest(); manifest.app.releaseKind = "needs-human-confirmation";
+  const fetcher: FetchLike = async (url) => { const body = discoveryBody(url); assert.ok(body, `unexpected GET ${url}`); return json(body, 200); };
+  const plan = await planAppStoreChanges(root, manifest, environment, fetcher);
+  assert.ok(plan.operations.some((operation) => operation.id === "release.kind" && operation.status === "unsupported" && operation.description.includes("first-release")));
+});
+
+test("remote lifecycle verification rejects update for target-only history and recognizes a target-absent update", async () => {
+  const { root, environment } = await fixture(); const manifest = readyManifest(); manifest.app.releaseKind = "update"; manifest.metadata.localizations["en-US"].whatsNew = "Translations in store listings."; manifest.metadata.whatsNewConfirmation = { version: "1.0", confirmation: "confirmed" };
+  const targetOnlyFetcher: FetchLike = async (url) => { const body = discoveryBody(url); assert.ok(body, `unexpected GET ${url}`); return json(body, 200); };
+  const wrongPlan = await planAppStoreChanges(root, manifest, environment, targetOnlyFetcher);
+  assert.ok(wrongPlan.operations.some((operation) => operation.id === "release.kind" && operation.status === "unsupported" && operation.description.includes("first-release")));
+
+  const targetAbsentFetcher: FetchLike = async (url) => {
+    if (url.includes("/apps/1234567890/appStoreVersions")) return json({ data: [{ type: "appStoreVersions", id: "old-version", attributes: { platform: "IOS", versionString: "0.9", appStoreState: "READY_FOR_DISTRIBUTION" } }] }, 200);
+    const body = discoveryBody(url); assert.ok(body, `unexpected GET ${url}`); return json(body, 200);
+  };
+  const updatePlan = await planAppStoreChanges(root, manifest, environment, targetAbsentFetcher);
+  assert.ok(updatePlan.operations.some((operation) => operation.id === "release.kind" && operation.status === "already-matches"));
+  assert.ok(updatePlan.operations.some((operation) => operation.id === "version.create" && operation.status === "planned"));
+});
+
+test("remote lifecycle verification accepts an update and sends its localized What's New copy", async () => {
+  const { root, environment } = await fixture(); const manifest = readyManifest(); manifest.app.releaseKind = "update"; manifest.sync.mode = "apply";
+  manifest.metadata.localizations["en-US"].whatsNew = "Translations in store listings.";
+  manifest.metadata.whatsNewConfirmation = { version: "1.0", confirmation: "confirmed" };
+  const calls: Array<{ url: string; method: string; body?: unknown }> = [];
+  const fetcher: FetchLike = async (url, init) => {
+    const method = init?.method || "GET"; const body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined; calls.push({ url, method, body });
+    if (url.startsWith("https://upload.example.test/")) return { ok: true, status: 200, text: async () => "" };
+    if (method === "GET") {
+      if (url.includes("/apps/1234567890/appStoreVersions")) return json({ data: [
+        { type: "appStoreVersions", id: "old-version", attributes: { platform: "IOS", versionString: "0.9", appStoreState: "READY_FOR_DISTRIBUTION" } },
+        { type: "appStoreVersions", id: "version", attributes: { platform: "IOS", versionString: "1.0", copyright: "2025 Old", releaseType: "MANUAL", appStoreState: "PREPARE_FOR_SUBMISSION" } }
+      ] }, 200);
+      if (url.includes("/appScreenshots/screenshot")) return json({ data: { type: "appScreenshots", id: "screenshot", attributes: { assetDeliveryState: { state: "COMPLETE" } } } }, 200);
+      const discovered = discoveryBody(url); if (discovered) return json(discovered, 200);
+    }
+    if (method === "POST" && url.endsWith("/appInfoLocalizations")) return json({ data: { type: "appInfoLocalizations", id: "app-locale", attributes: { locale: "en-US" } } }, 201);
+    if (method === "POST" && url.endsWith("/appStoreVersionLocalizations")) return json({ data: { type: "appStoreVersionLocalizations", id: "version-locale", attributes: { locale: "en-US" } } }, 201);
+    if (method === "POST" && url.endsWith("/appStoreReviewDetails")) return json({ data: { type: "appStoreReviewDetails", id: "review" } }, 201);
+    if (method === "POST" && url.endsWith("/appScreenshotSets")) return json({ data: { type: "appScreenshotSets", id: "set" } }, 201);
+    if (method === "POST" && url.endsWith("/appScreenshots")) { const size = Number((body as { data: { attributes: { fileSize: number } } }).data.attributes.fileSize); return json({ data: { type: "appScreenshots", id: "screenshot", attributes: { uploadOperations: [{ method: "PUT", url: "https://upload.example.test/object", offset: 0, length: size, requestHeaders: [] }] } } }, 201); }
+    if (method === "PATCH" || method === "DELETE") return json({}, 204);
+    assert.fail(`unexpected request ${method} ${url}`);
+  };
+  await applyReviewed(root, manifest, environment, fetcher);
+  const localization = calls.find((call) => call.method === "POST" && call.url.endsWith("/appStoreVersionLocalizations"));
+  assert.equal((localization?.body as { data: { attributes: { whatsNew?: string } } }).data.attributes.whatsNew, "Translations in store listings.");
 });
 
 test("apply implementation rejects dry-run manifests before any network request", async () => {

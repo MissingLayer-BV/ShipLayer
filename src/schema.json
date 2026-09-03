@@ -40,6 +40,23 @@
         "localizations"
       ],
       "properties": {
+        "whatsNewConfirmation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "version",
+            "confirmation"
+          ],
+          "properties": {
+            "version": {
+              "type": "string",
+              "pattern": "^[0-9]+(?:\\.[0-9]+){0,2}$"
+            },
+            "confirmation": {
+              "$ref": "#/$defs/confirmation"
+            }
+          }
+        },
         "localizations": {
           "type": "object",
           "minProperties": 1,
@@ -268,6 +285,13 @@
           "enum": [
             "all",
             "selected"
+          ]
+        },
+        "releaseKind": {
+          "enum": [
+            "first-release",
+            "update",
+            "needs-human-confirmation"
           ]
         },
         "releaseMode": {

@@ -7,6 +7,16 @@ test("default manifest is structurally valid and requires human confirmations", 
   const manifest = defaultManifest({ name: "Example", bundleId: "com.example.app" });
   validateManifest(manifest);
   assert.equal(manifest.confirmations.privacy, "needs-human-confirmation");
+  assert.equal(manifest.app.releaseKind, "needs-human-confirmation");
+});
+
+test("release lifecycle is additive for legacy manifests and rejects unknown values", () => {
+  const legacy = defaultManifest({ name: "Example", bundleId: "com.example.app" });
+  delete legacy.app.releaseKind;
+  validateManifest(legacy);
+  const invalid = defaultManifest({ name: "Example", bundleId: "com.example.app" }) as unknown as { app: { releaseKind: string } };
+  invalid.app.releaseKind = "minor-update";
+  assert.throws(() => validateManifest(invalid), /Invalid shiplayer/);
 });
 
 test("subscription validation allows equal service levels but rejects duplicate IDs", () => {
