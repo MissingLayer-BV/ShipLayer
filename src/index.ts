@@ -30,7 +30,7 @@ async function main(args: string[]): Promise<void> {
   const json = options.includes("--json");
   if (command === "draft-screenshots") {
     const locales = optionValue(options, "--locales")?.split(",").filter(Boolean);
-    const result = await draftScreenshots(repository, await readManifest(repository), options.includes("--apply"), options.includes("--yes-i-understand"), undefined, locales);
+    const result = await draftScreenshots(repository, await readManifest(repository), options.includes("--apply"), options.includes("--yes-i-understand"), undefined, locales, options.includes("--replace-incomplete"));
     output(result, json, JSON.stringify(result, null, 2));
     return;
   }
@@ -191,7 +191,7 @@ function humanAnalysis(report: Awaited<ReturnType<typeof analyzeRepository>>): s
 function optionValue(options: string[], name: string): string | undefined { const index = options.indexOf(name); return index >= 0 ? options[index + 1] : undefined; }
 const VALUE_OPTIONS: Record<string, Set<string>> = { prepare: new Set(["--out"]), capture: new Set(["--from", "--family", "--locale"]), "draft-listing": new Set(["--locales"]), "draft-screenshots": new Set(["--locales"]) };
 function validateOptions(command: string, options: string[]): void {
-  const allowed: Record<string, Set<string>> = { "draft-screenshots": new Set(["--json", "--apply", "--yes-i-understand", "--locales"]), "draft-descriptions": new Set(["--json", "--apply", "--yes-i-understand"]), "draft-listing": new Set(["--json", "--apply", "--yes-i-understand", "--locales"]), init: new Set(["--force", "--json"]), analyze: new Set(["--json"]), prepare: new Set(["--out", "--json"]), check: new Set(["--json", "--remote"]), plan: new Set(["--json", "--remote"]), capture: new Set(["--json", "--execute", "--yes-execute", "--from", "--family", "--locale"]), apply: new Set(["--json", "--apply", "--yes-i-understand"]), submit: new Set(["--json", "--submit", "--yes-submit"]) };
+  const allowed: Record<string, Set<string>> = { "draft-screenshots": new Set(["--json", "--apply", "--yes-i-understand", "--locales", "--replace-incomplete"]), "draft-descriptions": new Set(["--json", "--apply", "--yes-i-understand"]), "draft-listing": new Set(["--json", "--apply", "--yes-i-understand", "--locales"]), init: new Set(["--force", "--json"]), analyze: new Set(["--json"]), prepare: new Set(["--out", "--json"]), check: new Set(["--json", "--remote"]), plan: new Set(["--json", "--remote"]), capture: new Set(["--json", "--execute", "--yes-execute", "--from", "--family", "--locale"]), apply: new Set(["--json", "--apply", "--yes-i-understand"]), submit: new Set(["--json", "--submit", "--yes-submit"]) };
   const known = allowed[command]; if (!known) return; const valueOptions = VALUE_OPTIONS[command] || new Set<string>();
   for (let index = 0; index < options.length; index++) {
     const option = options[index];

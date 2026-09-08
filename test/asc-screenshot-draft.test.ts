@@ -38,10 +38,10 @@ async function fixture() {
       else assert.equal(url,'/appScreenshotSets/set/relationships/appScreenshots');
       return {data:pictures[0]};
     },
-    async delete(url:string) {writes.push(url);throw new Error('Unexpected delete');},
+    async delete(url:string) {writes.push(url);pictures=pictures.filter(item=>`/appScreenshots/${item.id}`!==url);},
     async uploadAsset() {writes.push('asset-upload');},
   };
-  return {root,manifest,client,writes,setState:(s:string)=>{state=s;}};
+  return {root,manifest,client,writes,setState:(s:string)=>{state=s;},setRemotePictures:(items:any[])=>{set={id:'set',attributes:{screenshotDisplayType:'APP_IPHONE_67'}};pictures=items;}};
 }
 
 test('draft screenshot preview is read-only; apply uploads only screenshots and verifies an idempotent rerun',async()=>{
@@ -53,6 +53,17 @@ test('draft screenshot preview is read-only; apply uploads only screenshots and 
   const count=f.writes.length;await draftScreenshots(f.root,f.manifest,true,true,f.client);assert.equal(f.writes.length,count);
   assert.ok(f.writes.every(p=>p.startsWith('/appScreenshot')||p==='asset-upload'));
  } finally {await rm(f.root,{recursive:true,force:true});}
+});
+
+test('incomplete screenshot recovery requires an explicit flag and deletes only incomplete reservations',async()=>{
+ const f=await fixture();try {
+  f.setRemotePictures([{id:'stuck',attributes:{fileName:'home.png',assetDeliveryState:{state:'UPLOAD_COMPLETE'}}}]);
+  await assert.rejects(()=>draftScreenshots(f.root,f.manifest,true,true,f.client),/Pending or failed Apple processing/);
+  assert.equal(f.writes.length,0);
+  const result=await draftScreenshots(f.root,f.manifest,true,true,f.client,undefined,true);
+  assert.equal(result.verifiedScreenshots,1);
+  assert.ok(f.writes.includes('/appScreenshots/stuck'));
+ }finally{await rm(f.root,{recursive:true,force:true});}
 });
 
 test('draft screenshot writes reject missing authorization, non-draft versions, and incomplete local decks',async()=>{

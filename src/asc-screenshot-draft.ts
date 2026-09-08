@@ -18,7 +18,7 @@ function matches(local: LocalScreenshotSet, remote: AscResource[]): boolean {
 
 /** Synchronize only reviewed marketing screenshots in an existing unsubmitted
  * draft. No version creation, build attachment, metadata or submission writes. */
-export async function draftScreenshots(repository: string, manifest: ShipLayerManifest, apply = false, confirmed = false, suppliedClient?: Client, selectedLocales = manifest.app.locales) {
+export async function draftScreenshots(repository: string, manifest: ShipLayerManifest, apply = false, confirmed = false, suppliedClient?: Client, selectedLocales = manifest.app.locales, replaceIncomplete = false) {
   if (apply && (!confirmed || manifest.sync.mode !== 'apply')) throw new Error('Draft screenshot writes require sync.mode: apply and explicit confirmation.');
   if (!manifest.app.appStoreAppId || !manifest.app.bundleId || !manifest.app.version) throw new Error('Explicit app identity and target version are required.');
   if (!manifest.screenshots.scenarios.length || manifest.screenshots.scenarios.length > 10) throw new Error('One to ten reviewed scenarios are required.');
@@ -82,9 +82,16 @@ export async function draftScreenshots(repository: string, manifest: ShipLayerMa
     const current = resources(await client.get(`/appStoreVersions/${id(version)}`));
     if (current.length !== 1) throw new Error('Target draft disappeared.');
     assertDraft(current[0]);
-    const remote = await readGroup(set);
+    let remote = await readGroup(set);
     // Incomplete assets must not be accepted as matching by checksum alone.
-    if (remote && remote.screenshots.some(s => (s.attributes?.assetDeliveryState as {state?: string})?.state !== 'COMPLETE')) throw new Error(`Pending or failed Apple processing in ${set.family}/${set.locale}; inspect before retrying: ${JSON.stringify(remote.screenshots.map(s => ({id:s.id,fileName:s.attributes?.fileName,state:s.attributes?.assetDeliveryState})))}.`);
+    const incomplete = remote?.screenshots.filter(s => (s.attributes?.assetDeliveryState as {state?: string})?.state !== 'COMPLETE') ?? [];
+    if (incomplete.length && !replaceIncomplete) throw new Error(`Pending or failed Apple processing in ${set.family}/${set.locale}; inspect before retrying: ${JSON.stringify(remote!.screenshots.map(s => ({id:s.id,fileName:s.attributes?.fileName,state:s.attributes?.assetDeliveryState})))}.`);
+    if (incomplete.length) {
+      for (const screenshot of incomplete) await client.delete(`/appScreenshots/${id(screenshot)}`);
+      operations.push({id:`screenshots.${set.family}.${set.locale}.incomplete`,action:'delete',resource:`Screenshots ${set.family}/${set.locale}`,description:`Removed ${incomplete.length} explicitly authorized incomplete Apple screenshot reservation(s).`,safety:'requires-apply',status:'applied'});
+      remote = await readGroup(set);
+      if (remote?.screenshots.some(s => (s.attributes?.assetDeliveryState as {state?: string})?.state !== 'COMPLETE')) throw new Error(`Apple still reports incomplete screenshots in ${set.family}/${set.locale} after the authorized cleanup.`);
+    }
     await syncScreenshots(client, {screenshotGroups: remote ? [remote] : []}, localizationIds, [set], operations);
     let verified = await readGroup(set);
     for (let attempt = 0; attempt < 30 && (!verified || !matches(set, verified.screenshots)); attempt++) {
