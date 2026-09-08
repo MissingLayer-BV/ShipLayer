@@ -40,7 +40,7 @@ export async function draftScreenshots(repository: string, manifest: ShipLayerMa
   if (expected.size) throw new Error('Missing screenshot configurations.');
   const credentials = credentialsFromEnvironment(manifest);
   if (!suppliedClient && !credentials) throw new Error('App Store Connect credentials are unavailable.');
-  const client = suppliedClient ?? new AppStoreConnectClient(credentials!);
+  const client = suppliedClient ?? new AppStoreConnectClient(credentials!, undefined, 60_000);
   const apps = resources(await client.get(`/apps?filter[bundleId]=${encodeURIComponent(manifest.app.bundleId)}&limit=2`));
   if (apps.length !== 1 || apps[0].id !== manifest.app.appStoreAppId) throw new Error('App identity does not match.');
   const versions = resources(await client.get(`/apps/${id(apps[0])}/appStoreVersions?limit=200`)).filter(v => v.attributes?.platform === 'IOS' && v.attributes?.versionString === manifest.app.version);
@@ -71,7 +71,7 @@ export async function draftScreenshots(repository: string, manifest: ShipLayerMa
   const plan = [];
   for (const set of local) {
     const remote = await readGroup(set);
-    plan.push({locale:set.locale, family:set.family, count:set.screenshots.length, status:matches(set, remote?.screenshots ?? []) ? 'already-matches' : 'planned', previousCount:remote?.screenshots.length ?? 0});
+    plan.push({locale:set.locale, family:set.family, count:set.screenshots.length, status:matches(set, remote?.screenshots ?? []) ? 'already-matches' : 'planned', previousCount:remote?.screenshots.length ?? 0, incomplete:remote?.screenshots.filter(s => (s.attributes?.assetDeliveryState as {state?:string})?.state !== 'COMPLETE').map(s => ({id:s.id,fileName:s.attributes?.fileName,state:s.attributes?.assetDeliveryState})) ?? []});
   }
   if (!apply) return {mode:'preview', version:manifest.app.version, sets:plan, submitted:false};
   const operations: AscOperation[] = [];
@@ -82,7 +82,7 @@ export async function draftScreenshots(repository: string, manifest: ShipLayerMa
     assertDraft(current[0]);
     const remote = await readGroup(set);
     // Incomplete assets must not be accepted as matching by checksum alone.
-    if (remote && remote.screenshots.some(s => (s.attributes?.assetDeliveryState as {state?: string})?.state !== 'COMPLETE')) throw new Error(`Pending or failed Apple processing in ${set.family}/${set.locale}; inspect before retrying.`);
+    if (remote && remote.screenshots.some(s => (s.attributes?.assetDeliveryState as {state?: string})?.state !== 'COMPLETE')) throw new Error(`Pending or failed Apple processing in ${set.family}/${set.locale}; inspect before retrying: ${JSON.stringify(remote.screenshots.map(s => ({id:s.id,fileName:s.attributes?.fileName,state:s.attributes?.assetDeliveryState})))}.`);
     await syncScreenshots(client, {screenshotGroups: remote ? [remote] : []}, localizationIds, [set], operations);
     let verified = await readGroup(set);
     for (let attempt = 0; attempt < 30 && (!verified || !matches(set, verified.screenshots)); attempt++) {
