@@ -85,8 +85,8 @@ export async function draftScreenshots(repository: string, manifest: ShipLayerMa
     if (remote && remote.screenshots.some(s => (s.attributes?.assetDeliveryState as {state?: string})?.state !== 'COMPLETE')) throw new Error(`Pending or failed Apple processing in ${set.family}/${set.locale}; inspect before retrying.`);
     await syncScreenshots(client, {screenshotGroups: remote ? [remote] : []}, localizationIds, [set], operations);
     let verified = await readGroup(set);
-    for (let attempt = 0; attempt < 5 && (!verified || !matches(set, verified.screenshots)); attempt++) {
-      await new Promise(resolve => setTimeout(resolve, 2_000));
+    for (let attempt = 0; attempt < 30 && (!verified || !matches(set, verified.screenshots)); attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 5_000));
       verified = await readGroup(set);
     }
     if (!verified || !matches(set, verified.screenshots)) throw new Error(`Screenshot read-back failed for ${set.family}/${set.locale}: ${JSON.stringify({expected:set.screenshots.map(s => ({fileName:s.fileName,checksum:s.checksum})),actual:verified?.screenshots.map(s => ({fileName:s.attributes?.fileName,checksum:s.attributes?.sourceFileChecksum,state:s.attributes?.assetDeliveryState}))})}`);
