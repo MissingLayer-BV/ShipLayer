@@ -157,3 +157,17 @@ make check
 ```
 
 There is intentionally no automatic GitHub Actions workflow in this repository, and ShipLayer never adds one to itself. The only workflow file ShipLayer's code ever produces is the `workflow_dispatch`-only screenshot capture workflow described above, and it is written solely as a `shiplayer-release/` artifact for a human to review and install into a *target app repository* — never committed, installed, or dispatched by ShipLayer itself, and never wired to `push`/`pull_request`/`schedule`.
+
+### Prepare descriptions before uploading a build
+
+`shiplayer draft-descriptions <repo>` previews a description-only update draft.
+After reviewing the preview, `sync.mode: apply` and
+`--apply --yes-i-understand` authorize creating the requested iOS version and
+saving confirmed descriptions for every configured locale. Existing versions
+must be in `PREPARE_FOR_SUBMISSION`. The command verifies the app identity and
+reads all descriptions back after writing. It never attaches a build, edits
+release notes or screenshots, or submits for review. Full-release preflight and
+release-note approval still apply when preparing the eventual release.
+
+The composite action exposes `draft-descriptions-plan` and
+`draft-descriptions-apply` with `render-screenshots: "false"`.
