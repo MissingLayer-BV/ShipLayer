@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
@@ -21,6 +22,7 @@ async function fixture() {
       if(url==='/appStoreVersions/v') return {data:{id:'v',attributes:{appVersionState:state}}};
       if(url.includes('/appStoreVersionLocalizations?')) return {data:[{id:'loc',attributes:{locale:'en-US'}}]};
       if(url.includes('/appScreenshotSets?')) return {data:set?[set]:[]};
+      if(url.includes('/relationships/appScreenshots?')) return {data:pictures.map(s => ({id:s.id,type:'appScreenshots'}))};
       if(url.includes('/appScreenshots?')) return {data:pictures};
       if(url==='/appScreenshots/image') return {data:pictures[0]};
       throw new Error('Unexpected read '+url);
@@ -63,4 +65,24 @@ test('draft screenshot writes reject missing authorization, non-draft versions, 
   await assert.rejects(()=>draftScreenshots(f.root,f.manifest,true,true,f.client),/No screenshots|marketing decks/);
   assert.equal(f.writes.length,0);
  } finally {await rm(f.root,{recursive:true,force:true});}
+});
+
+
+test('preview follows the ordered relationship even when screenshot resources arrive reversed',async()=>{
+ const f=await fixture();try {
+  f.manifest.screenshots.scenarios.push({...f.manifest.screenshots.scenarios[0],id:'second'});
+  const bytes=png(1320,2868);
+  await writeFile(path.join(f.root,'final/iphone/en-US/second.png'),bytes);
+  const checksum=createHash('md5').update(bytes).digest('hex');
+  const images=['home.png','second.png'].map((fileName,i)=>({id:String(i),attributes:{fileName,sourceFileChecksum:checksum,assetDeliveryState:{state:'COMPLETE'}}}));
+  const original=f.client.get;
+  f.client.get=async(url:string)=>{
+   if(url.includes('/appScreenshotSets?')) return {data:[{id:'set',attributes:{screenshotDisplayType:'APP_IPHONE_67'}}]};
+   if(url.includes('/relationships/appScreenshots?')) return {data:images.map(s=>({id:s.id}))} as any;
+   if(url.includes('/appScreenshots?')) return {data:[...images].reverse()} as any;
+   return original(url);
+  };
+  const result=await draftScreenshots(f.root,f.manifest,false,false,f.client);
+  assert.equal(result.sets?.[0].status,'already-matches');
+ }finally{await rm(f.root,{recursive:true,force:true});}
 });

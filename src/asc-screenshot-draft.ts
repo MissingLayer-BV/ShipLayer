@@ -62,7 +62,11 @@ export async function draftScreenshots(repository: string, manifest: ShipLayerMa
     const sets = resources(await client.get(`/appStoreVersionLocalizations/${encodeURIComponent(localizationId)}/appScreenshotSets?limit=200`)).filter(s => s.attributes?.screenshotDisplayType === set.displayType);
     if (sets.length > 1) throw new Error('Ambiguous screenshot display type.');
     if (!sets.length) return undefined;
-    return {localizationId, set: sets[0], screenshots: resources(await client.get(`/appScreenshotSets/${id(sets[0])}/appScreenshots?limit=200`))};
+    const screenshots = resources(await client.get(`/appScreenshotSets/${id(sets[0])}/appScreenshots?limit=200`));
+    const order = resources(await client.get(`/appScreenshotSets/${id(sets[0])}/relationships/appScreenshots?limit=200`));
+    const byId = new Map(screenshots.map(s => [s.id, s]));
+    if (order.length !== screenshots.length || new Set(order.map(s => s.id)).size !== order.length || order.some(s => !byId.has(s.id))) throw new Error('Screenshot relationship and resource lists disagree.');
+    return {localizationId, set: sets[0], screenshots: order.map(s => byId.get(s.id)!)};
   };
   const plan = [];
   for (const set of local) {
@@ -80,8 +84,12 @@ export async function draftScreenshots(repository: string, manifest: ShipLayerMa
     // Incomplete assets must not be accepted as matching by checksum alone.
     if (remote && remote.screenshots.some(s => (s.attributes?.assetDeliveryState as {state?: string})?.state !== 'COMPLETE')) throw new Error(`Pending or failed Apple processing in ${set.family}/${set.locale}; inspect before retrying.`);
     await syncScreenshots(client, {screenshotGroups: remote ? [remote] : []}, localizationIds, [set], operations);
-    const verified = await readGroup(set);
-    if (!verified || !matches(set, verified.screenshots)) throw new Error(`Screenshot read-back failed for ${set.family}/${set.locale}.`);
+    let verified = await readGroup(set);
+    for (let attempt = 0; attempt < 5 && (!verified || !matches(set, verified.screenshots)); attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 2_000));
+      verified = await readGroup(set);
+    }
+    if (!verified || !matches(set, verified.screenshots)) throw new Error(`Screenshot read-back failed for ${set.family}/${set.locale}: ${JSON.stringify({expected:set.screenshots.map(s => ({fileName:s.fileName,checksum:s.checksum})),actual:verified?.screenshots.map(s => ({fileName:s.attributes?.fileName,checksum:s.attributes?.sourceFileChecksum,state:s.attributes?.assetDeliveryState}))})}`);
     verifiedScreenshots += set.screenshots.length;
     process.stderr.write(`Verified ${set.family}/${set.locale}: ${set.screenshots.length} screenshots\n`);
   }
