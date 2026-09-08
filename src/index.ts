@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import path from "node:path";
+import { draftDescriptions } from "./asc-description-draft.js";
 import { existsSync } from "node:fs";
 import { analyzeRepository, detectScreenshotHarness, findValue } from "./scanner.js";
 import { appStorePlan } from "./asc.js";
@@ -20,11 +21,16 @@ async function main(args: string[]): Promise<void> {
   const [command, repositoryArgument, ...options] = args;
   if (!command || command === "--help" || command === "help") return printHelp();
   if (command === "--version" || command === "version") return write(`${VERSION}\n`);
-  if (!new Set(["init", "analyze", "prepare", "check", "plan", "capture", "apply", "submit"]).has(command)) throw new Error(`Unknown command '${command}'.\n\n${helpText()}`);
+  if (!new Set(["init", "analyze", "prepare", "check", "plan", "capture", "apply", "submit", "draft-descriptions"]).has(command)) throw new Error(`Unknown command '${command}'.\n\n${helpText()}`);
   if (!repositoryArgument) throw new Error(`Missing <repo>.\n\n${helpText()}`);
   const repository = path.resolve(repositoryArgument); if (!existsSync(repository)) throw new Error(`Repository does not exist: ${repository}`);
   validateOptions(command, options);
   const json = options.includes("--json");
+  if (command === "draft-descriptions") {
+    const result = await draftDescriptions(await readManifest(repository), options.includes("--apply"), options.includes("--yes-i-understand"));
+    output(result, json, JSON.stringify(result, null, 2));
+    return;
+  }
   if (command === "init") return init(repository, options, json);
   if (command === "analyze") return analyze(repository, json);
   if (command === "prepare") return prepare(repository, options, json);
@@ -171,7 +177,7 @@ function humanAnalysis(report: Awaited<ReturnType<typeof analyzeRepository>>): s
 function optionValue(options: string[], name: string): string | undefined { const index = options.indexOf(name); return index >= 0 ? options[index + 1] : undefined; }
 const VALUE_OPTIONS: Record<string, Set<string>> = { prepare: new Set(["--out"]), capture: new Set(["--from", "--family", "--locale"]) };
 function validateOptions(command: string, options: string[]): void {
-  const allowed: Record<string, Set<string>> = { init: new Set(["--force", "--json"]), analyze: new Set(["--json"]), prepare: new Set(["--out", "--json"]), check: new Set(["--json", "--remote"]), plan: new Set(["--json", "--remote"]), capture: new Set(["--json", "--execute", "--yes-execute", "--from", "--family", "--locale"]), apply: new Set(["--json", "--apply", "--yes-i-understand"]), submit: new Set(["--json", "--submit", "--yes-submit"]) };
+  const allowed: Record<string, Set<string>> = { "draft-descriptions": new Set(["--json", "--apply", "--yes-i-understand"]), init: new Set(["--force", "--json"]), analyze: new Set(["--json"]), prepare: new Set(["--out", "--json"]), check: new Set(["--json", "--remote"]), plan: new Set(["--json", "--remote"]), capture: new Set(["--json", "--execute", "--yes-execute", "--from", "--family", "--locale"]), apply: new Set(["--json", "--apply", "--yes-i-understand"]), submit: new Set(["--json", "--submit", "--yes-submit"]) };
   const known = allowed[command]; if (!known) return; const valueOptions = VALUE_OPTIONS[command] || new Set<string>();
   for (let index = 0; index < options.length; index++) {
     const option = options[index];
@@ -182,5 +188,5 @@ function validateOptions(command: string, options: string[]): void {
 function output(value: unknown, json: boolean, text: string): void { write(json ? stableJson(value) : `${text}\n`); }
 function write(value: string): void { process.stdout.write(value); }
 function printHelp(): void { write(`${helpText()}\n`); }
-function helpText(): string { return `ShipLayer ${VERSION} — The missing layer between your repo and the App Store.\n\nUsage: shiplayer <command> <repo> [options]\n\nCommands:\n  init <repo> [--force]       Create shiplayer.yml from detected facts; never overwrites by default.\n  analyze <repo> [--json]     Read-only scan with evidence and unresolved questions.\n  prepare <repo> [--out DIR]  Generate a deterministic release package.\n  check <repo> [--json]       Run preflight; exits 2 for blockers.\n  plan <repo> [--remote]      Print an offline plan or read-only App Store Connect discovery.\n  capture <repo>               Print screenshot-harness/workflow hand-off requirements.\n  capture <repo> --from DIR --family iphone|ipad --locale LOCALE\n                              Ingest and validate already-exported PNG screenshots.\n  apply <repo> [--apply --yes-i-understand]\n                              Remote change preview by default; writes only through both explicit gates.\n  submit <repo> [--submit --yes-submit]\n                              Separate final gate; unsupported execution exits 3.\n\nNo command uses paid CI or creates/installs/dispatches a GitHub Action. \`prepare\` can emit a manually-installed, workflow_dispatch-only capture workflow into the release package for a human to copy and run themselves. Secrets come only from environment-variable references.`; }
+function helpText(): string { return `ShipLayer ${VERSION} — The missing layer between your repo and the App Store.\n\nUsage: shiplayer <command> <repo> [options]\n\nCommands:\n  draft-descriptions <repo> [--apply --yes-i-understand]\n                            Preview or save descriptions in an unsubmitted update draft.\n  init <repo> [--force]       Create shiplayer.yml from detected facts; never overwrites by default.\n  analyze <repo> [--json]     Read-only scan with evidence and unresolved questions.\n  prepare <repo> [--out DIR]  Generate a deterministic release package.\n  check <repo> [--json]       Run preflight; exits 2 for blockers.\n  plan <repo> [--remote]      Print an offline plan or read-only App Store Connect discovery.\n  capture <repo>               Print screenshot-harness/workflow hand-off requirements.\n  capture <repo> --from DIR --family iphone|ipad --locale LOCALE\n                              Ingest and validate already-exported PNG screenshots.\n  apply <repo> [--apply --yes-i-understand]\n                              Remote change preview by default; writes only through both explicit gates.\n  submit <repo> [--submit --yes-submit]\n                              Separate final gate; unsupported execution exits 3.\n\nNo command uses paid CI or creates/installs/dispatches a GitHub Action. \`prepare\` can emit a manually-installed, workflow_dispatch-only capture workflow into the release package for a human to copy and run themselves. Secrets come only from environment-variable references.`; }
 main(process.argv.slice(2)).catch((error: unknown) => { const message = error instanceof Error ? error.message : String(error); const exitCode = error instanceof BlockerError ? 2 : 1; if (process.argv.includes("--json")) process.stdout.write(`${JSON.stringify({ error: message, exitCode })}\n`); else process.stderr.write(`ShipLayer error: ${message}\n`); process.exitCode = exitCode; });
