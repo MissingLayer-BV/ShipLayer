@@ -90,6 +90,12 @@ runs:
           plan)
             node "${{ github.action_path }}/dist/index.js" plan "${repository_path}" --remote --json | tee "${result_path}"
             ;;
+          draft-screenshots-plan)
+            node "${{ github.action_path }}/dist/index.js" draft-screenshots "${repository_path}" --json | tee "${result_path}"
+            ;;
+          draft-screenshots-apply)
+            node "${{ github.action_path }}/dist/index.js" draft-screenshots "${repository_path}" --apply --yes-i-understand --json | tee "${result_path}"
+            ;;
           draft-descriptions-plan)
             node "${{ github.action_path }}/dist/index.js" draft-descriptions "${repository_path}" --json | tee "${result_path}"
             ;;
@@ -100,7 +106,7 @@ runs:
             node "${{ github.action_path }}/dist/index.js" apply "${repository_path}" --apply --yes-i-understand --json | tee "${result_path}"
             ;;
           *)
-            echo "command must be plan, apply, draft-descriptions-plan, or draft-descriptions-apply" >&2
+            echo "command must be plan, apply, draft-descriptions-plan, draft-descriptions-apply, draft-screenshots-plan, or draft-screenshots-apply" >&2
             exit 1
             ;;
         esac

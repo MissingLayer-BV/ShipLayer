@@ -10,7 +10,7 @@ import { DEFAULT_MARKETING_FINAL_DIR } from "./marketing.js";
 import type { AnalysisReport, AscApplyResult, AscOperation, AscPlan, ShipLayerManifest } from "./types.js";
 
 interface LocalScreenshot { fileName: string; filePath: string; checksum: string; bytes: Buffer }
-interface LocalScreenshotSet { locale: string; family: "iphone" | "ipad"; displayType: string; source: "marketing" | "raw"; screenshots: LocalScreenshot[] }
+export interface LocalScreenshotSet { locale: string; family: "iphone" | "ipad"; displayType: string; source: "marketing" | "raw"; screenshots: LocalScreenshot[] }
 interface DesiredState { releaseType: "MANUAL" | "AFTER_APPROVAL"; reviewNotes: string; screenshots: LocalScreenshotSet[]; demoCredentialsPresent: boolean }
 interface ApplyContext { client: AppStoreConnectClient; discovery: RemoteDiscovery; desired: DesiredState; credentialsPresent: true }
 export interface AscApplyOptions { userConfirmed: true; reviewedPlan: AscPlan; environment?: NodeJS.ProcessEnv; fetcher?: FetchLike }
@@ -237,7 +237,7 @@ async function syncBuild(client: AppStoreConnectClient, manifest: ShipLayerManif
   await client.patch(`/appStoreVersions/${versionId}/relationships/build`, { data: { type: "builds", id: desiredId } }); operations.push(applied("build.attach", "update", "Build", `Attached build ${manifest.app.build} to version ${manifest.app.version}.`));
 }
 
-async function syncScreenshots(client: AppStoreConnectClient, discovery: RemoteDiscovery, localizationIds: Map<string, string>, localSets: LocalScreenshotSet[], operations: AscOperation[]): Promise<void> {
+export async function syncScreenshots(client: Pick<AppStoreConnectClient, "get" | "post" | "patch" | "delete" | "uploadAsset">, discovery: Pick<RemoteDiscovery, "screenshotGroups">, localizationIds: Map<string, string>, localSets: LocalScreenshotSet[], operations: AscOperation[]): Promise<void> {
   for (const local of localSets) {
     const localizationId = localizationIds.get(local.locale); if (!localizationId) throw new Error(`No version localization ID is available for ${local.locale}. Partial remote changes may have occurred.`);
     let remote = discovery.screenshotGroups.find((group) => group.localizationId === localizationId && attribute(group.set, "screenshotDisplayType") === local.displayType);
@@ -257,7 +257,7 @@ async function syncScreenshots(client: AppStoreConnectClient, discovery: RemoteD
   }
 }
 
-async function uploadScreenshot(client: AppStoreConnectClient, setId: string, screenshot: LocalScreenshot): Promise<string> {
+async function uploadScreenshot(client: Pick<AppStoreConnectClient, "get" | "post" | "patch" | "delete" | "uploadAsset">, setId: string, screenshot: LocalScreenshot): Promise<string> {
   const reservation = await client.post("/appScreenshots", { data: { type: "appScreenshots", attributes: { fileName: screenshot.fileName, fileSize: screenshot.bytes.length }, relationships: { appScreenshotSet: { data: { type: "appScreenshotSets", id: setId } } } } });
   const resource = firstResource(reservation, "reserving an App Screenshot"); const id = requiredId(resource, "App Screenshot");
   let commitAttempted = false;
@@ -278,7 +278,7 @@ async function uploadScreenshot(client: AppStoreConnectClient, setId: string, sc
   }
 }
 
-async function localScreenshotSets(repository: string, manifest: ShipLayerManifest): Promise<LocalScreenshotSet[]> {
+export async function localScreenshotSets(repository: string, manifest: ShipLayerManifest): Promise<LocalScreenshotSet[]> {
   const output: LocalScreenshotSet[] = [];
   for (const configuration of manifest.screenshots.configurations) {
     const finalRoot = manifest.screenshots.finalOutputDir || DEFAULT_MARKETING_FINAL_DIR;
