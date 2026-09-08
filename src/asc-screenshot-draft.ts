@@ -18,16 +18,18 @@ function matches(local: LocalScreenshotSet, remote: AscResource[]): boolean {
 
 /** Synchronize only reviewed marketing screenshots in an existing unsubmitted
  * draft. No version creation, build attachment, metadata or submission writes. */
-export async function draftScreenshots(repository: string, manifest: ShipLayerManifest, apply = false, confirmed = false, suppliedClient?: Client) {
+export async function draftScreenshots(repository: string, manifest: ShipLayerManifest, apply = false, confirmed = false, suppliedClient?: Client, selectedLocales = manifest.app.locales) {
   if (apply && (!confirmed || manifest.sync.mode !== 'apply')) throw new Error('Draft screenshot writes require sync.mode: apply and explicit confirmation.');
   if (!manifest.app.appStoreAppId || !manifest.app.bundleId || !manifest.app.version) throw new Error('Explicit app identity and target version are required.');
   if (!manifest.screenshots.scenarios.length || manifest.screenshots.scenarios.length > 10) throw new Error('One to ten reviewed scenarios are required.');
+  if (!selectedLocales.length || new Set(selectedLocales).size !== selectedLocales.length) throw new Error('One or more unique screenshot locales are required.');
+  for (const locale of selectedLocales) if (!manifest.app.locales.includes(locale)) throw new Error(`Locale ${locale} is not configured in the manifest.`);
   for (const scenario of manifest.screenshots.scenarios) {
     if (scenario.confirmation !== 'confirmed' || !scenario.caption?.trim()) throw new Error('Screenshot captions must be confirmed.');
-    for (const locale of manifest.app.locales) if (locale !== manifest.app.primaryLocale && (scenario.localizations?.[locale]?.confirmation !== 'confirmed' || !scenario.localizations[locale].caption?.trim())) throw new Error(`Unconfirmed caption ${locale}/${scenario.id}.`);
+    for (const locale of selectedLocales) if (locale !== manifest.app.primaryLocale && (scenario.localizations?.[locale]?.confirmation !== 'confirmed' || !scenario.localizations[locale].caption?.trim())) throw new Error(`Unconfirmed caption ${locale}/${scenario.id}.`);
   }
-  const local = await localScreenshotSets(repository, manifest);
-  const expected = new Set(manifest.app.locales.flatMap(locale => manifest.app.deviceFamilies.map(family => `${family}/${locale}`)));
+  const local = (await localScreenshotSets(repository, manifest)).filter(set => selectedLocales.includes(set.locale));
+  const expected = new Set(selectedLocales.flatMap(locale => manifest.app.deviceFamilies.map(family => `${family}/${locale}`)));
   for (const set of local) {
     if (!expected.delete(`${set.family}/${set.locale}`)) throw new Error('Duplicate or unexpected screenshot configuration.');
     if (set.source !== 'marketing' || set.screenshots.length !== manifest.screenshots.scenarios.length) throw new Error('Complete marketing decks are required; raw fallback is not allowed.');
@@ -52,7 +54,7 @@ export async function draftScreenshots(repository: string, manifest: ShipLayerMa
   assertDraft(version);
   const locales = resources(await client.get(`/appStoreVersions/${id(version)}/appStoreVersionLocalizations?limit=200`));
   const localizationIds = new Map<string, string>();
-  for (const locale of manifest.app.locales) {
+  for (const locale of selectedLocales) {
     const found = locales.filter(l => l.attributes?.locale === locale);
     if (found.length !== 1) throw new Error(`Exactly one existing localization is required for ${locale}.`);
     localizationIds.set(locale, found[0].id!);
