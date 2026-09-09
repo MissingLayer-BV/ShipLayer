@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { applyGooglePlayChanges, planGooglePlayChanges } from "../src/play.js";
 import { readPlayManifest } from "../src/play-manifest.js";
-import type { PlayFetchLike } from "../src/play-client.js";
+import { GooglePlayClient, type PlayFetchLike } from "../src/play-client.js";
 
 function response(body: unknown, status = 200) { return { ok: status >= 200 && status < 300, status, text: async () => body === undefined ? "" : JSON.stringify(body) }; }
 
@@ -106,6 +106,26 @@ test("Google Play rejects malformed federated access tokens before network acces
     fetcher: async () => { calls++; return response({}); },
   }), /valid OAuth access token/);
   assert.equal(calls, 0);
+});
+
+test("Google Play retries transient failures only for idempotent requests", async () => {
+  let calls = 0;
+  const fetcher: PlayFetchLike = async () => {
+    calls++;
+    if (calls < 3) return { ok: false, status: 503, headers: { get: () => "0" }, text: async () => JSON.stringify({ error: { message: "unavailable" } }) };
+    return response({ language: "en-US" });
+  };
+  const client = await GooglePlayClient.connect({ accessToken: "federated-access-token-with-safe-length" }, fetcher);
+  await client.updateListing("com.example.kevser", "edit-1", "en-US", { title: "Kevser" });
+  assert.equal(calls, 3);
+
+  calls = 0;
+  const uploadClient = await GooglePlayClient.connect({ accessToken: "federated-access-token-with-safe-length" }, async () => {
+    calls++;
+    return { ok: false, status: 503, headers: { get: () => "0" }, text: async () => JSON.stringify({ error: { message: "unavailable" } }) };
+  });
+  await assert.rejects(() => uploadClient.uploadImage("com.example.kevser", "edit-1", "en-US", "phoneScreenshots", Buffer.from("image"), "image/png"), /503/);
+  assert.equal(calls, 1);
 });
 
 test("Google Play apply requires both manifest and CLI gates before network access", async () => {
