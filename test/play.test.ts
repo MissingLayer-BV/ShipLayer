@@ -87,6 +87,27 @@ test("Google Play preview compares listings, screenshots, bundle, and draft trac
   assert.ok(!JSON.stringify(api.calls).includes("BEGIN PRIVATE KEY"));
 });
 
+test("Google Play accepts a short-lived federated access token without a service-account key", async () => {
+  const { root, manifest } = await fixture(); const api = playApi();
+  manifest.sync.accessTokenEnv = "GOOGLE_PLAY_ACCESS_TOKEN";
+  const plan = await planGooglePlayChanges(root, manifest, "listings", {
+    environment: { GOOGLE_PLAY_ACCESS_TOKEN: "federated-access-token-with-safe-length" },
+    fetcher: api.fetcher,
+  });
+  assert.equal(plan.credentialsPresent, true);
+  assert.ok(!api.calls.some((call) => call.url === "https://oauth2.googleapis.com/token"));
+  assert.ok(api.calls.every((call) => call.authorization === "Bearer federated-access-token-with-safe-length"));
+});
+
+test("Google Play rejects malformed federated access tokens before network access", async () => {
+  const { root, manifest } = await fixture(); let calls = 0;
+  await assert.rejects(() => planGooglePlayChanges(root, manifest, "listings", {
+    environment: { GOOGLE_PLAY_ACCESS_TOKEN: "contains whitespace" },
+    fetcher: async () => { calls++; return response({}); },
+  }), /valid OAuth access token/);
+  assert.equal(calls, 0);
+});
+
 test("Google Play apply requires both manifest and CLI gates before network access", async () => {
   const { root, environment, manifest } = await fixture("dry-run"); let calls = 0;
   const fetcher: PlayFetchLike = async () => { calls++; return response({}); };

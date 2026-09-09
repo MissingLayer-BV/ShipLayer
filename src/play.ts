@@ -13,7 +13,7 @@ export async function planGooglePlayChanges(repository: string, manifest: PlayMa
   requireRelease(manifest, scope);
   const metadata = await readPlayMetadata(repository, manifest, scope);
   const credentials = playCredentialsFromEnvironment(manifest, options.environment);
-  if (!credentials) return { mode: "remote-preview", packageName: manifest.packageName, scope, operations: [], credentialsPresent: false, warnings: [`${manifest.sync.serviceAccountJsonEnv || "GOOGLE_PLAY_SERVICE_ACCOUNT_JSON"} is unavailable; no Google Play request was made.`], ephemeralEditDeleted: false };
+  if (!credentials) return { mode: "remote-preview", packageName: manifest.packageName, scope, operations: [], credentialsPresent: false, warnings: [`Neither ${manifest.sync.accessTokenEnv || "GOOGLE_PLAY_ACCESS_TOKEN"} nor ${manifest.sync.serviceAccountJsonEnv || "GOOGLE_PLAY_SERVICE_ACCOUNT_JSON"} is available; no Google Play request was made.`], ephemeralEditDeleted: false };
   const client = await GooglePlayClient.connect(credentials, options.fetcher);
   const editId = await client.insertEdit(manifest.packageName);
   let deleted = false;

@@ -20,6 +20,7 @@ export interface PlayManifest {
   };
   sync: {
     mode: "dry-run" | "apply";
+    accessTokenEnv?: string;
     serviceAccountJsonEnv?: string;
   };
 }
