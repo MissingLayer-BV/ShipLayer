@@ -23,7 +23,7 @@ inputs:
     required: false
     default: "false"
   scope:
-    description: Google Play scope: listings, release, or all.
+    description: "Google Play scope: listings, release, or all."
     required: false
     default: listings
 
