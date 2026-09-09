@@ -76,20 +76,28 @@ export class GooglePlayClient {
   private async binary(url: string, bytes: Buffer, contentType: string): Promise<Record<string, unknown>> { return this.request("POST", url, bytes, contentType); }
   private async request(method: "GET" | "POST" | "PUT" | "DELETE", url: string, body?: Buffer, contentType?: string): Promise<Record<string, unknown>> {
     if (!url.startsWith(`${API_ROOT}/applications/`) && !url.startsWith(`${UPLOAD_ROOT}/applications/`)) throw new Error("Refusing a Google Play request outside the Android Publisher API.");
-    const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-    try {
-      const headers: Record<string, string> = { Authorization: `Bearer ${this.accessToken}`, Accept: "application/json" };
-      if (contentType) headers["Content-Type"] = contentType;
-      const response = await this.fetcher(url, { method, headers, body: body as unknown as BodyInit, signal: controller.signal });
-      const responseBody = await response.text();
-      if (!response.ok) {
-        if (method === "DELETE" && response.status === 404) return {};
-        throw new Error(`Google Play ${method} failed (${response.status}): ${redact(responseBody)}${method === "GET" ? "" : " Reconcile remote state before retrying because Google may have accepted the request."}`);
-      }
-      if (!responseBody) return {};
-      try { return JSON.parse(responseBody) as Record<string, unknown>; }
-      catch { throw new Error("Google Play returned a non-JSON response."); }
-    } finally { clearTimeout(timer); }
+    const attempts = method === "POST" ? 1 : 3;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+      try {
+        const headers: Record<string, string> = { Authorization: `Bearer ${this.accessToken}`, Accept: "application/json" };
+        if (contentType) headers["Content-Type"] = contentType;
+        const response = await this.fetcher(url, { method, headers, body: body as unknown as BodyInit, signal: controller.signal });
+        const responseBody = await response.text();
+        if (!response.ok) {
+          if (method === "DELETE" && response.status === 404) return {};
+          if (attempt < attempts && transient(response.status)) {
+            await pause(retryDelay(response, attempt));
+            continue;
+          }
+          throw new Error(`Google Play ${method} failed (${response.status}): ${redact(responseBody)}${method === "GET" ? "" : " Reconcile remote state before retrying because Google may have accepted the request."}`);
+        }
+        if (!responseBody) return {};
+        try { return JSON.parse(responseBody) as Record<string, unknown>; }
+        catch { throw new Error("Google Play returned a non-JSON response."); }
+      } finally { clearTimeout(timer); }
+    }
+    throw new Error(`Google Play ${method} exhausted its bounded retry attempts.`);
   }
 }
 
@@ -97,4 +105,10 @@ function appPath(packageName: string): string { return `/applications/${segment(
 function segment(value: string): string { return encodeURIComponent(value); }
 function array(value: unknown): Record<string, unknown>[] { return Array.isArray(value) ? value.filter(record) : []; }
 function record(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === "object" && !Array.isArray(value); }
+function transient(status: number): boolean { return status === 429 || status === 500 || status === 502 || status === 503 || status === 504; }
+function retryDelay(response: PlayFetchResponse, attempt: number): number {
+  const seconds = Number(response.headers?.get("retry-after"));
+  return Number.isFinite(seconds) && seconds >= 0 ? Math.min(seconds * 1_000, 5_000) : 250 * (2 ** (attempt - 1));
+}
+function pause(milliseconds: number): Promise<void> { return new Promise((resolve) => setTimeout(resolve, milliseconds)); }
 function redact(value: string): string { return value.replace(/-----BEGIN[\s\S]*?PRIVATE KEY-----/g, "[REDACTED]").replace(/(?:Bearer\s+)?[A-Za-z0-9._~-]{32,}/g, "[REDACTED]").slice(0, 1_000); }
