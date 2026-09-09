@@ -49,12 +49,14 @@ export async function readPlayManifest(repository: string): Promise<PlayManifest
   }
 
   if (!record(raw.sync)) throw new Error("sync must be a mapping.");
-  exactKeys(raw.sync, new Set(["mode", "serviceAccountJsonEnv"]), "sync");
+  exactKeys(raw.sync, new Set(["mode", "accessTokenEnv", "serviceAccountJsonEnv"]), "sync");
   const mode = requiredString(raw.sync.mode, "sync.mode");
   if (mode !== "dry-run" && mode !== "apply") throw new Error("sync.mode must be dry-run or apply.");
+  const accessTokenEnv = raw.sync.accessTokenEnv === undefined ? undefined : requiredString(raw.sync.accessTokenEnv, "sync.accessTokenEnv");
+  if (accessTokenEnv && !/^[A-Z_][A-Z0-9_]*$/.test(accessTokenEnv)) throw new Error("sync.accessTokenEnv must name an uppercase environment variable.");
   const serviceAccountJsonEnv = raw.sync.serviceAccountJsonEnv === undefined ? undefined : requiredString(raw.sync.serviceAccountJsonEnv, "sync.serviceAccountJsonEnv");
   if (serviceAccountJsonEnv && !/^[A-Z_][A-Z0-9_]*$/.test(serviceAccountJsonEnv)) throw new Error("sync.serviceAccountJsonEnv must name an uppercase environment variable.");
-  return { schemaVersion: 1, packageName, metadata, release, sync: { mode, serviceAccountJsonEnv } };
+  return { schemaVersion: 1, packageName, metadata, release, sync: { mode, accessTokenEnv, serviceAccountJsonEnv } };
 }
 
 export async function assertPlayApplyReady(repository: string, manifest: PlayManifest, scope: PlayScope): Promise<void> {

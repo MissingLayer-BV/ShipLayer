@@ -109,9 +109,12 @@ For repositories whose App Store Connect credentials live in a protected GitHub 
 ## Google Play delivery
 
 Google Play delivery uses `shiplayer-play.yml`, separate from the Apple-focused
-`shiplayer.yml`. Credentials stay in `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` (or the
-uppercase environment variable named by `serviceAccountJsonEnv`) and must contain
-the complete service-account JSON object.
+`shiplayer.yml`. ShipLayer accepts a short-lived OAuth token in
+`GOOGLE_PLAY_ACCESS_TOKEN` (or the uppercase variable named by `accessTokenEnv`).
+GitHub Actions should generate this token with Workload Identity Federation so
+no long-lived key is stored. A complete service-account JSON object in
+`GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` remains available for environments that cannot
+federate.
 
 ```yaml
 schemaVersion: 1
@@ -128,7 +131,7 @@ release:
   confirmation: confirmed
 sync:
   mode: dry-run
-  serviceAccountJsonEnv: GOOGLE_PLAY_SERVICE_ACCOUNT_JSON
+  accessTokenEnv: GOOGLE_PLAY_ACCESS_TOKEN
 ```
 
 The metadata directory follows the standard supply layout:
@@ -169,8 +172,10 @@ may use `draft` or `completed`.
 
 The composite action accepts `command: play-plan` or `command: play-apply` and a
 `scope` input (`listings`, `release`, or `all`). Keep apply in a protected,
-manually dispatched environment and map the service-account JSON as an environment
-secret.
+manually dispatched environment. Grant the workflow `id-token: write`, use
+`google-github-actions/auth` with `token_format: access_token` and the
+`androidpublisher` scope, then map its `access_token` output to
+`GOOGLE_PLAY_ACCESS_TOKEN`.
 
 ## Manifest
 

@@ -9,8 +9,16 @@ const SCOPE = "https://www.googleapis.com/auth/androidpublisher";
 export interface PlayFetchResponse { ok: boolean; status: number; headers?: { get(name: string): string | null }; text(): Promise<string> }
 export type PlayFetchLike = (input: string, init?: RequestInit) => Promise<PlayFetchResponse>;
 export interface PlayServiceAccount { client_email: string; private_key: string; token_uri: string }
+export interface PlayAccessToken { accessToken: string }
+export type PlayAuthentication = PlayServiceAccount | PlayAccessToken;
 
-export function playCredentialsFromEnvironment(manifest: PlayManifest, environment: NodeJS.ProcessEnv = process.env): PlayServiceAccount | undefined {
+export function playCredentialsFromEnvironment(manifest: PlayManifest, environment: NodeJS.ProcessEnv = process.env): PlayAuthentication | undefined {
+  const accessTokenName = manifest.sync.accessTokenEnv || "GOOGLE_PLAY_ACCESS_TOKEN";
+  const accessToken = environment[accessTokenName];
+  if (accessToken) {
+    if (accessToken.length < 20 || accessToken.length > 16_384 || /\s/.test(accessToken)) throw new Error(`${accessTokenName} does not contain a valid OAuth access token.`);
+    return { accessToken };
+  }
   const name = manifest.sync.serviceAccountJsonEnv || "GOOGLE_PLAY_SERVICE_ACCOUNT_JSON";
   const serialized = environment[name];
   if (!serialized) return undefined;
@@ -44,8 +52,9 @@ export async function createGoogleAccessToken(credentials: PlayServiceAccount, f
 
 export class GooglePlayClient {
   private constructor(private readonly accessToken: string, private readonly fetcher: PlayFetchLike, private readonly timeoutMs: number) {}
-  static async connect(credentials: PlayServiceAccount, fetcher: PlayFetchLike = fetch as unknown as PlayFetchLike, timeoutMs = 120_000): Promise<GooglePlayClient> {
-    return new GooglePlayClient(await createGoogleAccessToken(credentials, fetcher), fetcher, timeoutMs);
+  static async connect(authentication: PlayAuthentication, fetcher: PlayFetchLike = fetch as unknown as PlayFetchLike, timeoutMs = 120_000): Promise<GooglePlayClient> {
+    const accessToken = "accessToken" in authentication ? authentication.accessToken : await createGoogleAccessToken(authentication, fetcher);
+    return new GooglePlayClient(accessToken, fetcher, timeoutMs);
   }
   async insertEdit(packageName: string): Promise<string> { const result = await this.json("POST", `${appPath(packageName)}/edits`, {}); if (typeof result.id !== "string") throw new Error("Google Play did not return an edit ID."); return result.id; }
   async deleteEdit(packageName: string, editId: string): Promise<void> { await this.json("DELETE", `${appPath(packageName)}/edits/${segment(editId)}`); }
