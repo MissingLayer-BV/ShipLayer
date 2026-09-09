@@ -64,8 +64,8 @@ function playApi() {
     if (method === "PUT" && /\/listings\/en-US$/.test(url)) return response(body);
     if (method === "GET" && /\/bundles$/.test(url)) return response({ bundles: [] });
     if (method === "POST" && url.includes("/upload/androidpublisher/") && url.includes("/bundles")) return response({ versionCode: 6, sha256: "new" });
-    if (method === "GET" && /\/tracks\/production$/.test(url)) return response({ track: "production", releases: [{ name: "1.2", versionCodes: ["5"], status: "completed" }] });
-    if (method === "PUT" && /\/tracks\/production$/.test(url)) return response(body);
+    if (method === "GET" && /\/tracks\/(?:production|beta)$/.test(url)) return response({ track: url.endsWith("/beta") ? "beta" : "production", releases: [{ name: "1.2", versionCodes: ["5"], status: "completed" }] });
+    if (method === "PUT" && /\/tracks\/(?:production|beta)$/.test(url)) return response(body);
     if (method === "POST" && url.endsWith(":validate")) return response({ id: "validated" });
     if (method === "POST" && url.endsWith(":commit")) { committed = true; return response({ id: "committed" }); }
     assert.fail(`unexpected Google Play call: ${method} ${url}`);
@@ -168,9 +168,22 @@ test("Google Play apply validates and commits reviewed listing, screenshots, bun
   assert.deepEqual(listing?.body, { language: "en-US", title: "Kevser", shortDescription: "Daily Quran study", fullDescription: "Read, listen and reflect every day." });
   const track = api.calls.find((call) => call.method === "PUT" && /\/tracks\/production$/.test(call.url));
   const releases = (track?.body as { releases: Array<Record<string, unknown>> }).releases;
+  assert.equal(releases.length, 2);
   assert.deepEqual(releases.at(-1), { name: "1.3", versionCodes: ["6"], releaseNotes: [{ language: "en-US", text: "A refreshed reading experience." }], status: "draft" });
   assert.ok(api.calls.some((call) => call.url.endsWith(":validate")));
   assert.ok(api.calls.some((call) => call.url.endsWith(":commit")));
+});
+
+test("a completed testing release replaces the prior completed release", async () => {
+  const { root, environment, manifest } = await fixture("apply"); const api = playApi();
+  manifest.release!.track = "beta";
+  manifest.release!.status = "completed";
+  const reviewedPlan = await planGooglePlayChanges(root, manifest, "release", { environment, fetcher: api.fetcher });
+  const result = await applyGooglePlayChanges(root, manifest, "release", { environment, fetcher: api.fetcher, userConfirmed: true, reviewedPlan });
+  assert.equal(result.committed, true);
+  const track = api.calls.find((call) => call.method === "PUT" && /\/tracks\/beta$/.test(call.url));
+  const releases = (track?.body as { releases: Array<Record<string, unknown>> }).releases;
+  assert.deepEqual(releases, [{ name: "1.3", versionCodes: ["6"], releaseNotes: [{ language: "en-US", text: "A refreshed reading experience." }], status: "completed" }]);
 });
 
 test("Google Play manifest refuses a completed production rollout", async () => {
