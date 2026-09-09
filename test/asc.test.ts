@@ -89,6 +89,31 @@ test("ASC mutations are not retried and report possible partial state", async ()
   assert.equal(calls, 1);
 });
 
+test("ASC retries idempotent PATCH and DELETE mutations after transient server errors", async () => {
+  const privateKeyPath = await keyPath(); const calls: string[] = [];
+  const client = new AppStoreConnectClient({ issuerId: "issuer", keyId: "kid", privateKeyPath }, async (_url, init) => {
+    const method = init?.method || "GET"; calls.push(method);
+    const methodCalls = calls.filter((value) => value === method).length;
+    if (methodCalls === 1) return { ok: false, status: 500, text: async () => "temporary" };
+    return { ok: true, status: 200, text: async () => "{}" };
+  });
+  await client.patch("/appScreenshotSets/set/relationships/appScreenshots", { data: [] });
+  await client.delete("/appScreenshots/image");
+  assert.deepEqual(calls, ["PATCH", "PATCH", "DELETE", "DELETE"]);
+});
+
+test("ASC treats a repeated idempotent DELETE returning 404 as success", async () => {
+  const privateKeyPath = await keyPath(); let calls = 0;
+  const client = new AppStoreConnectClient({ issuerId: "issuer", keyId: "kid", privateKeyPath }, async () => {
+    calls++;
+    return calls === 1
+      ? { ok: false, status: 500, text: async () => "temporary" }
+      : { ok: false, status: 404, text: async () => "already deleted" };
+  });
+  await client.delete("/appScreenshots/image");
+  assert.equal(calls, 2);
+});
+
 test("ASC validates complete upload byte ranges before contacting the unsigned asset host", async () => {
   const privateKeyPath = await keyPath(); let calls = 0;
   const client = new AppStoreConnectClient({ issuerId: "issuer", keyId: "kid", privateKeyPath }, async () => { calls++; return { ok: true, status: 200, text: async () => "" }; });
