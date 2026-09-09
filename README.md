@@ -1,8 +1,8 @@
 # ShipLayer
 
-**From repo to review.** ShipLayer is a local-first, safety-first release-preparation CLI and agent skill for native Swift/SwiftUI iPhone and iPad apps.
+**From repo to review.** ShipLayer is a local-first, safety-first release CLI for App Store Connect and Google Play.
 
-It scans a repository, captures evidence rather than guesses, and generates the assets and checklists between a build and an App Store submission. It supports free apps, paid apps, non-consumable lifetime unlocks, and auto-renewable subscriptions.
+For Apple releases it scans a native Swift/SwiftUI repository, captures evidence rather than guesses, and generates the assets and checklists between a build and App Review. Its Google Play adapter synchronizes already-reviewed supply-style listing metadata, ordered screenshots, Android App Bundles, and guarded draft releases through the official Android Publisher API.
 
 ## Quick start
 
@@ -48,7 +48,9 @@ The two skill directories exist because different agent tools each read their ow
 | `check <repo> [--json]` | Preflight. Returns exit status 2 when blockers remain. |
 | `plan <repo> [--remote]` | Offline plan, or an authenticated, read-only App Store Connect diff. |
 | `capture <repo>` | Reports the detected/missing screenshot UI-test harness and hand-off steps. `--from DIR --family iphone\|ipad --locale LOCALE` ingests and validates already-exported PNGs. v0.1 never fabricates navigation or runs a generic simulator/build command. |
-| `apply <repo>` | Authenticated remote preview by default. Writes only with a blocker-free preflight, manifest `sync.mode: apply`, and `--apply --yes-i-understand`. |
+| `apply <repo>` | Authenticated App Store remote preview by default. Writes only with a blocker-free preflight, manifest `sync.mode: apply`, and `--apply --yes-i-understand`. |
+| `play-plan <repo> --scope listings\|release\|all` | Compare Google Play listing text, ordered screenshots, AAB, and release through an ephemeral uncommitted edit. |
+| `play-apply <repo> --scope listings\|release\|all` | Preview by default. Writes only with confirmed Play declarations, `sync.mode: apply`, and `--apply --yes-i-understand`. |
 | `submit <repo>` | Separate final gate. `--submit --yes-submit` reports the manual handoff and exits 3 because v0.1 deliberately does not submit. |
 
 ShipLayer itself never creates, installs, commits, or dispatches a GitHub Action, and it never triggers cloud CI. `prepare` can *emit* a `workflow_dispatch`-only screenshot capture workflow as a file inside the generated `shiplayer-release/` package (see "Screenshots" below) — that file is not wired into anything until a human manually copies it into the target app repository's own `.github/workflows/` and presses "Run workflow" themselves.
@@ -103,6 +105,72 @@ shiplayer apply /path/to/MySwiftApp --apply --yes-i-understand
 This synchronizes the supported fields and screenshots but does **not** submit for review. If the user does not explicitly authorize the apply step, leave `sync.mode: dry-run` and stop after the preview.
 
 For repositories whose App Store Connect credentials live in a protected GitHub environment, ShipLayer also exposes a composite action. Reference a pinned ShipLayer commit, map the three documented credential environment variables, and pass `command: plan` for the default GET-only preview. Set `render-screenshots: "true"` only in an explicitly configured workflow when the repository contains every declared raw screenshot input; the action then prepares and renders missing localized decks with the runner's installed Chrome before planning or applying, while preserving any already-complete reviewed final deck byte-for-byte. Use `command: apply` only from a manually dispatched, protected workflow after reviewing that preview; the manifest `sync.mode: apply` and ShipLayer's normal preflight gates still apply.
+
+## Google Play delivery
+
+Google Play delivery uses `shiplayer-play.yml`, separate from the Apple-focused
+`shiplayer.yml`. Credentials stay in `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` (or the
+uppercase environment variable named by `serviceAccountJsonEnv`) and must contain
+the complete service-account JSON object.
+
+```yaml
+schemaVersion: 1
+packageName: com.example.app
+metadata:
+  directory: build/play-metadata
+  confirmation: confirmed
+release:
+  versionCode: 6
+  versionName: "1.3"
+  bundle: app/build/outputs/bundle/release/app-release.aab
+  track: production
+  status: draft
+  confirmation: confirmed
+sync:
+  mode: dry-run
+  serviceAccountJsonEnv: GOOGLE_PLAY_SERVICE_ACCOUNT_JSON
+```
+
+The metadata directory follows the standard supply layout:
+
+```text
+build/play-metadata/
+  en-US/
+    title.txt
+    short_description.txt
+    full_description.txt
+    changelogs/6.txt
+    images/
+      phoneScreenshots/01-reader.png
+      sevenInchScreenshots/01-reader.png
+      tenInchScreenshots/01-reader.png
+```
+
+ShipLayer validates required files, text limits, locale names, screenshot count,
+contained paths, and symlinks before authentication. It changes only configured
+locales and screenshot types; it never deletes an unconfigured localization.
+
+```bash
+# Creates and then deletes the temporary edit required by Google's read API.
+# No edit is validated or committed.
+shiplayer play-plan /path/to/AndroidApp --scope all
+
+# After reviewing the plan and setting sync.mode: apply:
+shiplayer play-apply /path/to/AndroidApp --scope all --apply --yes-i-understand
+```
+
+An apply re-runs the remote comparison and stops if it differs from the reviewed
+preview. Listing text and screenshots are synchronized inside one edit. Release
+scope uploads the configured AAB only when its version code is absent, preserves
+other releases on the track, attaches localized release notes, validates the edit,
+and commits it once. A production release must have `status: draft`; ShipLayer
+rejects any configuration that could start a production rollout. Testing tracks
+may use `draft` or `completed`.
+
+The composite action accepts `command: play-plan` or `command: play-apply` and a
+`scope` input (`listings`, `release`, or `all`). Keep apply in a protected,
+manually dispatched environment and map the service-account JSON as an environment
+secret.
 
 ## Manifest
 
