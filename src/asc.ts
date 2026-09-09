@@ -43,7 +43,7 @@ export class AppStoreConnectClient {
     }
   }
   private async request(method: "GET" | "POST" | "PATCH" | "DELETE", pathOrUrl: string, body: unknown, retryReads: boolean): Promise<Record<string, unknown>> {
-    const url = safeAscUrl(pathOrUrl); const attempts = retryReads ? 3 : 1; let lastError = "";
+    const url = safeAscUrl(pathOrUrl); const retrySafe = retryReads || method === "PATCH" || method === "DELETE"; const attempts = retrySafe ? 3 : 1; let lastError = "";
     for (let attempt = 0; attempt < attempts; attempt++) {
       const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), this.timeoutMs);
       try {
@@ -53,15 +53,18 @@ export class AppStoreConnectClient {
         const response = await this.fetcher(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: controller.signal });
         const responseBody = await response.text();
         if (!response.ok) {
+          // DELETE is idempotent. A timed-out successful deletion can therefore
+          // surface as 404 when the bounded retry reaches Apple.
+          if (method === "DELETE" && response.status === 404) return {};
           lastError = `App Store Connect ${method === "GET" ? "read" : "mutation"} failed (${response.status}): ${redact(responseBody)}`;
-          if (!retryReads || (response.status !== 429 && response.status < 500)) throw new Error(`${lastError}${method === "GET" ? "" : " Partial remote changes may have occurred."}`);
+          if (!retrySafe || (response.status !== 429 && response.status < 500)) throw new Error(`${lastError}${method === "GET" ? "" : " Partial remote changes may have occurred."}`);
           const retryAfter = Number(response.headers?.get("retry-after") || ""); await delay(Number.isFinite(retryAfter) ? Math.min(retryAfter * 1000, 2_000) : 100 * (attempt + 1)); continue;
         }
         try { return responseBody ? JSON.parse(responseBody) as Record<string, unknown> : {}; }
         catch { throw new Error(`App Store Connect returned invalid JSON.${method === "GET" ? " No changes were made." : " Partial remote changes may have occurred."}`); }
       } catch (error) {
         if (error instanceof Error && error.name === "AbortError") lastError = `App Store Connect request timed out; ${method === "GET" ? "no changes were made" : "partial remote changes may have occurred"}.`;
-        else if (error instanceof Error) { lastError = redact(error.message); if (!retryReads || !/\(429\)|\(5\d\d\)/.test(lastError)) throw new Error(lastError); }
+        else if (error instanceof Error) { lastError = redact(error.message); if (!retrySafe || !/\(429\)|\(5\d\d\)/.test(lastError)) throw new Error(lastError); }
         if (attempt < attempts - 1) await delay(100 * (attempt + 1));
       } finally { clearTimeout(timer); }
     }
