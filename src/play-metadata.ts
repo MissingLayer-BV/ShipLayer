@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import path from "node:path";
 import { lstat, readdir, readFile } from "node:fs/promises";
 import { resolveContained } from "./fs.js";
@@ -7,7 +8,7 @@ import type { PlayManifest, PlayScope } from "./play-types.js";
 export const PLAY_IMAGE_TYPES = ["phoneScreenshots", "sevenInchScreenshots", "tenInchScreenshots"] as const;
 export type PlayImageType = typeof PLAY_IMAGE_TYPES[number];
 export interface PlayListing { language: string; title: string; shortDescription: string; fullDescription: string; releaseNote?: string; images: Partial<Record<PlayImageType, PlayImage[]>> }
-export interface PlayImage { filename: string; path: string; bytes: Buffer; sha256: string; contentType: "image/png" | "image/jpeg" }
+export interface PlayImage { filename: string; path: string; size: number; sha256: string; contentType: "image/png" | "image/jpeg" }
 
 export async function readPlayMetadata(repository: string, manifest: PlayManifest, scope: PlayScope = "listings"): Promise<Map<string, PlayListing>> {
   const root = await resolveContained(repository, manifest.metadata.directory, "Google Play metadata directory");
@@ -63,12 +64,18 @@ async function imageFiles(root: string, locale: string, imageType: PlayImageType
   if (entries.length > 8) throw new Error(`${locale}/${imageType} contains ${entries.length} screenshots; Google Play permits at most 8.`);
   const images: PlayImage[] = [];
   for (const entry of entries) {
-    const file = path.join(root, entry.name); const bytes = await regularFile(file, `${locale}/${imageType}/${entry.name}`);
-    if (!bytes.length) throw new Error(`Screenshot is empty: ${locale}/${imageType}/${entry.name}`);
+    const file = path.join(root, entry.name); const details = await lstat(file);
+    if (!details.isFile() || details.isSymbolicLink()) throw new Error(`Screenshot must be a regular file: ${locale}/${imageType}/${entry.name}`);
+    if (!details.size) throw new Error(`Screenshot is empty: ${locale}/${imageType}/${entry.name}`);
     const contentType = /\.png$/i.test(entry.name) ? "image/png" as const : "image/jpeg" as const;
-    images.push({ filename: entry.name, path: file, bytes, sha256: createHash("sha256").update(bytes).digest("hex"), contentType });
+    images.push({ filename: entry.name, path: file, size: details.size, sha256: await sha256File(file), contentType });
   }
   return images;
+}
+async function sha256File(file: string): Promise<string> {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(file)) hash.update(chunk as Buffer);
+  return hash.digest("hex");
 }
 async function regularFile(file: string, label: string): Promise<Buffer> {
   const details = await lstat(file).catch(() => undefined);

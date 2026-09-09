@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolveContained } from "./fs.js";
 import { GooglePlayClient, playCredentialsFromEnvironment, type PlayFetchLike } from "./play-client.js";
@@ -79,8 +80,7 @@ async function listingPlan(client: GooglePlayClient, packageName: string, editId
 async function releasePlan(repository: string, client: GooglePlayClient, manifest: PlayManifest, editId: string, metadata: Map<string, PlayListing>): Promise<PlayOperation[]> {
   const release = manifest.release!;
   const bundlePath = await resolveContained(repository, release.bundle, "Android App Bundle");
-  const bundleBytes = await readFile(bundlePath);
-  const bundleHash = createHash("sha256").update(bundleBytes).digest("hex");
+  const bundleHash = await sha256File(bundlePath);
   const bundles = await client.bundles(manifest.packageName, editId);
   const sameCode = bundles.find((bundle) => Number(bundle.versionCode) === release.versionCode);
   if (sameCode && String(sameCode.sha256 || "").toLowerCase() !== bundleHash) throw new Error(`Google Play already has version code ${release.versionCode} with a different bundle hash. Increment versionCode before upload.`);
@@ -106,7 +106,7 @@ async function applyListings(client: GooglePlayClient, packageName: string, edit
       const imageOperation = find(operations, `screenshots.${language}.${imageType}`);
       if (imageOperation.status === "planned") {
         await client.deleteImages(packageName, editId, language, imageType);
-        for (const image of local) await client.uploadImage(packageName, editId, language, imageType, image.bytes, image.contentType);
+        for (const image of local) await client.uploadImage(packageName, editId, language, imageType, await readFile(image.path), image.contentType);
         imageOperation.status = "applied";
       }
     }
@@ -150,3 +150,4 @@ function applyWarning(manifest: PlayManifest, scope: PlayScope): string {
 }
 function records(value: unknown): Record<string, unknown>[] { return Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item)) : []; }
 function strings(value: unknown): string[] { return Array.isArray(value) ? value.map(String) : []; }
+async function sha256File(file: string): Promise<string> { const hash = createHash("sha256"); for await (const chunk of createReadStream(file)) hash.update(chunk as Buffer); return hash.digest("hex"); }
