@@ -3,7 +3,7 @@ import { createReadStream } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolveContained } from "./fs.js";
 import { GooglePlayClient, playCredentialsFromEnvironment, type PlayFetchLike } from "./play-client.js";
-import { PLAY_IMAGE_TYPES, readPlayMetadata, type PlayListing } from "./play-metadata.js";
+import { PLAY_IMAGE_TYPES, readPlayMetadata, type PlayImage, type PlayImageType, type PlayListing } from "./play-metadata.js";
 import { assertPlayApplyReady } from "./play-manifest.js";
 import type { PlayApplyResult, PlayManifest, PlayOperation, PlayPlan, PlayScope } from "./play-types.js";
 
@@ -106,12 +106,34 @@ async function applyListings(client: GooglePlayClient, packageName: string, edit
       const imageOperation = find(operations, `screenshots.${language}.${imageType}`);
       if (imageOperation.status === "planned") {
         await client.deleteImages(packageName, editId, language, imageType);
-        for (const image of local) await client.uploadImage(packageName, editId, language, imageType, await readFile(image.path), image.contentType);
+        for (let index = 0; index < local.length; index++) await uploadReviewedImage(client, packageName, editId, language, imageType, local, index);
         imageOperation.status = "applied";
       }
     }
   }
 }
+
+async function uploadReviewedImage(client: GooglePlayClient, packageName: string, editId: string, language: string, imageType: PlayImageType, desired: PlayImage[], index: number): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const image = desired[index];
+      await client.uploadImage(packageName, editId, language, imageType, await readFile(image.path), image.contentType);
+      return;
+    } catch (error) {
+      lastError = error;
+      const remoteHashes = (await client.images(packageName, editId, language, imageType)).map((image) => String(image.sha256 || "").toLowerCase());
+      const before = desired.slice(0, index).map((image) => image.sha256);
+      const including = desired.slice(0, index + 1).map((image) => image.sha256);
+      if (sameSequence(remoteHashes, including)) return;
+      if (!sameSequence(remoteHashes, before)) throw new Error(`Google Play returned an ambiguous screenshot state after an upload failure for ${language}/${imageType}; the edit was not committed.`);
+      if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 250 * (2 ** (attempt - 1))));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(`Google Play screenshot upload failed for ${language}/${imageType}.`);
+}
+
+function sameSequence(left: string[], right: string[]): boolean { return left.length === right.length && left.every((value, index) => value === right[index]); }
 
 async function applyRelease(repository: string, client: GooglePlayClient, manifest: PlayManifest, editId: string, metadata: Map<string, PlayListing>, operations: PlayOperation[]): Promise<void> {
   const release = manifest.release!;

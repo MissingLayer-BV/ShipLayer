@@ -128,6 +128,26 @@ test("Google Play retries transient failures only for idempotent requests", asyn
   assert.equal(calls, 1);
 });
 
+test("Google Play reconciles an ambiguous screenshot transport failure before retrying upload", async () => {
+  const { root, environment, manifest } = await fixture("apply");
+  const api = playApi();
+  const reviewedPlan = await planGooglePlayChanges(root, manifest, "listings", { environment, fetcher: api.fetcher });
+  let screenshotsDeleted = false; let failedUpload = false; let uploadAttempts = 0;
+  const fetcher: PlayFetchLike = async (url, init) => {
+    const method = init?.method || "GET";
+    if (method === "DELETE" && /\/listings\/en-US\/phoneScreenshots$/.test(url)) screenshotsDeleted = true;
+    if (screenshotsDeleted && method === "GET" && /\/listings\/en-US\/phoneScreenshots$/.test(url)) return response({ images: [] });
+    if (screenshotsDeleted && method === "POST" && url.includes("/phoneScreenshots")) {
+      uploadAttempts++;
+      if (!failedUpload) { failedUpload = true; throw new TypeError("fetch failed"); }
+    }
+    return api.fetcher(url, init);
+  };
+  const result = await applyGooglePlayChanges(root, manifest, "listings", { environment, fetcher, userConfirmed: true, reviewedPlan });
+  assert.equal(result.committed, true);
+  assert.equal(uploadAttempts, 2);
+});
+
 test("Google Play apply requires both manifest and CLI gates before network access", async () => {
   const { root, environment, manifest } = await fixture("dry-run"); let calls = 0;
   const fetcher: PlayFetchLike = async () => { calls++; return response({}); };
