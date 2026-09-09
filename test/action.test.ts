@@ -10,3 +10,10 @@ test("composite action renders screenshots only behind an explicit input", async
   assert.match(action, /SHIPLAYER_PRESERVE_COMPLETE_DECKS=true SHIPLAYER_PW_CHANNEL=chrome npm run export/);
   assert.match(action, /SHIPLAYER_PW_CHANNEL=chrome npm run export --prefix "\$\{marketing_path\}"/);
 });
+
+test("composite action exposes guarded Google Play preview and apply commands", async () => {
+  const action = await readFile(new URL("../action.yml", import.meta.url), "utf8");
+  assert.match(action, /scope:\n[\s\S]*?default: listings/);
+  assert.match(action, /play-plan\)[\s\S]*?play-plan "\$\{repository_path\}" --scope "\$\{SHIPLAYER_ACTION_SCOPE\}" --json/);
+  assert.match(action, /play-apply\)[\s\S]*?play-apply "\$\{repository_path\}" --scope "\$\{SHIPLAYER_ACTION_SCOPE\}" --apply --yes-i-understand --json/);
+});

@@ -10,7 +10,7 @@
     "skills",
     ".env.example"
   ],
-  "description": "A safe, local-first App Store release preparation CLI for native Swift apps.",
+  "description": "A safe, local-first App Store Connect and Google Play release CLI.",
   "type": "module",
   "bin": {
     "shiplayer": "./dist/index.js"
