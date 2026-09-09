@@ -147,7 +147,10 @@ async function applyRelease(repository: string, client: GooglePlayClient, manife
   const trackOperation = find(operations, `track.${release.track}.${release.versionCode}`);
   if (trackOperation.status === "planned") {
     const current = await client.track(manifest.packageName, editId, release.track);
-    const others = records(current.releases).filter((candidate) => !strings(candidate.versionCodes).includes(String(release.versionCode)));
+    const others = records(current.releases).filter((candidate) =>
+      !strings(candidate.versionCodes).includes(String(release.versionCode)) &&
+      !(release.status === "completed" && String(candidate.status) === "completed")
+    );
     await client.updateTrack(manifest.packageName, editId, release.track, { track: release.track, releases: [...others, desiredRelease(manifest, metadata)] });
     trackOperation.status = "applied";
   }
