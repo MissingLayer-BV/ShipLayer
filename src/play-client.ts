@@ -82,7 +82,15 @@ export class GooglePlayClient {
       try {
         const headers: Record<string, string> = { Authorization: `Bearer ${this.accessToken}`, Accept: "application/json" };
         if (contentType) headers["Content-Type"] = contentType;
-        const response = await this.fetcher(url, { method, headers, body: body as unknown as BodyInit, signal: controller.signal });
+        let response: PlayFetchResponse;
+        try { response = await this.fetcher(url, { method, headers, body: body as unknown as BodyInit, signal: controller.signal }); }
+        catch (error) {
+          if (attempt < attempts) {
+            await pause(250 * (2 ** (attempt - 1)));
+            continue;
+          }
+          throw new Error(`Google Play ${method} request failed before a response: ${error instanceof Error ? error.message : "unknown transport error"}`);
+        }
         const responseBody = await response.text();
         if (!response.ok) {
           if (method === "DELETE" && response.status === 404) return {};
