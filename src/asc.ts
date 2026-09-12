@@ -122,6 +122,9 @@ export function relationshipId(value: unknown, key: string): string | undefined 
 function emptyDiscovery(): RemoteDiscovery { return { appInfos: [], appInfoLocalizations: [], allIosVersions: [], versions: [], versionLocalizations: [], builds: [], selectedBuilds: [], reviewDetails: [], screenshotSets: [], screenshots: [], screenshotGroups: [], categories: [], primaryCategories: [], secondaryCategories: [], inAppPurchases: [], subscriptionGroups: [], subscriptions: [] }; }
 function targetAppInfos(appInfos: AscResource[], versions: AscResource[]): AscResource[] { if (!versions.length) return []; const state = versionState(versions[0]); const exact = state ? appInfos.filter((resource) => appInfoState(resource) === state) : []; if (exact.length === 1) return exact; const editable = appInfos.filter((resource) => EDITABLE_APP_STATES.has(appInfoState(resource) || "")); return editable.length === 1 ? editable : []; }
 const EDITABLE_APP_STATES = new Set(["PREPARE_FOR_SUBMISSION", "INVALID_BINARY", "DEVELOPER_REJECTED", "METADATA_REJECTED", "REJECTED"]);
+export function isEditableAppVersionState(value: unknown): boolean {
+  return EDITABLE_APP_STATES.has(String(value ?? ""));
+}
 function versionState(resource: AscResource | undefined): string | undefined { const value = attribute(resource, "appVersionState") ?? attribute(resource, "appStoreState"); return typeof value === "string" ? value : undefined; }
 function appInfoState(resource: AscResource): string | undefined { const value = attribute(resource, "appStoreState") ?? attribute(resource, "state"); return typeof value === "string" ? value : undefined; }
 function base64url(value: object): string { return Buffer.from(JSON.stringify(value)).toString("base64url"); }

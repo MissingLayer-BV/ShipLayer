@@ -72,6 +72,14 @@ test('creates only a draft and descriptions, reads back every locale, and is ide
   assert.ok(second.operations.every(o => o.status === 'already-matches'));
 });
 
+test('updates descriptions after the developer cancels an App Review submission', async () => {
+  const f = fixture();
+  f.setState('DEVELOPER_REJECTED');
+  const result = await draftDescriptions(f.manifest, true, true, f.client);
+  assert.equal(result.verifiedLocales, 2);
+  assert.equal(result.submitted, false);
+});
+
 test('rejects live versions, wrong identity, unapproved copy, and absent mutation gates', async () => {
   for (const state of ['READY_FOR_DISTRIBUTION', 'WAITING_FOR_REVIEW', 'IN_REVIEW']) {
     const f = fixture(); f.setState(state);

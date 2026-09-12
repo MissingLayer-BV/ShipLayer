@@ -55,6 +55,14 @@ test('draft screenshot preview is read-only; apply uploads only screenshots and 
  } finally {await rm(f.root,{recursive:true,force:true});}
 });
 
+test('updates screenshots after the developer cancels an App Review submission',async()=>{
+ const f=await fixture();try {
+  f.setState('DEVELOPER_REJECTED');
+  const result=await draftScreenshots(f.root,f.manifest,true,true,f.client);
+  assert.equal(result.verifiedScreenshots,1);
+ } finally {await rm(f.root,{recursive:true,force:true});}
+});
+
 test('incomplete screenshot recovery requires an explicit flag and deletes only incomplete reservations',async()=>{
  const f=await fixture();try {
   f.setRemotePictures([{id:'stuck',attributes:{fileName:'home.png',assetDeliveryState:{state:'UPLOAD_COMPLETE'}}}]);
