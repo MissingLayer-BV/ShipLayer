@@ -22,13 +22,14 @@ function fixture() {
     },
   };
   let remote = [{ id: 'english', attributes: { locale: 'en-US', description: 'Old', promotionalText: 'Old', whatsNew: 'Old' } }];
+  let state = 'PREPARE_FOR_SUBMISSION';
   const writes: Array<{ path: string; body: any }> = [];
   const client = {
     async get(path: string) {
       if (path.startsWith('/apps?')) return { data: [{ id: 'app' }] };
-      if (path === '/apps/app/appStoreVersions?limit=200') return { data: [{ id: 'draft', attributes: { platform: 'IOS', versionString: '1.3', appVersionState: 'PREPARE_FOR_SUBMISSION' } }] };
+      if (path === '/apps/app/appStoreVersions?limit=200') return { data: [{ id: 'draft', attributes: { platform: 'IOS', versionString: '1.3', appVersionState: state } }] };
       if (path === '/appStoreVersions/draft/appStoreVersionLocalizations?limit=200') return { data: remote };
-      if (path === '/appStoreVersions/draft') return { data: [{ id: 'draft', attributes: { appVersionState: 'PREPARE_FOR_SUBMISSION' } }] };
+      if (path === '/appStoreVersions/draft') return { data: [{ id: 'draft', attributes: { appVersionState: state } }] };
       throw new Error(`Unexpected GET ${path}`);
     },
     async patch(path: string, body: any) {
@@ -37,7 +38,7 @@ function fixture() {
       return { data: remote[0] };
     },
   };
-  return { manifest, client, writes };
+  return { manifest, client, writes, setState(value: string) { state = value; } };
 }
 
 test('previews and applies only selected draft listing locales', async () => {
@@ -49,6 +50,13 @@ test('previews and applies only selected draft listing locales', async () => {
   assert.equal(applied.verifiedLocales, 1);
   assert.equal(f.writes.length, 1);
   assert.deepEqual(Object.keys(f.writes[0].body.data.attributes).sort(), ['description', 'keywords', 'marketingUrl', 'promotionalText', 'supportUrl', 'whatsNew']);
+});
+
+test('updates listing fields after the developer cancels an App Review submission', async () => {
+  const f = fixture();
+  f.setState('DEVELOPER_REJECTED');
+  const result = await draftListing(f.manifest, ['en-US'], true, true, f.client);
+  assert.equal(result.verifiedLocales, 1);
 });
 
 test('rejects unconfigured locales and missing mutation gates', async () => {

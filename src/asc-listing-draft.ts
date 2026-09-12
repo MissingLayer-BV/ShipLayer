@@ -1,4 +1,4 @@
-import { AppStoreConnectClient, credentialsFromEnvironment, dataOf, type AscResource } from './asc.js';
+import { AppStoreConnectClient, credentialsFromEnvironment, dataOf, isEditableAppVersionState, type AscResource } from './asc.js';
 import type { ShipLayerManifest } from './types.js';
 
 type Client = Pick<AppStoreConnectClient, 'get' | 'patch'>;
@@ -51,7 +51,7 @@ export async function draftListing(
   const version = versions[0];
   const assertDraft = (resource: AscResource) => {
     const state = resource.attributes?.appVersionState ?? resource.attributes?.appStoreState;
-    if (state !== 'PREPARE_FOR_SUBMISSION') throw new Error(`Version ${manifest.app.version} is not an editable draft (${state}).`);
+    if (!isEditableAppVersionState(state)) throw new Error(`Version ${manifest.app.version} is not an editable draft (${state}).`);
   };
   assertDraft(version);
 

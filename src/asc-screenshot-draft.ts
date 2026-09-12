@@ -1,4 +1,4 @@
-import { AppStoreConnectClient, credentialsFromEnvironment, dataOf, type AscResource, type RemoteScreenshotGroup } from './asc.js';
+import { AppStoreConnectClient, credentialsFromEnvironment, dataOf, isEditableAppVersionState, type AscResource, type RemoteScreenshotGroup } from './asc.js';
 import { localScreenshotSets, syncScreenshots, type LocalScreenshotSet } from './asc-apply.js';
 import { inspectImage } from './image.js';
 import type { AscOperation, ShipLayerManifest } from './types.js';
@@ -49,7 +49,7 @@ export async function draftScreenshots(repository: string, manifest: ShipLayerMa
   if (versions.length !== 1) throw new Error('Exactly one existing target iOS draft is required.');
   const version = versions[0];
   const assertDraft = (v: AscResource) => {
-    if ((v.attributes?.appVersionState ?? v.attributes?.appStoreState) !== 'PREPARE_FOR_SUBMISSION') throw new Error('Target version is not an unsubmitted editable draft.');
+    if (!isEditableAppVersionState(v.attributes?.appVersionState ?? v.attributes?.appStoreState)) throw new Error('Target version is not an editable draft.');
   };
   assertDraft(version);
   const locales = resources(await client.get(`/appStoreVersions/${id(version)}/appStoreVersionLocalizations?limit=200`));
