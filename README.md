@@ -1,246 +1,75 @@
 # ShipLayer
 
-**From repo to review.** ShipLayer is a local-first, safety-first release CLI for App Store Connect and Google Play.
+**From repo to review.** ShipLayer is a local-first, safety-first release CLI for App Store Connect and Google Play. It scans your native app repository, captures evidence instead of guessing, and generates the assets and checklists between a build and App Review.
 
-For Apple releases it scans a native Swift/SwiftUI repository, captures evidence rather than guesses, and generates the assets and checklists between a build and App Review. Its Google Play adapter synchronizes already-reviewed supply-style listing metadata, ordered screenshots, Android App Bundles, and guarded draft releases through the official Android Publisher API.
+> Status: v0.1 beta. The happy path works end to end, but final App Review submission stays human-controlled by design, and several declarations still need your explicit confirmation. See [docs/automation-boundaries.md](docs/automation-boundaries.md) for what ShipLayer will and won't do.
 
-## Quick start
+## Why
 
-```bash
-npm ci
-npm run build
-./dist/index.js analyze /path/to/MySwiftApp
-# If no manifest exists, create a deliberately incomplete editable draft.
-./dist/index.js init /path/to/MySwiftApp
-# Confirm privacy/legal and other unresolved facts yourself.
-./dist/index.js prepare /path/to/MySwiftApp
-./dist/index.js check /path/to/MySwiftApp
-./dist/index.js plan /path/to/MySwiftApp
-# With credentials configured, inspect the exact production change set (GET only).
-./dist/index.js plan /path/to/MySwiftApp --remote
-```
+Shipping a mobile release means dozens of small, high-stakes facts spread across Xcode project files, Swift sources, store listings, privacy answers, screenshots, and review notes. ShipLayer collects the machine-checkable parts into one deterministic flow, blocks on anything it cannot prove, and hands the rest to you as explicit questions — so nothing reaches the store by accident.
 
-This package is intentionally private in v0.1; it is not published to npm. Run `./dist/index.js`, use `npm link` from this checkout, or install from a reviewed local/Git checkout before using `shiplayer` in another repository. ShipLayer targets Node 22+.
+- **Evidence, not guesses.** Every finding cites its source file. Heuristics are proposals; privacy, legal, pricing, and review facts require your confirmation.
+- **Safe by default.** Planning is read-only. Writes need three independent gates (clean preflight, `sync.mode: apply`, explicit flags) and submission never happens from the CLI.
+- **Agent-friendly.** Ships a `ship-app-store` skill so a coding agent can run the whole flow without improvising release logic.
 
-## Installation
-
-`scripts/install.sh` (wrapped by `npm run install-skill` / `make install-skill`) builds the CLI, links it onto PATH with `npm link`, and symlinks (never copies) `skills/ship-app-store` into the two directories agent tools read skills from: `~/.claude/skills/ship-app-store` and `~/.codex/skills/ship-app-store`. It is idempotent, refuses to overwrite anything at either path that isn't its own symlink back to this checkout, and prints every path it touched.
+## How it works
 
 ```bash
-npm run install-skill      # build + npm link + symlink both skill directories
-command -v shiplayer       # verify: should print the linked path
-shiplayer --version
-ls -la ~/.claude/skills/ship-app-store ~/.codex/skills/ship-app-store   # both -> this checkout's skills/ship-app-store
-npm run install-skill      # safe to re-run; a second run is a no-op
+npm ci && npm run build
+./dist/index.js analyze /path/to/MySwiftApp  # read-only scan
+./dist/index.js init /path/to/MySwiftApp     # draft shiplayer.yml (incomplete on purpose)
+# answer the questions it asks you, then:
+./dist/index.js prepare /path/to/MySwiftApp  # generate shiplayer-release/
+./dist/index.js check /path/to/MySwiftApp    # preflight; exit 2 while blockers remain
+./dist/index.js plan /path/to/MySwiftApp --remote  # read-only App Store diff
 ```
 
-Because both paths are symlinks to this checkout, an edit to `skills/ship-app-store/` is visible through them immediately — no re-run needed and no risk of a stale copy. `npm run install-status` reports current link state without changing anything; `npm run uninstall-skill` removes only the symlinks/link this script created (it never touches a directory it didn't create, and leaves anything unrelated at those paths alone).
+`prepare` writes a managed `shiplayer-release/` package: normalized manifest, reports, per-locale metadata drafts, privacy/support/legal drafts, review notes, screenshot harness template and capture workflow, marketing screenshot project, StoreKit checklist, and remaining human actions. Review it, then — only on your explicit go-ahead — `apply` writes the reviewed change set to the store. `submit` stays a manual handoff.
 
-The two skill directories exist because different agent tools each read their own skills path from `$HOME`: `~/.claude/skills/` for Claude Code, `~/.codex/skills/` for Codex. `skills/ship-app-store/agents/openai.yaml` is Codex-specific agent-launcher metadata; it ships in the shared directory (and so appears in both installs) because the install deliberately symlinks one source of truth rather than maintaining two diverging copies — it is inert for Claude Code, which only reads `SKILL.md` and what it links to.
+| Step | Command | Effect |
+|---|---|---|
+| Discover | `analyze <repo>` | Read-only scan with evidence and open questions |
+| Declare | `init <repo>` | Draft `shiplayer.yml`; never overwrites without `--force` |
+| Generate | `prepare <repo>` | Local release package only; no uploads |
+| Gate | `check <repo>` | Preflight; exit 2 while blockers remain |
+| Preview | `plan <repo> [--remote]` | Offline plan, or read-only store diff |
+| Capture | `capture <repo>` | Screenshot harness hand-off and PNG ingestion |
+| Write | `apply <repo>` | Preview by default; writes only fully gated |
+| Finish | `submit <repo>` | Manual handoff; v0.1 never submits |
 
-## Commands
+Google Play uses a separate `shiplayer-play.yml` with `play-plan` / `play-apply` (`--scope listings|release|all`); production releases are draft-only.
 
-| Command | Effect |
-|---|---|
-| `init <repo>` | Creates `shiplayer.yml` from detected facts. Refuses to overwrite without `--force`. |
-| `analyze <repo> [--json]` | Read-only Swift/Xcode scan with evidence, confidence, contradictions, and questions. |
-| `prepare <repo> [--out DIR]` | Generates a deterministic release package. Does not upload or submit. |
-| `check <repo> [--json]` | Preflight. Returns exit status 2 when blockers remain. |
-| `plan <repo> [--remote]` | Offline plan, or an authenticated, read-only App Store Connect diff. |
-| `capture <repo>` | Reports the detected/missing screenshot UI-test harness and hand-off steps. `--from DIR --family iphone\|ipad --locale LOCALE` ingests and validates already-exported PNGs. v0.1 never fabricates navigation or runs a generic simulator/build command. |
-| `apply <repo>` | Authenticated App Store remote preview by default. Writes only with a blocker-free preflight, manifest `sync.mode: apply`, and `--apply --yes-i-understand`. |
-| `play-plan <repo> --scope listings\|release\|all` | Compare Google Play listing text, ordered screenshots, AAB, and release through an ephemeral uncommitted edit. |
-| `play-apply <repo> --scope listings\|release\|all` | Preview by default. Writes only with confirmed Play declarations, `sync.mode: apply`, and `--apply --yes-i-understand`. |
-| `submit <repo>` | Separate final gate. `--submit --yes-submit` reports the manual handoff and exits 3 because v0.1 deliberately does not submit. |
-
-ShipLayer itself never creates, installs, commits, or dispatches a GitHub Action, and it never triggers cloud CI. `prepare` can *emit* a `workflow_dispatch`-only screenshot capture workflow as a file inside the generated `shiplayer-release/` package (see "Screenshots" below) — that file is not wired into anything until a human manually copies it into the target app repository's own `.github/workflows/` and presses "Run workflow" themselves.
-
-## Release package
-
-`prepare` writes a managed `shiplayer-release/` package (or a safe relative `--out`) containing a normalized manifest, analysis/preflight reports, per-locale metadata drafts, App Privacy draft and evidence matrix, privacy/support/Terms-of-Use drafts, App Review notes, physical-device recording script, a screenshot capture plan, a screenshot UI-test harness template and its contract, a manually-installed capture workflow, a self-contained marketing screenshot composition project, StoreKit checklist, dry-run ASC plan, and remaining human actions. It refuses traversal, symlinks, the repository root, VCS/vendor/build paths, manifest-input collisions, and unmanaged output directories; managed packages regenerate atomically from staging.
-
-## Screenshots
-
-ShipLayer never invents app navigation, but it does real, verifiable work around it:
-
-- `init` scans XCUITest sources (`*UITests` targets) for the `keepScreenshot(named:)` contract — an `XCTAttachment(screenshot: XCUIScreen.main.screenshot())` kept with `.lifetime = .keepAlways` — and proposes each detected call as a `screenshots.scenarios` entry (id, title, launch arguments), always `confirmation: needs-human-confirmation`, never silently confirmed. This is a separate, narrowly-scoped scan (`isXCUITestSourcePath` in `src/evidence.ts`) from the privacy/purchase/AI production-evidence predicates and must never be conflated with them.
-- `prepare` always emits a fillable template (`screenshots/ui-test-harness-template.swift`) and its written contract (`screenshots/ui-test-harness-contract.md`) into the release package, generated from whatever scenarios are currently declared. When a harness already exists, the template's header says so and marks itself reference-only; when none exists, every scenario is a TODO-navigation stub. An agent or human with real knowledge of the app fills in the TODO navigation; ShipLayer only defines and later verifies the contract.
-- `prepare` also emits `screenshots/capture-workflow.yml`: a `workflow_dispatch`-only, single-simulator, concurrency-guarded, timeout-bounded GitHub Actions workflow. Each manual run chooses one declared family/locale configuration, passes that locale's base64-encoded launch arguments to the UI-test harness, and uploads a family/locale-namespaced artifact. There is deliberately no all-locales matrix. It fails loudly (not a silent green run) if extraction finds nothing, and it is never installed or dispatched by ShipLayer.
-- `shiplayer capture <repo> --from <dir> --family iphone|ipad --locale <locale>` recursively ingests the exported PNGs (from that workflow's artifact, or a local export): it validates format, rejects an alpha channel, requires a dimension accepted for the configuration's own required DISPLAY CLASS (not just anywhere in the wider device family — a 6.5-inch iPhone capture must never satisfy a 6.9-inch-configured slot), and requires every image in one family/locale set to be EXACTLY identical (not just same-class) to what has already been ingested, then copies matching files into `screenshots.rawOutputDir/{family}/{locale}/<scenario-id>.png`. This is a genuine local file operation, not a plan; `shiplayer check` remains the authoritative gate.
-- The per-image `check` gate accepts any dimension within the configured display CLASS (e.g. a 6.9" iPhone capture may be 1320×2868, 1290×2796, or 1260×2736 depending on which simulator produced it — but never a 6.5-inch size such as 1242×2688, even though that is a valid App Store dimension for a *different* required slot) rather than only the exact `requiredDimensions` value `init` proposed, while still requiring every image in a given family/locale set to be pixel-identical to the others, because App Store Connect only accepts a single uniform size per screenshot slot and does not treat a portrait/landscape transpose of that size as the same size.
-
-Multilingual capture is opt-in and backward-compatible. Put app-specific language switches in `screenshots.localizations.<locale>.launchArguments`, add a configuration for each family/locale deck, and put translated marketing copy in `screenshots.scenarios[].localizations.<locale>`. Effective launch arguments are the scenario arguments followed by the selected locale arguments. A translated caption has its own `confirmation`; an explicitly localized deck blocks instead of silently falling back to English when a caption is missing or unreviewed. The generated template contains the environment-decoding helper an existing custom harness must adopt. When an app does not have UI pixels for a storefront language, a reviewed configuration may set `sourceLocale` to reuse another locale's raw in-frame capture while still rendering and uploading the target locale's translated marketing headline. ShipLayer reports that distinction as a warning; `sourceLocale` never claims to translate the app UI.
-
-### Marketing screenshot composition
-
-`prepare` also emits a self-contained, headless-renderable project at `screenshots/marketing/` inside the release package: one exact-pixel-sized HTML "advertisement" slide per (device configuration × scenario) — a device frame (`assets/<family>-frame.png`, copied into the project, only for the device families actually configured) holding the raw screenshot, an optional localized caption, on a plain background — plus `package.json` (Playwright is its only dependency; ShipLayer itself never gains one), `export.mjs`, `strip-alpha.mjs`, `slides.json`, and a `README.md` with the two commands to run. HTML receives the exact locale and automatic RTL direction for Arabic, Hebrew, and Urdu. `export.mjs` renders each slide to `screenshots/final/{family}/{locale}/<scenario-id>.png`; `strip-alpha.mjs` unconditionally re-encodes every rendered PNG without an alpha channel before it is written, regardless of what the browser produced, because Apple rejects screenshots with transparency. The CLI never runs `npm install`, downloads a browser, or executes this project itself — a human/agent runs the two documented commands, or an explicitly opted-in composite-action workflow renders with its installed Chrome. A scenario whose `caption` is not yet drafted still renders legibly (the scenario title, visibly styled as a placeholder); a scenario or selected localized caption whose `confirmation` is not `confirmed` always renders a visible "Draft — needs confirmation" badge, so neither state is ever silently presented as finished. `shiplayer check` validates whatever has been rendered to `shiplayer-release/screenshots/final/` the same way it validates raw captures (exact per-display-class dimensions, one uniform size per set, at most 10 per set, no alpha), but stays silent when nothing has been rendered yet. During an explicitly authorized apply, ShipLayer uses a complete rendered deck when present and otherwise uses the validated raw deck.
-
-This is unrelated to `screenshots.marketingProjectPath` (default `design/app-store-screenshots`), which is only a reserved, human-managed location for a *separately* installed/scaffolded `app-store-screenshots` editor; ShipLayer does not install, scaffold, or write into it.
-
-## Safety model
-
-- `shiplayer.yml` contains environment-variable names, never credentials or `.p8` contents. It rejects clear private-key/token/password assignment material in free text as a defense-in-depth guard.
-- Heuristics are proposals. Privacy, legal, tax, agreements, trader status, and regulated-content declarations require human confirmation. Zero Data Retention, no-training, and provider data-collection controls do not mean personal data was not shared with the service that received it.
-- Remote mode uses an App Store Connect ES256 JWT from `APP_STORE_CONNECT_ISSUER_ID`, `APP_STORE_CONNECT_KEY_ID`, and `APP_STORE_CONNECT_PRIVATE_KEY_PATH`. It never logs private key material.
-- Remote planning is strictly GET-only. Authenticated writes are unavailable unless all three independent gates pass: blocker-free preflight, manifest `sync.mode: apply`, and explicit `--apply --yes-i-understand`. The write adapter does not automatically retry mutations, reports possible partial state on failure, and is safe to rerun because it compares current values and screenshot checksums first.
-- An authorized apply can create/update the requested iOS version, App Info and version localizations, Privacy/Support/Marketing URLs, primary and explicitly declared secondary category, release mode, copyright, App Review contact/notes/demo credentials, selected build, and screenshot sets/assets/order. Screenshot upload URLs never receive the App Store Connect JWT.
-- Apple UI/human actions remain required for initial app-record creation, pricing and territory availability, IAP/subscription product configuration, App Privacy answers, age rating, content-rights/legal/trader declarations, agreements, tax/banking, and final App Review submission. Modern Xcode Icon Composer `.icon` files remain a selected asset with an explicit human Xcode/archive verification gate; their private internal format is not parsed.
-
-## App Store Connect apply flow
-
-Generation never opts an app into production writes. After `prepare`, `check`, and visual review, first run the remote plan:
+## Install the agent skill
 
 ```bash
-shiplayer plan /path/to/MySwiftApp --remote
-# or the same preview plus preflight report:
-shiplayer apply /path/to/MySwiftApp
+npm run install-skill      # build + npm link + symlink the skill
+command -v shiplayer       # verify
 ```
 
-If the user explicitly asks ShipLayer to fill App Store Connect, review the listed creates, updates, uploads, and deletions with them. Only then set `sync.mode: apply` and run:
+This links the CLI onto PATH and symlinks `skills/ship-app-store` into the skill directories agent tools read (`~/.claude/skills/`, `~/.codex/skills/`). Idempotent; `npm run install-status` checks, `npm run uninstall-skill` removes only what it created.
 
-```bash
-shiplayer apply /path/to/MySwiftApp --apply --yes-i-understand
-```
+## Docs
 
-This synchronizes the supported fields and screenshots but does **not** submit for review. If the user does not explicitly authorize the apply step, leave `sync.mode: dry-run` and stop after the preview.
+- [docs/architecture.md](docs/architecture.md) — pipeline and components
+- [docs/automation-boundaries.md](docs/automation-boundaries.md) — what v0.1 will and won't automate
+- [docs/safety-model.md](docs/safety-model.md) — credentials, triple-gate writes, manual remainder
+- [docs/manifest-gates.md](docs/manifest-gates.md) — permission flows, contradiction blockers, copy rules
+- [docs/screenshots.md](docs/screenshots.md) — harness, capture, marketing composition
+- [docs/asc-apply.md](docs/asc-apply.md) — App Store Connect apply flow and CI action
+- [docs/google-play.md](docs/google-play.md) — Play metadata, AAB, and draft releases
+- [skills/ship-app-store](skills/ship-app-store) — the agent skill itself
 
-For repositories whose App Store Connect credentials live in a protected GitHub environment, ShipLayer also exposes a composite action. Reference a pinned ShipLayer commit, map the three documented credential environment variables, and pass `command: plan` for the default GET-only preview. Set `render-screenshots: "true"` only in an explicitly configured workflow when the repository contains every declared raw screenshot input; the action then prepares and renders missing localized decks with the runner's installed Chrome before planning or applying, while preserving any already-complete reviewed final deck byte-for-byte. Use `command: apply` only from a manually dispatched, protected workflow after reviewing that preview; the manifest `sync.mode: apply` and ShipLayer's normal preflight gates still apply.
+## Development
 
-## Google Play delivery
-
-Google Play delivery uses `shiplayer-play.yml`, separate from the Apple-focused
-`shiplayer.yml`. ShipLayer accepts a short-lived OAuth token in
-`GOOGLE_PLAY_ACCESS_TOKEN` (or the uppercase variable named by `accessTokenEnv`).
-GitHub Actions should generate this token with Workload Identity Federation so
-no long-lived key is stored. A complete service-account JSON object in
-`GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` remains available for environments that cannot
-federate.
-
-```yaml
-schemaVersion: 1
-packageName: com.example.app
-metadata:
-  directory: build/play-metadata
-  confirmation: confirmed
-release:
-  versionCode: 6
-  versionName: "1.3"
-  bundle: app/build/outputs/bundle/release/app-release.aab
-  track: production
-  status: draft
-  confirmation: confirmed
-sync:
-  mode: dry-run
-  accessTokenEnv: GOOGLE_PLAY_ACCESS_TOKEN
-```
-
-The metadata directory follows the standard supply layout:
-
-```text
-build/play-metadata/
-  en-US/
-    title.txt
-    short_description.txt
-    full_description.txt
-    changelogs/6.txt
-    images/
-      phoneScreenshots/01-reader.png
-      sevenInchScreenshots/01-reader.png
-      tenInchScreenshots/01-reader.png
-```
-
-ShipLayer validates required files, text limits, locale names, screenshot count,
-contained paths, and symlinks before authentication. It changes only configured
-locales and screenshot types; it never deletes an unconfigured localization.
-
-```bash
-# Creates and then deletes the temporary edit required by Google's read API.
-# No edit is validated or committed.
-shiplayer play-plan /path/to/AndroidApp --scope all
-
-# After reviewing the plan and setting sync.mode: apply:
-shiplayer play-apply /path/to/AndroidApp --scope all --apply --yes-i-understand
-```
-
-An apply re-runs the remote comparison and stops if it differs from the reviewed
-preview. Listing text and screenshots are synchronized inside one edit. Release
-scope uploads the configured AAB only when its version code is absent, preserves
-other releases on the track, attaches localized release notes, validates the edit,
-and commits it once. A production release must have `status: draft`; ShipLayer
-rejects any configuration that could start a production rollout. Testing tracks
-may use `draft` or `completed`.
-
-The composite action accepts `command: play-plan` or `command: play-apply` and a
-`scope` input (`listings`, `release`, or `all`). Keep apply in a protected,
-manually dispatched environment. Grant the workflow `id-token: write`, use
-`google-github-actions/auth` with `token_format: access_token` and the
-`androidpublisher` scope, then map its `access_token` output to
-`GOOGLE_PLAY_ACCESS_TOKEN`.
-
-## Manifest
-
-The checked-in [JSON Schema](src/schema.json) and runtime validation cover identity, metadata, permissions, permission flows, processors, review access, screenshot matrices, signing, release settings, monetization, and evidence-contradiction overrides.
-
-Third-party AI features require an `aiDataSharing` declaration that names the exact data, purpose, and every recipient. Mark each provider/intermediary that actually receives the AI feature data with `aiPipelineRecipient: true`; unrelated analytics or payment processors remain `false`. Production consent evidence must visibly substantiate every recipient, the exact declared send/share/upload action, the non-AI decline path, and a Privacy Policy link. Matching public policy evidence must be a contained `.md`, `.markdown`, `.html`, `.htm`, or `.txt` artifact and cover collection/transmission method, all uses, recipients, retention/deletion, and same-or-equal protection. Code constants, tests, fixtures, scripts, or documentation text cannot stand in for rendered consent or published policy content. Declaring AI-pipeline recipients while disabling this section is a submission blocker.
-
-### Permission-flow gates (App Review 5.1.1(iv))
-
-Apple's guideline 5.1.1(iv) requires that once an app requests a protected-resource permission, the user always reaches the one-time system prompt — a dismissible custom screen in front of it, or a denied-state dead end with no path to Settings, are both rejectable. ShipLayer detects a runtime permission-request call recognized by its Swift-syntax shape (`AVCaptureDevice.requestAccess`, `PHPhotoLibrary.requestAuthorization`, `CLLocationManager.requestWhenInUseAuthorization`/`requestAlwaysAuthorization`, `UNUserNotificationCenter...requestAuthorization`, `AVAudioApplication`/`AVAudioSession...requestRecordPermission`, `CNContactStore...requestAccess`, `EKEventStore...requestAccess`/`requestFullAccess*`, `MPMediaLibrary.requestAuthorization`, `SFSpeechRecognizer.requestAuthorization`, `CMMotionActivityManager`, `ATTrackingManager.requestTrackingAuthorization`) in production `.swift` source (comment-stripped at scan time). **Detection is Swift-only in v0.1** — the scanner also reads `.m`/`.mm`/`.h` files for other checks, but none of these patterns match Objective-C call syntax, so a permission requested only from Objective-C source is not detected and gets none of these gates. Design: **declarations block, heuristics warn and corroborate** — the same shape as `aiDataSharing` and `sourceContradictionOverrides` above, not a same-file text heuristic acting as the blocker.
-
-- **`permission-flow.<category>.confirmation`** (human-confirmed, always required). No scanner can prove a runtime UI-flow property, so every detected category needs a `permissionFlows` entry answering two questions — "can the user dismiss a custom screen before the system prompt?" and "does the denied-access path offer a link to Settings?" — `confirmation` must be exactly `confirmed` (an absent declaration or an unconfirmed one both block) regardless of which boolean values are set.
-- **`permission-flow.<category>.dismissible-screen`** (blocks on a confirmed admission). Once confirmed, `dismissibleScreenBeforePrompt: true` blocks by itself — a written admission of the exact 5.1.1(iv) violation — independent of whether any heuristic below can detect it.
-- **`permission-flow.<category>.denied-path-settings-link`** (blocks unless confirmed true). Once confirmed, blocks unless `deniedPathOffersSettingsLink: true`. This declaration, not a text heuristic, is the authoritative answer to whether the denied path reaches Settings.
-- **`permission-flow.<category>.settings-link-heuristic`** (advisory only — warn/pass, never block). Corroborates the declaration above: a `.denied`/`.restricted` marker in the SAME function as the category's own request call, correlated (within one bounded enclosing brace region) with `UIApplication.openSettingsURLString` or with a `@State`-flag read by a separate `.sheet`/`.confirmationDialog`/`.alert`/`.popover(isPresented:)` that itself reaches Settings — plus a **one-hop join**: because the request/authorization-check file and the file that renders the denied-state Settings UI are routinely different files under ordinary SwiftUI MVVM/ObservableObject architecture (a manager owns the request, a view renders the denied UI — this is BackYet's own real `notifications` architecture, not a hypothetical), a production file that references a type the request-site file declares is also checked for a local correlation. Narrower than "a Settings link exists anywhere in the app", but **not** category-scoped across the join: a joined file's Settings link for one permission can corroborate a different permission requested by the same type. Treat a `pass` here as a weak textual signal only — `permissionFlows.deniedPathOffersSettingsLink` is what gates this check. A failed corroboration never blocks; it only means a human/agent should double-check the declaration.
-- **`permission-flow.<category>.sheet-gated`** (heuristic, clearable). Fires only when the request is reachable, in a given file, exclusively from inside a `.sheet`/`.confirmationDialog`/`.alert`/`.popover` presentation (including a function invoked only as that presentation's `onDismiss` callback) — this is BackYet's real 5.1.1(iv) rejection shape, a custom "How would you like to add it?" sheet with a Cancel button in front of the camera prompt. Clearable only by a confirmed `permissionFlows` declaration with `dismissibleScreenBeforePrompt: false`; Apple does permit an always-proceeds explanatory screen, so this heuristic can false-positive on that legitimate shape, which is exactly what the declaration is for.
-
-`init` never answers either boolean or the `confirmation` for you — every detected category is proposed `needs-human-confirmation`, and only a human/agent who has actually looked at the on-device flow may set it to `confirmed`. A confirmed "yes, dismissible" or "no, there's no Settings link" answer is not a safe answer — it blocks exactly as loudly as leaving the question unanswered.
-
-### Evidence-backed contradiction blockers
-
-`monetization` and `aiDataSharing` are opt-in declarations, but they are no longer trusted blindly: `check`/`prepare` cross-check them against the scan.
-
-- **Monetization.** The StoreKit cross-check runs for *any* declaration that models no in-app purchase — `free` and `paid-app` alike (a paid download is not itself an IAP). If the scan finds StoreKit purchase evidence (`Product.purchase()` corroborated by a StoreKit import or `.displayPrice` in the same file, `.displayPrice`/`ProductView` alone, a `.storekit` product ID, or a legacy `SKPaymentQueue`/`SKPaymentTransactionObserver` signal) while `monetization.type` is `free` or `paid-app`, that is a loud `monetization.source-contradiction` blocker naming the evidence files, and it also blocks `purchase.presentation` since presentation cannot be verified for an undeclared model. `monetization: { type: "free" }` additionally requires its own `confirmation: confirmed` — an unconfirmed free declaration blocks too, the same as every other self-declared fact ShipLayer will not assume for you.
-- **AI data sharing.** Known AI providers come in two shapes, classified differently to avoid both under- and over-blocking: **API-only hosts/subdomains** that never serve anything but the API itself (`api.openai.com`, `api.anthropic.com`, `generativelanguage.googleapis.com`, a customer's `<resource>.openai.azure.com`, any `api.`/`api-`-labeled subdomain of a known provider, and similar) are strong evidence **regardless of path** — there is no marketing/docs page living there to false-positive on, so `/v1/responses`, `/v1/images/generations`, `/v1/audio/transcriptions`, `:generateContent`, and any other real API path all block. **Mixed apex hosts**, where a provider's marketing/docs/legal/model-card pages and its API plausibly coexist on the very same bare hostname (`openai.com`, `anthropic.com`, `huggingface.co`, `openrouter.ai`, `x.ai`, and similar), are the inverse: only a path shaped like an actual inference call (`/chat/completions`, `/v1/messages`, `/generate`, `/inference`, `/completions`, `/embeddings`) is strong evidence there; everything else — including a provider's real privacy-policy page such as `openai.com/policies/privacy-policy` or `anthropic.com/legal/privacy`, a model card, a blog post, or a bare root path — only warns (`ai-sharing.possible-processor-link`), never hard-blocks by itself, precisely because those legitimate links are exactly what `ai-sharing.consent-privacy-link` and `externalProcessor.privacyPolicyUrl` require the app to surface. Separately, an **unrecognized** host whose path is still shaped like an inference API blocks under a distinct id, `ai-sharing.source-contradiction-ambiguous-endpoint` — the proxied-endpoint case (an app's own backend forwarding to a provider), named differently so the message says the host is unrecognized rather than implying a confirmed provider match. This is a deliberate trade-off, not a fully-solved classification: ShipLayer cannot both catch a same-shaped proxy call and let an unrelated `/v1/messages`-shaped API through, so it blocks the ambiguous case and leaves resolution to a human via the override below.
-
-The only way to resolve one of these blockers, short of fixing the declaration, is a **`sourceContradictionOverrides`** entry — the same shape as `externalServiceDecisions`: a `finding` naming the exact blocker id (`monetization.source-contradiction`, or `ai-sharing.source-contradiction:endpoint:<url>` for a specific endpoint — the same finding id whether the endpoint classified as a known provider or as an ambiguous unrecognized host), a non-empty human `reason`, at least one contained `evidence` path, and `confirmation: confirmed`. An override cannot be expressed as an empty/default value — schema validation requires the reason and evidence to be present — **and its evidence must intersect the flagged finding's own source paths and actually exist on disk**, so an override cannot wave away a real finding by citing an unrelated file. A valid override downgrades the blocker to a visible warning rather than silently clearing it. `init` never invents these declarations for you: it carries detected endpoints forward into `externalProcessors` as `needs-human-confirmation` proposals — **only an endpoint that classifies as a known API-only or mixed-apex provider (not a policy/docs link, and not the ambiguous unrecognized-host case) is proposed with `kind: "ai"`**, which by itself is enough to require an AI disclosure even before a human sets `aiPipelineRecipient`; every other detected endpoint is proposed as `kind: "network"` instead, so a policy link or an ambiguous proxy endpoint is resolvable purely through `sourceContradictionOverrides` rather than producing a second, unrelated block with no override path. `init` leaves `monetization.type` as `free` with a prominent unresolved question when StoreKit evidence disagrees, so `check` blocks immediately until a human resolves it one way or the other.
-
-**Known limitation.** These checks only see literal evidence present in the scanned repository: URL literals in Swift/TS/JS source, Info.plist string values, and `.xcconfig`/`.pbxproj`/`project.yml` build settings (including a user-defined setting whose value is itself a URL, not only Apple's own named keys). A base URL that is only ever injected at build/CI time via an environment variable or secret — with no literal value anywhere in the tracked repository, only a `$(VARIABLE)` indirection — cannot be found by static scanning and will not be caught. If your app proxies to an AI provider through your own backend and the backend's URL is never a literal in the repo, declare `aiDataSharing` yourself; ShipLayer cannot detect it for you in that shape.
-
-### App Store copy (App Review 2.3)
-
-`metadata.localizations.<locale>` models `name` (30 chars), `subtitle` (30), `description` (4000), `keywords` (100 chars total, comma-joined), `promotionalText` (170), and update-only `whatsNew` (4000) — real App Store Connect fields, not just character-limit placeholders. It may also override `supportUrl`, `marketingUrl`, and `privacyPolicyUrl` per locale; absent overrides fall back to the corresponding global `contacts` URL. `app.releaseKind` distinguishes `first-release` from `update`; an absent or `needs-human-confirmation` value blocks readiness. A read-only remote plan checks that declaration against the full iOS App Store version history, and apply verifies it again before any mutation. First releases must omit `whatsNew`; updates require nonblank, localized release notes for every configured locale. ShipLayer never drafts or machine-translates this copy itself: `init` leaves it absent and records an unresolved question naming exactly what an agent/human must write (see [skills/ship-app-store](skills/ship-app-store) for the drafting rules). Locale listing copy still requires `metadata.localizations.<locale>.confirmation: confirmed`; release notes additionally require `metadata.whatsNewConfirmation.version` to exactly match `app.version` and its confirmation to be `confirmed`, so approval from an older version cannot silently carry forward.
-
-- **Robust checks (block).** Character limits per field, counted the same way `characterCounts` in the generated `metadata/<locale>.json` reports them. Apple requires each keyword to be longer than two characters, and the comma-joined string must fit 100 UTF-8 bytes (a 100-byte string passes; 101 blocks). Placeholder text left in ("Lorem ipsum", "TODO", "XXX", "<your app>"/"[app name]") blocks. A reference to another platform/storefront ("Android", "Google Play", "Play Store", "Windows", "Web version", "Desktop version" — 2.3.10) blocks.
-- **Heuristic cross-checks against the manifest (block, but deliberately narrow).** A zero-cost claim ("completely free", "free app", "free to download/use", ...) blocks unless `monetization.type` is `free` — this applies to `paid-app` too, since a paid download is not free. A "no in-app purchases"/"no IAP"/"no purchase necessary" claim blocks only when the declared type actually models an in-app purchase (`non-consumables`/`subscriptions`) — it is a *true* statement for `paid-app` (the purchase is the app itself, not an in-app one), so it never blocks there. "No hidden fees/costs" is not treated as a purchase claim at all — it is a transparency statement honestly sayable by any monetization type. "Free to try" is exempted specifically when a subscription product actually declares a `free-trial` `introductoryOffer`; without one it still blocks. A "no subscription"/"one-time purchase" claim, or the inverse (a paid/subscription claim on a genuinely `free` app), also blocks as `metadata.<locale>.<field>.monetization-contradiction`. Copy claiming iPad support while `app.deviceFamilies` excludes `ipad` blocks as `.device-family-contradiction` — the negation check (e.g. "not available on iPad") is scoped to the same clause (stopping at the nearest sentence-ending punctuation or comma), not a fixed character window, so an unrelated negation elsewhere in the sentence (e.g. "There are no ads at all, and it looks stunning on iPad.") cannot silently clear it. These are pattern matches over natural language, not proof, and every guard scans *every* match in the field, not only the first, so an early guarded/negated match can never hide a later, genuine claim in the same text. Written conservatively to avoid the obvious false positives: there is no bare "free" match (so "hassle-free", "ad-free", and "distraction-free app" never trigger it), and the "Windows" match is case-sensitive (so the common lowercase word never triggers it).
-- **Heuristic warnings (never block).** A specific price (`$`/`€`/`£`/a numeric "USD" amount — 2.3.12), "beta"/"trial version"/"test version"/"work in progress" language, and unsubstantiated superlatives ("#1", "best app", "world's best") all warn rather than block, since these are judgment calls App Review itself makes contextually. Keyword hygiene warns too: leading/trailing whitespace inside a keyword (wastes budget once comma-joined), a keyword repeating a word already in `name`/`subtitle` (Apple indexes those separately), and likely plural/singular duplicates within the keyword list. If `aiDataSharing.enabled` is true but no locale's copy mentions AI (`\bAI\b`, "artificial intelligence", "machine learning") or names a declared processor, `check` warns (`metadata.ai-mention`) — this app has previously been rejected for undisclosed AI processing, so the listing itself should disclose it, not only the App Privacy questionnaire.
-
-Every non-consumable or subscription requires role-checked `purchasePresentation` evidence. Production paywall source must visibly render StoreKit `Product.displayPrice` (an unused/commented/non-iOS conditional read is insufficient), or render `ProductView`/`SubscriptionStoreView` (`StoreView` is also supported for non-consumables); known iOS, StoreKit, and SwiftUI compilation guards are accepted, while arbitrary module guards cannot independently prove release evidence. Custom purchase UI must withhold its purchase Button inside the product-available branch or use a direct safe disabled predicate such as `product == nil`, `isLoading`, or `!canPurchase`. Assertions inside credible XCTest or Swift Testing methods must directly prove both visible localized pricing and the unavailable purchase state; compound boolean assertions do not count. Hard-coded prices, unused merchandising-view assignments, unverified custom `ProductViewStyle` implementations, and unverified custom `SubscriptionStoreControlStyle` implementations are blocked. Custom subscription paywalls additionally require source and test evidence for the visible billing period, applicable offer terms, and Terms/Privacy links before purchase; `SubscriptionStoreView` with a built-in control style may own the automatic source presentation, but tests and human confirmation must still verify those disclosures.
-
-For subscriptions, provide a group with localized display names, base territory, monthly/yearly (or supported custom) durations, levels, Apple-safe product IDs, product localizations, price references, introductory offers, family sharing, review assets, paywall navigation, restore path, and explicit confirmation. Introductory offers model free trials, pay up front, and pay as you go (including the required number of periods); ShipLayer rejects combinations that do not match Apple's current duration rules.
-
-See [fixtures/subscription-shiplayer.yml](fixtures/subscription-shiplayer.yml) for a complete fictional subscription example. Subscription output also includes a clearly marked Terms of Use/EULA handoff for either Apple's Standard EULA or human-reviewed custom terms.
-
-## Architecture and development
-
-Read [docs/architecture.md](docs/architecture.md) and [docs/automation-boundaries.md](docs/automation-boundaries.md). The Codex skill is at [skills/ship-app-store](skills/ship-app-store); it orchestrates the CLI instead of hiding nondeterministic behavior in prompt text. `prepare` emits its own self-contained marketing screenshot composition project (see "Marketing screenshot composition" above); the separate `app-store-screenshots` editor at `screenshots.marketingProjectPath` is a different, independently installed/scaffolded tool that ShipLayer does not set up.
+Requires Node 22+.
 
 ```bash
 npm install
 make check
 ```
 
-There is intentionally no automatic GitHub Actions workflow in this repository, and ShipLayer never adds one to itself. The only workflow file ShipLayer's code ever produces is the `workflow_dispatch`-only screenshot capture workflow described above, and it is written solely as a `shiplayer-release/` artifact for a human to review and install into a *target app repository* — never committed, installed, or dispatched by ShipLayer itself, and never wired to `push`/`pull_request`/`schedule`.
+See [CONTRIBUTING.md](CONTRIBUTING.md). CI runs `npm run check` (lint + 419 tests + build) on every push and PR.
 
-### Prepare descriptions before uploading a build
+## License
 
-`shiplayer draft-descriptions <repo>` previews a description-only update draft.
-After reviewing the preview, `sync.mode: apply` and
-`--apply --yes-i-understand` authorize creating the requested iOS version and
-saving confirmed descriptions for every configured locale. Existing versions
-must be in `PREPARE_FOR_SUBMISSION`. The command verifies the app identity and
-reads all descriptions back after writing. It never attaches a build, edits
-release notes or screenshots, or submits for review. Full-release preflight and
-release-note approval still apply when preparing the eventual release.
-
-The composite action exposes `draft-descriptions-plan` and
-`draft-descriptions-apply` with `render-screenshots: "false"`.
+MIT — see [LICENSE](LICENSE).

@@ -3,8 +3,8 @@ import { createReadStream } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolveContained } from "./fs.js";
 import { GooglePlayClient, playCredentialsFromEnvironment, type PlayFetchLike } from "./play-client.js";
-import { PLAY_IMAGE_TYPES, readPlayMetadata, type PlayImage, type PlayImageType, type PlayListing } from "./play-metadata.js";
-import { assertPlayApplyReady } from "./play-manifest.js";
+import { PLAY_IMAGE_TYPES, PLAY_LISTING_ASSETS, readPlayMetadata, type PlayImage, type PlayImageType, type PlayListing } from "./play-metadata.js";
+import { assertPlayApplyReady, playPolicyWarnings } from "./play-manifest.js";
 import type { PlayApplyResult, PlayManifest, PlayOperation, PlayPlan, PlayScope } from "./play-types.js";
 
 export interface PlayOptions { environment?: NodeJS.ProcessEnv; fetcher?: PlayFetchLike; userConfirmed?: boolean; reviewedPlan?: PlayPlan }
@@ -13,7 +13,7 @@ export async function planGooglePlayChanges(repository: string, manifest: PlayMa
   requireRelease(manifest, scope);
   const metadata = await readPlayMetadata(repository, manifest, scope);
   const credentials = playCredentialsFromEnvironment(manifest, options.environment);
-  if (!credentials) return { mode: "remote-preview", packageName: manifest.packageName, scope, operations: [], credentialsPresent: false, warnings: [`Neither ${manifest.sync.accessTokenEnv || "GOOGLE_PLAY_ACCESS_TOKEN"} nor ${manifest.sync.serviceAccountJsonEnv || "GOOGLE_PLAY_SERVICE_ACCOUNT_JSON"} is available; no Google Play request was made.`], ephemeralEditDeleted: false };
+  if (!credentials) return { mode: "remote-preview", packageName: manifest.packageName, scope, operations: [], credentialsPresent: false, warnings: [`Neither ${manifest.sync.accessTokenEnv || "GOOGLE_PLAY_ACCESS_TOKEN"} nor ${manifest.sync.serviceAccountJsonEnv || "GOOGLE_PLAY_SERVICE_ACCOUNT_JSON"} is available; no Google Play request was made.`, ...playPolicyWarnings(manifest)], ephemeralEditDeleted: false };
   const client = await GooglePlayClient.connect(credentials, options.fetcher);
   const editId = await client.insertEdit(manifest.packageName);
   let deleted = false;
@@ -22,7 +22,7 @@ export async function planGooglePlayChanges(repository: string, manifest: PlayMa
     if (scope === "listings" || scope === "all") operations.push(...await listingPlan(client, manifest.packageName, editId, metadata));
     if (scope === "release" || scope === "all") operations.push(...await releasePlan(repository, client, manifest, editId, metadata));
     await client.deleteEdit(manifest.packageName, editId); deleted = true;
-    return { mode: "remote-preview", packageName: manifest.packageName, scope, operations, credentialsPresent: true, warnings: ["Google Play exposes listing reads only inside an edit. ShipLayer created and deleted an ephemeral edit without validating or committing it."], ephemeralEditDeleted: true };
+    return { mode: "remote-preview", packageName: manifest.packageName, scope, operations, credentialsPresent: true, warnings: ["Google Play exposes listing reads only inside an edit. ShipLayer created and deleted an ephemeral edit without validating or committing it.", ...playPolicyWarnings(manifest)], ephemeralEditDeleted: true };
   } finally {
     if (!deleted) await client.deleteEdit(manifest.packageName, editId).catch(() => undefined);
   }
@@ -63,7 +63,7 @@ async function listingPlan(client: GooglePlayClient, packageName: string, editId
     const current = remote.get(language);
     const matches = current?.title === listing.title && current?.shortDescription === listing.shortDescription && current?.fullDescription === listing.fullDescription;
     operations.push(operation(`listing.${language}`, current ? "update" : "create", `listing/${language}`, `${matches ? "Listing matches" : current ? "Update listing" : "Create listing"} for ${language}.`, matches));
-    for (const imageType of PLAY_IMAGE_TYPES) {
+    for (const imageType of [...PLAY_IMAGE_TYPES, ...PLAY_LISTING_ASSETS]) {
       const local = listing.images[imageType]; if (!local) continue;
       // Google returns 404 for images.list when the locale listing does not exist yet.
       // A new listing necessarily has no remote screenshots, so skip that impossible read.
@@ -101,7 +101,7 @@ async function applyListings(client: GooglePlayClient, packageName: string, edit
       await client.updateListing(packageName, editId, language, { language, title: listing.title, shortDescription: listing.shortDescription, fullDescription: listing.fullDescription });
       listingOperation.status = "applied";
     }
-    for (const imageType of PLAY_IMAGE_TYPES) {
+    for (const imageType of [...PLAY_IMAGE_TYPES, ...PLAY_LISTING_ASSETS]) {
       const local = listing.images[imageType]; if (!local) continue;
       const imageOperation = find(operations, `screenshots.${language}.${imageType}`);
       if (imageOperation.status === "planned") {

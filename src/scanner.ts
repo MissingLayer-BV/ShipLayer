@@ -49,6 +49,26 @@ export function findPermissionRequestSites(content: string): PermissionRequestSi
   for (const { category, label, pattern } of PERMISSION_REQUEST_PATTERNS) for (const match of content.matchAll(pattern)) sites.push({ category, index: match.index ?? 0, excerpt: match[0].slice(0, 160), label });
   return sites.sort((left, right) => left.index - right.index);
 }
+// Apple's required-reason API categories (enforced since May 2024): calling one of these
+// APIs without declaring NSPrivacyAccessedAPITypes with an approved reason in
+// PrivacyInfo.xcprivacy is a routine App Review rejection. Patterns are deliberately
+// anchored to distinctive API shapes (C functions, FileManager/URL resource keys) rather
+// than bare property names like `creationDate`, which also exist on EventKit types and
+// would false-positive on calendar code.
+export const REQUIRED_REASON_API_CATEGORIES = ["NSPrivacyAccessedAPICategoryUserDefaults", "NSPrivacyAccessedAPICategoryFileTimestamp", "NSPrivacyAccessedAPICategorySystemBootTime", "NSPrivacyAccessedAPICategoryDiskSpace", "NSPrivacyAccessedAPICategoryActiveKeyboards"] as const;
+export type RequiredReasonApiCategory = (typeof REQUIRED_REASON_API_CATEGORIES)[number];
+const REQUIRED_REASON_API_PATTERNS: Array<{ category: RequiredReasonApiCategory; label: string; pattern: RegExp }> = [
+  { category: "NSPrivacyAccessedAPICategoryUserDefaults", label: "UserDefaults", pattern: /\b(?:NSUserDefaults|UserDefaults)\b/g },
+  { category: "NSPrivacyAccessedAPICategoryFileTimestamp", label: "file timestamp API", pattern: /\battributesOfItem\(|\battributesOfFileSystem\(|NSURL(?:ContentModification|Creation|ContentAccess)DateKey|\bstat\(|\bfstat\(|\blstat\(|getattrlist\(|fgetattrlist\(/g },
+  { category: "NSPrivacyAccessedAPICategorySystemBootTime", label: "systemUptime", pattern: /\bsystemUptime\b/g },
+  { category: "NSPrivacyAccessedAPICategoryDiskSpace", label: "disk space API", pattern: /\bvolumeAvailableCapacity|\bvolumeTotalCapacity|\bstatfs\(|\bstatvfs\(|\bfstatfs\(/g },
+  { category: "NSPrivacyAccessedAPICategoryActiveKeyboards", label: "activeInputModes", pattern: /\bactiveInputModes\b/g },
+];
+export function findRequiredReasonApiSites(content: string): Array<{ category: RequiredReasonApiCategory; label: string; excerpt: string }> {
+  const sites: Array<{ category: RequiredReasonApiCategory; label: string; excerpt: string }> = [];
+  for (const { category, label, pattern } of REQUIRED_REASON_API_PATTERNS) for (const match of content.matchAll(pattern)) sites.push({ category, label, excerpt: match[0].slice(0, 160) });
+  return sites;
+}
 const PRIVACY_DATA_TYPE_MAP: Record<string, string> = { NSPrivacyCollectedDataTypeName: "Name", NSPrivacyCollectedDataTypeEmailAddress: "Email Address", NSPrivacyCollectedDataTypePhoneNumber: "Phone Number", NSPrivacyCollectedDataTypePhysicalAddress: "Physical Address", NSPrivacyCollectedDataTypeOtherUserContactInfo: "Other User Contact Info", NSPrivacyCollectedDataTypePhotosorVideos: "Photos or Videos", NSPrivacyCollectedDataTypeDeviceID: "Device ID", NSPrivacyCollectedDataTypeUserID: "User ID", NSPrivacyCollectedDataTypeOtherFinancialInfo: "Other Financial Info", NSPrivacyCollectedDataTypePurchases: "Purchases", NSPrivacyCollectedDataTypeProductInteraction: "Product Interaction", NSPrivacyCollectedDataTypeCrashData: "Crash Data", NSPrivacyCollectedDataTypePerformanceData: "Performance Data" };
 const PRIVACY_PURPOSE_MAP: Record<string, string> = { NSPrivacyCollectedDataTypePurposeThirdPartyAdvertising: "Third-Party Advertising", NSPrivacyCollectedDataTypePurposeDeveloperAdvertising: "Developer’s Advertising or Marketing", NSPrivacyCollectedDataTypePurposeAnalytics: "Analytics", NSPrivacyCollectedDataTypePurposeProductPersonalization: "Product Personalization", NSPrivacyCollectedDataTypePurposeAppFunctionality: "App Functionality", NSPrivacyCollectedDataTypePurposeOther: "Other Purposes" };
 
@@ -123,6 +143,10 @@ export async function analyzeRepository(repository: string): Promise<AnalysisRep
         // a permission-flow declaration for dead code. Each detected category becomes exactly one
         // aggregated finding (via `push`'s existing key-grouping), just like `permission:` above.
         for (const site of findPermissionRequestSites(stripCodeComments(content))) push(`permissionFlow:${site.category}`, site.label, { source, excerpt: site.excerpt, confidence: "medium", kind: "source-heuristic" });
+        // Required-reason API usage is comment-stripped for the same reason: only live
+        // code calling these APIs obliges a PrivacyInfo.xcprivacy declaration.
+        const executableNativeSource = stripCodeComments(content);
+        for (const site of findRequiredReasonApiSites(executableNativeSource)) push(`requiredReasonApi:${site.category}`, site.label, { source, excerpt: site.excerpt, confidence: "medium", kind: "source-heuristic" });
       }
       for (const sdk of THIRD_PARTY_SDK_CANDIDATES) {
         const pattern = nativeSource ? new RegExp(`\\bimport\\s+${sdk}\\b|\\b${sdk}\\s*\\.`) : new RegExp(`(?:\\bimport\\s+(?:[^;\\n]*?\\s+from\\s+)?|\\brequire\\s*\\()?["']${sdk}["']|\\bfrom\\s+["']${sdk}["']`);
@@ -148,7 +172,17 @@ export async function analyzeRepository(repository: string): Promise<AnalysisRep
       push("privacyManifest", "present", { source, confidence: "confirmed", kind });
       let parsedEntries = 0;
       for (const dictionary of content.matchAll(/<dict>([\s\S]*?)<\/dict>/g)) {
-        const entry = dictionary[1]; const dataType = entry.match(/<key>NSPrivacyCollectedDataType<\/key>\s*<string>([^<]+)<\/string>/)?.[1];
+        const entry = dictionary[1];
+        const accessType = entry.match(/<key>NSPrivacyAccessedAPIType<\/key>\s*<string>([^<]+)<\/string>/)?.[1];
+        if (accessType) {
+          if (!(REQUIRED_REASON_API_CATEGORIES as readonly string[]).includes(accessType)) { push("privacyManifestUnparsed", accessType, { source, excerpt: dictionary[0].slice(0, 220), confidence: "confirmed", kind }); questions.add(`PrivacyInfo.xcprivacy declares an unrecognized accessed-API type ${accessType}; map it to Apple's required-reason API list manually.`); continue; }
+          const reasons = entry.match(/<key>NSPrivacyAccessedAPITypeReasons<\/key>\s*<array>([\s\S]*?)<\/array>/)?.[1];
+          const reasonCount = reasons ? [...reasons.matchAll(/<string>[^<]+<\/string>/g)].length : 0;
+          if (!reasonCount) { push("privacyManifestUnparsed", `${accessType}:missing-reasons`, { source, excerpt: dictionary[0].slice(0, 220), confidence: "confirmed", kind }); questions.add(`PrivacyInfo.xcprivacy declares accessed-API type ${accessType} without an approved reason; add one manually.`); continue; }
+          push(`privacyManifestAccessedAPI:${accessType}`, `${reasonCount} approved reason(s)`, { source, excerpt: dictionary[0].slice(0, 220), confidence: "confirmed", kind }); parsedEntries++;
+          continue;
+        }
+        const dataType = entry.match(/<key>NSPrivacyCollectedDataType<\/key>\s*<string>([^<]+)<\/string>/)?.[1];
         if (!dataType) continue;
         const category = PRIVACY_DATA_TYPE_MAP[dataType]; if (!category) { push("privacyManifestUnparsed", dataType, { source, excerpt: dictionary[0].slice(0, 220), confidence: "confirmed", kind }); questions.add(`PrivacyInfo.xcprivacy declares ${dataType}; map it to an App Privacy category manually.`); continue; }
         const linked = entry.match(/<key>NSPrivacyCollectedDataTypeLinked<\/key>\s*<(true|false)\/>/)?.[1]; const tracking = entry.match(/<key>NSPrivacyCollectedDataTypeTracking<\/key>\s*<(true|false)\/>/)?.[1];
@@ -179,7 +213,8 @@ export async function analyzeRepository(repository: string): Promise<AnalysisRep
     const processorCandidate = key.startsWith("thirdPartySdkCandidate:") || key.startsWith("endpoint:");
     const appleFramework = key.startsWith("framework:");
     const permissionFlowCandidate = key.startsWith("permissionFlow:");
-    findings.push({ key, value: values.length === 1 ? primary : values, evidence: entries.map((entry) => entry.evidence), confidence: entries.some((entry) => entry.evidence.confidence === "confirmed") ? "confirmed" : entries.some((entry) => entry.evidence.confidence === "high") ? "high" : "medium", proposal: processorCandidate || permissionFlowCandidate, message: processorCandidate ? "Heuristic finding only; confirm whether this is an external processor or declared data use." : appleFramework ? "Apple framework usage detected; this is not by itself an external processor or privacy declaration." : permissionFlowCandidate ? "Heuristic finding only; confirms a runtime permission-request API call was detected, not that the app truly reaches the system prompt this way." : undefined });
+    const requiredReasonCandidate = key.startsWith("requiredReasonApi:");
+    findings.push({ key, value: values.length === 1 ? primary : values, evidence: entries.map((entry) => entry.evidence), confidence: entries.some((entry) => entry.evidence.confidence === "confirmed") ? "confirmed" : entries.some((entry) => entry.evidence.confidence === "high") ? "high" : "medium", proposal: processorCandidate || permissionFlowCandidate || requiredReasonCandidate, message: processorCandidate ? "Heuristic finding only; confirm whether this is an external processor or declared data use." : appleFramework ? "Apple framework usage detected; this is not by itself an external processor or privacy declaration." : permissionFlowCandidate ? "Heuristic finding only; confirms a runtime permission-request API call was detected, not that the app truly reaches the system prompt this way." : requiredReasonCandidate ? "Heuristic finding only; declare this accessed-API category in PrivacyInfo.xcprivacy with an approved reason, or confirm the call site is not a required-reason API." : undefined });
   }
   if (!settings.bundleId) questions.add("Confirm the production bundle ID; no unambiguous product bundle ID was detected.");
   if (!settings.encryption) questions.add("Confirm export-compliance/encryption status.");

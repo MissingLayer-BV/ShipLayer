@@ -37,6 +37,29 @@ test("family-specific dimensions, mandatory paid agreements, and remote referenc
   manifest.confirmations.ageRating = "confirmed"; manifest.sync = { mode: "dry-run" }; report = await preflight(root, manifest, true); assert.ok(report.results.some((item) => item.id === "asc.credentials" && item.severity === "block"));
 });
 
+test("empty and placeholder Info.plist purpose strings block readiness", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-purpose-")); const manifest = readyManifest(); await writeReadyAssets(root, manifest);
+  manifest.permissions = [{ key: "NSCameraUsageDescription", purpose: "Capture proof", confirmation: "confirmed", evidence: ["Info.plist"] }];
+  await writeFile(path.join(root, "Info.plist"), "<key>NSCameraUsageDescription</key><string></string>");
+  let report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "permission.NSCameraUsageDescription.plist-purpose" && item.severity === "block"));
+  await writeFile(path.join(root, "Info.plist"), "<key>NSCameraUsageDescription</key><string>TODO camera access</string>");
+  manifest.permissions[0].purpose = "TODO camera access";
+  report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "permission.NSCameraUsageDescription.plist-purpose" && item.severity === "block"));
+  await writeFile(path.join(root, "Info.plist"), "<key>NSCameraUsageDescription</key><string>Capture proof</string>");
+  manifest.permissions[0].purpose = "Capture proof";
+  report = await preflight(root, manifest);
+  assert.ok(!report.results.some((item) => item.id === "permission.NSCameraUsageDescription.plist-purpose" && item.severity === "block"));
+});
+
+test("identical primary and secondary categories block readiness", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-category-")); const manifest = readyManifest(); await writeReadyAssets(root, manifest);
+  manifest.app.secondaryCategory = "Productivity";
+  const report = await preflight(root, manifest);
+  assert.ok(report.results.some((item) => item.id === "app.secondary-category.duplicate" && item.severity === "block"));
+});
+
 test("nested managed output works without escaping the repository", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer nested ")); const manifest = defaultManifest({ name: "Example", bundleId: "com.example.app" });
   const first = await generateReleasePackage(root, manifest, emptyAnalysis(root), emptyPreflight, "nested folder/output package");
