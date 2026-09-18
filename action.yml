@@ -1,5 +1,5 @@
 name: ShipLayer Store Delivery
-description: Preview or apply reviewed App Store Connect or Google Play changes from a GitHub Actions workspace.
+description: Preview or apply reviewed App Store Connect changes from a GitHub Actions workspace.
 
 inputs:
   command:
@@ -22,10 +22,6 @@ inputs:
     description: On an explicitly gated screenshot apply, remove incomplete Apple screenshot reservations before resuming.
     required: false
     default: "false"
-  scope:
-    description: "Google Play scope: listings, release, or all."
-    required: false
-    default: listings
 
 outputs:
   result-path:
@@ -80,7 +76,6 @@ runs:
         SHIPLAYER_ACTION_REPOSITORY: ${{ inputs.repository }}
         SHIPLAYER_ACTION_LOCALES: ${{ inputs.locales }}
         SHIPLAYER_ACTION_REPLACE_INCOMPLETE: ${{ inputs['replace-incomplete-screenshots'] }}
-        SHIPLAYER_ACTION_SCOPE: ${{ inputs.scope }}
       run: |
         set -euo pipefail
 
@@ -133,12 +128,6 @@ runs:
             ;;
           apply)
             node "${{ github.action_path }}/dist/index.js" apply "${repository_path}" --apply --yes-i-understand --json | tee "${result_path}"
-            ;;
-          play-plan)
-            node "${{ github.action_path }}/dist/index.js" play-plan "${repository_path}" --scope "${SHIPLAYER_ACTION_SCOPE}" --json | tee "${result_path}"
-            ;;
-          play-apply)
-            node "${{ github.action_path }}/dist/index.js" play-apply "${repository_path}" --scope "${SHIPLAYER_ACTION_SCOPE}" --apply --yes-i-understand --json | tee "${result_path}"
             ;;
           *)
             echo "unsupported ShipLayer action command" >&2

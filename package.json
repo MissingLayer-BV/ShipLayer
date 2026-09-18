@@ -10,7 +10,7 @@
     "skills",
     ".env.example"
   ],
-  "description": "A safe, local-first App Store Connect and Google Play release CLI.",
+  "description": "A safe, local-first App Store Connect release CLI.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -18,7 +18,7 @@
   },
   "homepage": "https://github.com/MissingLayer-BV/ShipLayer",
   "bugs": "https://github.com/MissingLayer-BV/ShipLayer/issues",
-  "keywords": ["app-store-connect", "google-play", "app-store", "release-automation", "swift"],
+  "keywords": ["app-store-connect", "app-store", "release-automation", "swift"],
   "type": "module",
   "bin": {
     "shiplayer": "./dist/index.js"

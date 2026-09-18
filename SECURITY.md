@@ -1,7 +1,7 @@
 # Security
 
-ShipLayer handles App Store Connect credentials (ES256 private keys) and
-Google Play OAuth tokens. If you find a vulnerability — especially credential
+ShipLayer handles App Store Connect credentials (ES256 private keys).
+If you find a vulnerability — especially credential
 leakage into manifests, generated packages, logs, or terminal output — please
 report it responsibly.
 

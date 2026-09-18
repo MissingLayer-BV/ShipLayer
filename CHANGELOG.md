@@ -14,11 +14,6 @@ Added:
   cross-check, Info.plist purpose-string blocks, duplicate secondary-category
   block — on top of the existing permission-flow, AI-consent, purchase
   presentation, copy-rule, icon, and screenshot gates.
-- Google Play readiness: policy questionnaire declarations with plan warnings
-  and an apply gate, required 512×512 icon and 1024×500 feature graphic with
-  screenshot count/dimension validation, all synchronized through the
-  plan/apply diff.
-
 Not in v0.1, by design: final App Review submission, IAP/subscription product
 configuration and pricing, App Privacy/age-rating/tax/banking answers, and the
-four deferred gaps listed in `docs/automation-boundaries.md`.
+two deferred gaps listed in `docs/automation-boundaries.md`.

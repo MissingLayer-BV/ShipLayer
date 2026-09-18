@@ -2,7 +2,7 @@
 
 [![check](https://github.com/MissingLayer-BV/ShipLayer/actions/workflows/check.yml/badge.svg)](https://github.com/MissingLayer-BV/ShipLayer/actions/workflows/check.yml)
 
-**From repo to review.** ShipLayer is a local-first, safety-first release CLI for App Store Connect and Google Play. It scans your native app repository, captures evidence instead of guessing, and generates the assets and checklists between a build and App Review.
+**From repo to review.** ShipLayer is a local-first, safety-first release CLI for App Store Connect. It scans your native app repository, captures evidence instead of guessing, and generates the assets and checklists between a build and App Review.
 
 > Status: v0.1 beta. The happy path works end to end, but final App Review submission stays human-controlled by design, and several declarations still need your explicit confirmation. See [docs/automation-boundaries.md](docs/automation-boundaries.md) for what ShipLayer will and won't do.
 
@@ -41,7 +41,13 @@ npm ci && npm run build
 | Write | `apply <repo>` | Preview by default; writes only fully gated |
 | Finish | `submit <repo>` | Manual handoff; v0.1 never submits |
 
-Google Play uses a separate `shiplayer-play.yml` with `play-plan` / `play-apply` (`--scope listings|release|all`); production releases are draft-only.
+## The three pieces
+
+- **CLI** (`./dist/index.js`) — the engine. Every scan, check, diff, and write happens here.
+- **Agent skill** (`skills/ship-app-store`) — teaches a coding agent to drive the CLI; it invents no release logic itself.
+- **Composite Action** (`action.yml`) — runs `plan`/`apply` in your workflows, including screenshot rendering. Stays read-only unless you dispatch `apply` from a protected environment.
+
+Screenshots and CI: raw app-pixel capture never runs in CI — it needs your reviewed UI-test harness on macOS/Xcode (ShipLayer hands you the workflow, you press run, then `capture --from` ingests). What CI *can* do is render the marketing decks from existing raws (`render-screenshots: "true"`) before planning or applying.
 
 ## Install the agent skill
 
@@ -60,7 +66,6 @@ This links the CLI onto PATH and symlinks `skills/ship-app-store` into the skill
 - [docs/manifest-gates.md](docs/manifest-gates.md) — permission flows, contradiction blockers, copy rules
 - [docs/screenshots.md](docs/screenshots.md) — harness, capture, marketing composition
 - [docs/asc-apply.md](docs/asc-apply.md) — App Store Connect apply flow and CI action
-- [docs/google-play.md](docs/google-play.md) — Play metadata, AAB, and draft releases
 - [skills/ship-app-store](skills/ship-app-store) — the agent skill itself
 
 ## Development
