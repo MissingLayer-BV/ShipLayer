@@ -1,0 +1,24 @@
+name: ReceiptLoop
+targets:
+  ReceiptLoop:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.receiptloop
+        MARKETING_VERSION: "2.3"
+        CURRENT_PROJECT_VERSION: "42"
+        IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
+      configs:
+        Release:
+          CODE_SIGN_STYLE: Automatic
+    info:
+      path: ReceiptLoop/Info.plist
+      properties:
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        CFBundleIdentifier: "$(PRODUCT_BUNDLE_IDENTIFIER)"
+        ITSAppUsesNonExemptEncryption: false
+        NSCameraUsageDescription: "Capture a receipt to create a record."

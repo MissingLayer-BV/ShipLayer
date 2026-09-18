@@ -1,0 +1,138 @@
+name: ShipLayer Store Delivery
+description: Preview or apply reviewed App Store Connect changes from a GitHub Actions workspace.
+
+inputs:
+  command:
+    description: Run a read-only remote plan or an explicitly gated apply.
+    required: true
+    default: plan
+  repository:
+    description: Repository directory relative to GITHUB_WORKSPACE.
+    required: true
+    default: .
+  render-screenshots:
+    description: Generate and render every configured localized marketing screenshot before planning or applying.
+    required: false
+    default: "false"
+  locales:
+    description: Optional comma-separated locale scope for draft listing and screenshot commands.
+    required: false
+    default: ""
+  replace-incomplete-screenshots:
+    description: On an explicitly gated screenshot apply, remove incomplete Apple screenshot reservations before resuming.
+    required: false
+    default: "false"
+
+outputs:
+  result-path:
+    description: Absolute path to the JSON result emitted by ShipLayer.
+    value: ${{ steps.shiplayer.outputs.result_path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install ShipLayer
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        npm ci --ignore-scripts
+        npm run build
+
+    - name: Render localized marketing screenshots
+      if: ${{ inputs['render-screenshots'] == 'true' }}
+      shell: bash
+      env:
+        SHIPLAYER_ACTION_REPOSITORY: ${{ inputs.repository }}
+      run: |
+        set -euo pipefail
+
+        case "${SHIPLAYER_ACTION_REPOSITORY}" in
+          ""|/*|*..*)
+            echo "repository must be a contained relative workspace path" >&2
+            exit 1
+            ;;
+        esac
+
+        repository_path="$(cd "${GITHUB_WORKSPACE}/${SHIPLAYER_ACTION_REPOSITORY}" && pwd -P)"
+        case "${repository_path}" in
+          "${GITHUB_WORKSPACE}"|"${GITHUB_WORKSPACE}"/*) ;;
+          *)
+            echo "repository resolves outside GITHUB_WORKSPACE" >&2
+            exit 1
+            ;;
+        esac
+
+        node "${{ github.action_path }}/dist/index.js" prepare "${repository_path}"
+        marketing_path="${repository_path}/shiplayer-release/screenshots/marketing"
+        npm install --ignore-scripts --no-audit --no-fund --package-lock=false --prefix "${marketing_path}"
+        SHIPLAYER_PRESERVE_COMPLETE_DECKS=true SHIPLAYER_PW_CHANNEL=chrome npm run export --prefix "${marketing_path}"
+
+    - name: Run ShipLayer
+      id: shiplayer
+      shell: bash
+      env:
+        SHIPLAYER_ACTION_COMMAND: ${{ inputs.command }}
+        SHIPLAYER_ACTION_REPOSITORY: ${{ inputs.repository }}
+        SHIPLAYER_ACTION_LOCALES: ${{ inputs.locales }}
+        SHIPLAYER_ACTION_REPLACE_INCOMPLETE: ${{ inputs['replace-incomplete-screenshots'] }}
+      run: |
+        set -euo pipefail
+
+        case "${SHIPLAYER_ACTION_REPOSITORY}" in
+          ""|/*|*..*)
+            echo "repository must be a contained relative workspace path" >&2
+            exit 1
+            ;;
+        esac
+
+        repository_path="$(cd "${GITHUB_WORKSPACE}/${SHIPLAYER_ACTION_REPOSITORY}" && pwd -P)"
+        case "${repository_path}" in
+          "${GITHUB_WORKSPACE}"|"${GITHUB_WORKSPACE}"/*) ;;
+          *)
+            echo "repository resolves outside GITHUB_WORKSPACE" >&2
+            exit 1
+            ;;
+        esac
+
+        result_path="${GITHUB_WORKSPACE}/shiplayer-${SHIPLAYER_ACTION_COMMAND}.json"
+        locale_args=()
+        if [[ -n "${SHIPLAYER_ACTION_LOCALES}" ]]; then
+          locale_args=(--locales "${SHIPLAYER_ACTION_LOCALES}")
+        fi
+        incomplete_args=()
+        if [[ "${SHIPLAYER_ACTION_REPLACE_INCOMPLETE}" == "true" ]]; then
+          incomplete_args=(--replace-incomplete)
+        fi
+        case "${SHIPLAYER_ACTION_COMMAND}" in
+          plan)
+            node "${{ github.action_path }}/dist/index.js" plan "${repository_path}" --remote --json | tee "${result_path}"
+            ;;
+          draft-screenshots-plan)
+            node "${{ github.action_path }}/dist/index.js" draft-screenshots "${repository_path}" "${locale_args[@]}" --json | tee "${result_path}"
+            ;;
+          draft-screenshots-apply)
+            node "${{ github.action_path }}/dist/index.js" draft-screenshots "${repository_path}" "${locale_args[@]}" "${incomplete_args[@]}" --apply --yes-i-understand --json | tee "${result_path}"
+            ;;
+          draft-listing-plan)
+            node "${{ github.action_path }}/dist/index.js" draft-listing "${repository_path}" "${locale_args[@]}" --json | tee "${result_path}"
+            ;;
+          draft-listing-apply)
+            node "${{ github.action_path }}/dist/index.js" draft-listing "${repository_path}" "${locale_args[@]}" --apply --yes-i-understand --json | tee "${result_path}"
+            ;;
+          draft-descriptions-plan)
+            node "${{ github.action_path }}/dist/index.js" draft-descriptions "${repository_path}" --json | tee "${result_path}"
+            ;;
+          draft-descriptions-apply)
+            node "${{ github.action_path }}/dist/index.js" draft-descriptions "${repository_path}" --apply --yes-i-understand --json | tee "${result_path}"
+            ;;
+          apply)
+            node "${{ github.action_path }}/dist/index.js" apply "${repository_path}" --apply --yes-i-understand --json | tee "${result_path}"
+            ;;
+          *)
+            echo "unsupported ShipLayer action command" >&2
+            exit 1
+            ;;
+        esac
+
+        echo "result_path=${result_path}" >> "${GITHUB_OUTPUT}"

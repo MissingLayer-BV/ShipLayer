@@ -1,0 +1,142 @@
+schemaVersion: 1
+app:
+  name: ReceiptLoop
+  bundleId: com.example.receiptloop
+  appleTeamId: ABCDE12345
+  appStoreAppId: "1234567890"
+  sku: RECEIPTLOOP-IOS-001
+  version: "2.3"
+  build: "42"
+  deploymentTarget: "17.0"
+  deviceFamilies: [iphone, ipad]
+  locales: [en-US]
+  primaryLocale: en-US
+  primaryCategory: Productivity
+  availability: all
+  releaseKind: update
+  releaseMode: manual
+contacts:
+  supportEmail: support@example.com
+  supportUrl: https://example.com/support
+  privacyUrl: https://example.com/privacy
+  copyright: "2026 Example B.V."
+metadata:
+  whatsNewConfirmation:
+    version: "2.3"
+    confirmation: confirmed
+  localizations:
+    en-US:
+      name: ReceiptLoop
+      subtitle: Track receipts simply
+      promotionalText: Keep claims organized.
+      description: Create and track receipt-based claims with reminders.
+      keywords: [receipt, claim, reminder]
+      whatsNew: Improved receipt capture and reminder reliability.
+permissions:
+  - key: NSCameraUsageDescription
+    purpose: Capture a receipt to create a record.
+    confirmation: confirmed
+    evidence: [ReceiptLoop/Info.plist]
+permissionFlows: []
+dataProcessing:
+  - category: Other Financial Info
+    purpose: [App Functionality]
+    linkedToIdentity: false
+    usedForTracking: false
+    confirmation: confirmed
+externalProcessors: []
+aiDataSharing: {enabled: false}
+externalServiceDecisions: []
+sourceContradictionOverrides: []
+secondaryTargetConfirmations: []
+review:
+  contact:
+    firstName: Ada
+    lastName: Reviewer
+    email: reviewer@example.com
+    phone: "+12025550123"
+  demoAccount:
+    required: false
+  notes: No account is required.
+  recordingScenarios:
+    - id: launch-and-create
+      title: Create a claim
+      steps: [Launch the app, Tap New, Enter a sample amount, Save the record]
+  sampleData: [Use any receipt image or manual entry.]
+screenshots:
+  scenarios:
+    - id: home
+      title: Keep every claim visible
+      launchArguments: [--ui-testing-populated]
+      steps: [Launch to the populated home state]
+  configurations:
+    - device: iPhone 16 Pro Max
+      family: iphone
+      locale: en-US
+      requiredDimensions: {width: 1320, height: 2868}
+    - device: iPad Pro 13-inch (M4)
+      family: ipad
+      locale: en-US
+      requiredDimensions: {width: 2064, height: 2752}
+  rawOutputDir: release/raw-screenshots
+  marketingProjectPath: design/app-store-screenshots
+monetization:
+  type: subscriptions
+  group: {referenceName: ReceiptLoop Pro, localizations: {en-US: {displayName: ReceiptLoop Pro}}}
+  baseTerritory: USA
+  baseTerritoryConfirmation: confirmed
+  products:
+    - productId: com.example.receiptloop.monthly
+      referenceName: ReceiptLoop Monthly
+      duration: P1M
+      level: 1
+      localizations:
+        en-US: {displayName: ReceiptLoop Monthly, description: Unlimited receipt tracking each month.}
+      pricePointReference: P1
+      introductoryOffer: {type: free-trial, duration: P1W}
+      familySharing: true
+      reviewNotes: Open Settings then choose Upgrade.
+      reviewScreenshot: review/monthly.png
+    - productId: com.example.receiptloop.yearly
+      referenceName: ReceiptLoop Yearly
+      duration: P1Y
+      level: 2
+      localizations:
+        en-US: {displayName: ReceiptLoop Yearly, description: Unlimited receipt tracking each year.}
+      pricePointReference: P10
+      familySharing: true
+      reviewNotes: Open Settings then choose Upgrade.
+      reviewScreenshot: review/yearly.png
+  paywallNavigation: Open Settings, tap Upgrade, then select a plan.
+  restorePath: Open Settings, tap Upgrade, then tap Restore Purchases.
+  purchasePresentation:
+    localizedPriceSource: storekit-display-price
+    localizedPriceVisibleBeforePurchase: true
+    purchaseDisabledUntilPriceLoaded: true
+    subscriptionPeriodVisibleBeforePurchase: true
+    offerTermsVisibleBeforePurchase: true
+    termsAndPrivacyLinksVisibleBeforePurchase: true
+    sourceEvidence: [ReceiptLoop/PaywallView.swift]
+    testEvidence: [ReceiptLoopUITests/PaywallUITests.swift]
+    confirmation: confirmed
+  termsUrl: https://example.com/terms
+  termsOfUse: {type: apple-standard-eula, confirmation: confirmed}
+  privacyUrl: https://example.com/privacy
+  disclosureConfirmation: confirmed
+  confirmation: confirmed
+build:
+  signing: automatic
+  exportCompliance: exempt
+  testFlightUpload: false
+sync:
+  mode: dry-run
+  appStoreConnectKeyIdEnv: APP_STORE_CONNECT_KEY_ID
+  issuerIdEnv: APP_STORE_CONNECT_ISSUER_ID
+  privateKeyPathEnv: APP_STORE_CONNECT_PRIVATE_KEY_PATH
+confirmations:
+  privacy: confirmed
+  legal: confirmed
+  trader: confirmed
+  paidAgreements: confirmed
+  ageRating: confirmed
+  contentRights: confirmed

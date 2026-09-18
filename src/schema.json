@@ -1,0 +1,1446 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://missinglayer.dev/schemas/shiplayer/v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "app",
+    "contacts",
+    "metadata",
+    "permissions",
+    "permissionFlows",
+    "dataProcessing",
+    "externalProcessors",
+    "aiDataSharing",
+    "externalServiceDecisions",
+    "sourceContradictionOverrides",
+    "secondaryTargetConfirmations",
+    "review",
+    "screenshots",
+    "monetization",
+    "build",
+    "sync",
+    "confirmations"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "app": {
+      "$ref": "#/$defs/app"
+    },
+    "contacts": {
+      "$ref": "#/$defs/contacts"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "localizations"
+      ],
+      "properties": {
+        "whatsNewConfirmation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "version",
+            "confirmation"
+          ],
+          "properties": {
+            "version": {
+              "type": "string",
+              "pattern": "^[0-9]+(?:\\.[0-9]+){0,2}$"
+            },
+            "confirmation": {
+              "$ref": "#/$defs/confirmation"
+            }
+          }
+        },
+        "localizations": {
+          "type": "object",
+          "minProperties": 1,
+          "patternProperties": {
+            "^[a-z]{2,3}(?:-[A-Z][a-z]{3}|-[A-Z]{2})?(?:-[A-Z]{2})?$": {
+              "$ref": "#/$defs/localeCopy"
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    "permissions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/permission"
+      }
+    },
+    "permissionFlows": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/permissionFlow"
+      }
+    },
+    "dataProcessing": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/dataProcessing"
+      }
+    },
+    "externalProcessors": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/processor"
+      }
+    },
+    "aiDataSharing": {
+      "oneOf": [
+        { "$ref": "#/$defs/aiDataSharingDisabled" },
+        { "$ref": "#/$defs/aiDataSharingEnabled" }
+      ]
+    },
+    "externalServiceDecisions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/externalServiceDecision"
+      }
+    },
+    "sourceContradictionOverrides": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/sourceContradictionOverride"
+      }
+    },
+    "secondaryTargetConfirmations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/secondaryTargetConfirmation"
+      }
+    },
+    "review": {
+      "$ref": "#/$defs/review"
+    },
+    "screenshots": {
+      "$ref": "#/$defs/screenshots"
+    },
+    "monetization": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/free"
+        },
+        {
+          "$ref": "#/$defs/paidApp"
+        },
+        {
+          "$ref": "#/$defs/nonConsumables"
+        },
+        {
+          "$ref": "#/$defs/subscriptions"
+        }
+      ]
+    },
+    "build": {
+      "$ref": "#/$defs/build"
+    },
+    "sync": {
+      "$ref": "#/$defs/sync"
+    },
+    "confirmations": {
+      "$ref": "#/$defs/confirmations"
+    }
+  },
+  "$defs": {
+    "nonEmpty": {
+      "type": "string",
+      "minLength": 1
+    },
+    "confirmation": {
+      "enum": [
+        "confirmed",
+        "needs-human-confirmation",
+        "not-applicable"
+      ]
+    },
+    "repoPath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(^|/)\\.\\.?(/|$)).+$"
+    },
+    "url": {
+      "type": "string",
+      "pattern": "^https://[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+(?:[:][0-9]{1,5})?(?:/[^\\s]*)?$"
+    },
+    "email": {
+      "type": "string",
+      "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$"
+    },
+    "bundleId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)+$"
+    },
+    "productId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100,
+      "pattern": "^[A-Za-z0-9._-]+$"
+    },
+    "locale": {
+      "type": "string",
+      "pattern": "^[a-z]{2,3}(?:-[A-Z][a-z]{3}|-[A-Z]{2})?(?:-[A-Z]{2})?$"
+    },
+    "dataCategory": {
+      "enum": ["Name", "Email Address", "Phone Number", "Physical Address", "Other User Contact Info", "Health", "Fitness", "Payment Info", "Credit Info", "Other Financial Info", "Precise Location", "Coarse Location", "Sensitive Info", "Contacts", "Emails or Text Messages", "Photos or Videos", "Audio Data", "Gameplay Content", "Customer Support", "Other User Content", "Browsing History", "Search History", "User ID", "Device ID", "Purchases", "Product Interaction", "Advertising Data", "Other Usage Data", "Crash Data", "Performance Data", "Other Diagnostic Data", "Environment Scanning", "Hands", "Head", "Other Data"]
+    },
+    "dataPurpose": {
+      "enum": ["Third-Party Advertising", "Developer’s Advertising or Marketing", "Analytics", "Product Personalization", "App Functionality", "Other Purposes"]
+    },
+    "app": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "bundleId",
+        "deviceFamilies",
+        "locales",
+        "primaryLocale",
+        "availability",
+        "releaseMode"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "bundleId": {
+          "anyOf": [
+            {
+              "const": ""
+            },
+            {
+              "$ref": "#/$defs/bundleId"
+            }
+          ]
+        },
+        "appleTeamId": {
+          "type": "string",
+          "pattern": "^[A-Z0-9]{10}$"
+        },
+        "appStoreAppId": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "sku": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^[0-9]+(?:\\.[0-9]+){0,2}$"
+        },
+        "build": {
+          "type": "string",
+          "pattern": "^[0-9]+(?:\\.[0-9]+){0,2}$"
+        },
+        "deploymentTarget": {
+          "type": "string",
+          "pattern": "^[0-9]+(\\.[0-9]+)?$"
+        },
+        "productionIconCatalog": {
+          "$ref": "#/$defs/repoPath"
+        },
+        "productionIconAsset": {
+          "$ref": "#/$defs/repoPath"
+        },
+        "productionIconAssetConfirmation": {
+          "$ref": "#/$defs/confirmation"
+        },
+        "deviceFamilies": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "iphone",
+              "ipad"
+            ]
+          }
+        },
+        "locales": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/locale"
+          }
+        },
+        "primaryLocale": {
+          "$ref": "#/$defs/locale"
+        },
+        "primaryCategory": {
+          "type": "string"
+        },
+        "secondaryCategory": {
+          "type": "string"
+        },
+        "availability": {
+          "enum": [
+            "all",
+            "selected"
+          ]
+        },
+        "releaseKind": {
+          "enum": [
+            "first-release",
+            "update",
+            "needs-human-confirmation"
+          ]
+        },
+        "releaseMode": {
+          "enum": [
+            "manual",
+            "automatic",
+            "scheduled"
+          ]
+        }
+      }
+    },
+    "contacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "supportEmail": {
+          "$ref": "#/$defs/email"
+        },
+        "supportUrl": {
+          "$ref": "#/$defs/url"
+        },
+        "marketingUrl": {
+          "$ref": "#/$defs/url"
+        },
+        "privacyUrl": {
+          "$ref": "#/$defs/url"
+        },
+        "copyright": {
+          "type": "string"
+        }
+      }
+    },
+    "localeCopy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 30
+        },
+        "subtitle": {
+          "type": "string",
+          "maxLength": 30
+        },
+        "promotionalText": {
+          "type": "string",
+          "maxLength": 170
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "keywords": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 3
+          }
+        },
+        "whatsNew": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "supportUrl": {
+          "$ref": "#/$defs/url"
+        },
+        "marketingUrl": {
+          "$ref": "#/$defs/url"
+        },
+        "privacyPolicyUrl": {
+          "$ref": "#/$defs/url"
+        },
+        "confirmation": {
+          "$ref": "#/$defs/confirmation"
+        }
+      }
+    },
+    "permission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "confirmation"
+      ],
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/nonEmpty"
+        },
+        "purpose": {
+          "type": "string"
+        },
+        "confirmation": {
+          "$ref": "#/$defs/confirmation"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/repoPath"
+          }
+        }
+      }
+    },
+    "permissionFlow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "category",
+        "dismissibleScreenBeforePrompt",
+        "deniedPathOffersSettingsLink",
+        "confirmation"
+      ],
+      "properties": {
+        "category": {
+          "enum": [
+            "camera",
+            "microphone",
+            "photo-library",
+            "location",
+            "notifications",
+            "contacts",
+            "calendar",
+            "reminders",
+            "media-library",
+            "speech-recognition",
+            "motion",
+            "tracking"
+          ]
+        },
+        "dismissibleScreenBeforePrompt": {
+          "type": "boolean"
+        },
+        "deniedPathOffersSettingsLink": {
+          "type": "boolean"
+        },
+        "confirmation": {
+          "$ref": "#/$defs/confirmation"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/repoPath"
+          }
+        }
+      }
+    },
+    "dataProcessing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "category",
+        "purpose",
+        "linkedToIdentity",
+        "usedForTracking",
+        "confirmation"
+      ],
+      "properties": {
+        "category": {
+          "$ref": "#/$defs/dataCategory"
+        },
+        "purpose": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/dataPurpose"
+          }
+        },
+        "linkedToIdentity": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "const": "unknown"
+            }
+          ]
+        },
+        "usedForTracking": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "const": "unknown"
+            }
+          ]
+        },
+        "confirmation": {
+          "$ref": "#/$defs/confirmation"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/repoPath"
+          }
+        }
+      }
+    },
+    "processor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "kind",
+        "aiPipelineRecipient",
+        "purpose",
+        "dataCategories",
+        "privacyPolicyUrl",
+        "protectionConfirmation",
+        "confirmation"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/nonEmpty"
+        },
+        "kind": {
+          "enum": ["ai", "network", "analytics", "payments", "other"]
+        },
+        "aiPipelineRecipient": {
+          "type": "boolean"
+        },
+        "purpose": {
+          "$ref": "#/$defs/dataPurpose"
+        },
+        "dataCategories": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/dataCategory"
+          }
+        },
+        "privacyPolicyUrl": {
+          "$ref": "#/$defs/url"
+        },
+        "protectionConfirmation": {
+          "$ref": "#/$defs/confirmation"
+        },
+        "confirmation": {
+          "$ref": "#/$defs/confirmation"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/repoPath"
+          }
+        },
+        "collectionDetermination": {
+          "enum": ["collection", "not-collection", "needs-human-confirmation"],
+          "description": "Human-confirmed: does this processor's receipt of data constitute 'collection' under Apple's App Privacy definition, or does it fall under Apple's real-time-service exception (transmitted only to service the request, not retained)? Optional; absent or 'needs-human-confirmation' blocks until answered and is never read as 'not-collection'."
+        },
+        "notCollectionAttestation": {
+          "$ref": "#/$defs/notCollectionAttestation",
+          "description": "Required by preflight for a not-collection determination. Structured human attestation and evidence; free-form notes never substitute for this fact."
+        },
+        "collectionDeterminationReason": {
+          "$ref": "#/$defs/nonEmpty",
+          "description": "Optional human audit note. ShipLayer does not semantically validate this prose and it cannot satisfy a not-collection attestation."
+        }
+      }
+    },
+    "notCollectionAttestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dataNotRetainedBeyondRealTimeService", "basis", "evidence", "confirmation"],
+      "properties": {
+        "dataNotRetainedBeyondRealTimeService": {
+          "anyOf": [{ "type": "boolean" }, { "const": "needs-human-confirmation" }],
+          "description": "Human-observed Apple-definition fact: transmitted data is not retained beyond servicing the request in real time. Only true may support not-collection."
+        },
+        "basis": {
+          "enum": ["first-party-implementation", "vendor-documentation", "contract-dpa", "written-vendor-confirmation", "needs-human-confirmation"],
+          "description": "Preflight clears only vendor-documentation with the exact processor-privacy-policy URL on an exact linked host and a canonical privacy/data-protection/data-collection/retention/DPA route. Legacy first-party repository evidence, contract-dpa, and written-vendor-confirmation remain fail-closed in v0.1 because they cannot safely prove runtime retention behavior without storing confidential material."
+        },
+        "evidence": { "$ref": "#/$defs/notCollectionEvidence", "description": "Preflight verifies exact-host/policy-route linkage only; it never proves retention semantics from a document. Legacy repo-path evidence is accepted only to give a safe migration blocker and never clears readiness." },
+        "confirmation": { "$ref": "#/$defs/confirmation" }
+      }
+    },
+    "notCollectionEvidence": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "path"],
+          "properties": { "kind": { "const": "repo-path" }, "path": { "$ref": "#/$defs/repoPath", "description": "Legacy-compatible only; cannot clear a not-collection determination. Migrate to processor-privacy-policy." } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "url"],
+          "properties": { "kind": { "const": "public-url" }, "url": { "$ref": "#/$defs/url", "description": "Legacy-compatible only: v0.1 rejects arbitrary public URLs as not-collection clearance." } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": { "kind": { "const": "processor-privacy-policy" } }
+        }
+      ]
+    },
+    "aiDataSharingDisabled": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "const": false }
+      }
+    },
+    "aiDataSharingEnabled": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "dataSent", "purpose", "processorNames", "consent", "privacyPolicy"],
+      "properties": {
+        "enabled": { "const": true },
+        "dataSent": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/nonEmpty" }
+        },
+        "purpose": { "$ref": "#/$defs/nonEmpty" },
+        "processorNames": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/nonEmpty" }
+        },
+        "consent": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["shownBeforeTransmission", "affirmativeAction", "declinePath", "privacyPolicyLinkVisible", "evidence", "confirmation"],
+          "properties": {
+            "shownBeforeTransmission": { "type": "boolean" },
+            "affirmativeAction": { "$ref": "#/$defs/nonEmpty" },
+            "declinePath": { "$ref": "#/$defs/nonEmpty" },
+            "privacyPolicyLinkVisible": { "type": "boolean" },
+            "evidence": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/repoPath" } },
+            "confirmation": { "$ref": "#/$defs/confirmation" }
+          }
+        },
+        "privacyPolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["identifiesDataAndCollectionMethod", "identifiesAllUses", "namesAllProcessors", "explainsRetentionAndDeletion", "confirmsEqualProtection", "evidence", "confirmation"],
+          "properties": {
+            "identifiesDataAndCollectionMethod": { "type": "boolean" },
+            "identifiesAllUses": { "type": "boolean" },
+            "namesAllProcessors": { "type": "boolean" },
+            "explainsRetentionAndDeletion": { "type": "boolean" },
+            "confirmsEqualProtection": { "type": "boolean" },
+            "evidence": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/repoPath" } },
+            "confirmation": { "$ref": "#/$defs/confirmation" }
+          }
+        }
+      }
+    },
+    "purchasePresentation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["localizedPriceSource", "localizedPriceVisibleBeforePurchase", "purchaseDisabledUntilPriceLoaded", "subscriptionPeriodVisibleBeforePurchase", "offerTermsVisibleBeforePurchase", "termsAndPrivacyLinksVisibleBeforePurchase", "sourceEvidence", "testEvidence", "confirmation"],
+      "properties": {
+        "localizedPriceSource": { "const": "storekit-display-price" },
+        "localizedPriceVisibleBeforePurchase": { "type": "boolean" },
+        "purchaseDisabledUntilPriceLoaded": { "type": "boolean" },
+        "subscriptionPeriodVisibleBeforePurchase": { "oneOf": [{ "type": "boolean" }, { "const": "not-applicable" }] },
+        "offerTermsVisibleBeforePurchase": { "oneOf": [{ "type": "boolean" }, { "const": "not-applicable" }] },
+        "termsAndPrivacyLinksVisibleBeforePurchase": { "oneOf": [{ "type": "boolean" }, { "const": "not-applicable" }] },
+        "sourceEvidence": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/repoPath" } },
+        "testEvidence": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/repoPath" } },
+        "confirmation": { "$ref": "#/$defs/confirmation" }
+      }
+    },
+    "externalServiceDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "finding",
+        "disposition",
+        "reason",
+        "evidence",
+        "confirmation"
+      ],
+      "properties": {
+        "finding": {
+          "$ref": "#/$defs/nonEmpty"
+        },
+        "disposition": {
+          "enum": [
+            "declared-processor",
+            "not-an-external-processor",
+            "reference-only"
+          ]
+        },
+        "processorName": {
+          "$ref": "#/$defs/nonEmpty",
+          "description": "For a declared-processor disposition, the exact externalProcessors[].name the human linked to this scanner finding. A reference-only disposition is a human-confirmed documentation/privacy/marketing/reference literal, not a reachability determination."
+        },
+        "reason": {
+          "$ref": "#/$defs/nonEmpty"
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/repoPath"
+          }
+        },
+        "confirmation": {
+          "$ref": "#/$defs/confirmation"
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "disposition": { "const": "reference-only" } }, "required": ["disposition"] },
+          "then": { "properties": { "finding": { "pattern": "^endpoint:https?://" } } }
+        }
+      ]
+    },
+    "sourceContradictionOverride": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "finding",
+        "reason",
+        "evidence",
+        "confirmation"
+      ],
+      "properties": {
+        "finding": {
+          "$ref": "#/$defs/nonEmpty",
+          "description": "Identifies the exact blocker this overrides, e.g. 'monetization.source-contradiction', 'ai-sharing.source-contradiction:endpoint:https://example.com/v1/chat/completions', or 'purchase.unavailable-source'."
+        },
+        "reason": {
+          "$ref": "#/$defs/nonEmpty",
+          "description": "Human-authored explanation of why the source evidence does not actually contradict the manifest declaration (or, for purchase.unavailable-source, why payment truly does stay unavailable while price data is loading or unavailable)."
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/repoPath"
+          }
+        },
+        "confirmation": {
+          "$ref": "#/$defs/confirmation"
+        }
+      }
+    },
+    "secondaryTargetConfirmation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bundleId",
+        "classification",
+        "evidence",
+        "confirmation"
+      ],
+      "properties": {
+        "bundleId": {
+          "$ref": "#/$defs/bundleId"
+        },
+        "classification": {
+          "enum": ["extension", "widget", "other-app"]
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/repoPath"
+          }
+        },
+        "confirmation": {
+          "$ref": "#/$defs/confirmation"
+        }
+      }
+    },
+    "scenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "steps"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]*$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "launchArguments": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "maxLength": 200
+          }
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          }
+        },
+        "confirmation": {
+          "$ref": "#/$defs/confirmation"
+        },
+        "caption": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[^\\r\\n]+$"
+        },
+        "localizations": {
+          "type": "object",
+          "patternProperties": {
+            "^[a-z]{2,3}(?:-[A-Z][a-z]{3}|-[A-Z]{2})?(?:-[A-Z]{2})?$": {
+              "$ref": "#/$defs/screenshotLocalization"
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    "screenshotLocalization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "caption"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "caption": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[^\\r\\n]+$"
+        },
+        "confirmation": {
+          "$ref": "#/$defs/confirmation"
+        }
+      }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "recordingScenarios"
+      ],
+      "properties": {
+        "contact": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "firstName": {
+              "type": "string"
+            },
+            "lastName": {
+              "type": "string"
+            },
+            "email": {
+              "$ref": "#/$defs/email"
+            },
+            "phone": {
+              "type": "string"
+            }
+          }
+        },
+        "demoAccount": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "required"
+          ],
+          "properties": {
+            "required": {
+              "type": "boolean"
+            },
+            "usernameEnv": {
+              "type": "string",
+              "pattern": "^[A-Z][A-Z0-9_]*$"
+            },
+            "passwordEnv": {
+              "type": "string",
+              "pattern": "^[A-Z][A-Z0-9_]*$"
+            },
+            "setupInstructions": {
+              "type": "string",
+              "maxLength": 1000
+            },
+            "credentialsEnteredConfirmation": {
+              "$ref": "#/$defs/confirmation"
+            }
+          }
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 2500
+        },
+        "recordingScenarios": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "$ref": "#/$defs/scenario"
+          }
+        },
+        "sampleData": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "maxLength": 200
+          }
+        }
+      }
+    },
+    "screenshots": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scenarios",
+        "configurations",
+        "rawOutputDir"
+      ],
+      "properties": {
+        "scenarios": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/scenario"
+          }
+        },
+        "configurations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "device",
+              "family",
+              "locale",
+              "requiredDimensions"
+            ],
+            "properties": {
+              "device": {
+                "$ref": "#/$defs/nonEmpty"
+              },
+              "family": {
+                "enum": [
+                  "iphone",
+                  "ipad"
+                ]
+              },
+              "locale": {
+                "$ref": "#/$defs/locale"
+              },
+              "sourceLocale": {
+                "$ref": "#/$defs/locale"
+              },
+              "requiredDimensions": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "width",
+                  "height"
+                ],
+                "properties": {
+                  "width": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "height": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              }
+            }
+          }
+        },
+        "localizations": {
+          "type": "object",
+          "patternProperties": {
+            "^[a-z]{2,3}(?:-[A-Z][a-z]{3}|-[A-Z]{2})?(?:-[A-Z]{2})?$": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "launchArguments": {
+                  "type": "array",
+                  "maxItems": 20,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 200
+                  }
+                }
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "rawOutputDir": {
+          "$ref": "#/$defs/repoPath"
+        },
+        "marketingProjectPath": {
+          "$ref": "#/$defs/repoPath"
+        },
+        "finalOutputDir": {
+          "$ref": "#/$defs/repoPath"
+        }
+      }
+    },
+    "localization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "displayName",
+        "description"
+      ],
+      "properties": {
+        "displayName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 30
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 45
+        }
+      }
+    },
+    "nonConsumableProduct": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "productId",
+        "referenceName",
+        "localizations",
+        "pricePointReference",
+        "familySharing",
+        "reviewNotes",
+        "reviewScreenshot"
+      ],
+      "properties": {
+        "productId": {
+          "$ref": "#/$defs/productId"
+        },
+        "referenceName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "localizations": {
+          "type": "object",
+          "minProperties": 1,
+          "patternProperties": {
+            "^[a-z]{2,3}(?:-[A-Z][a-z]{3}|-[A-Z]{2})?(?:-[A-Z]{2})?$": {
+              "$ref": "#/$defs/localization"
+            }
+          },
+          "additionalProperties": false
+        },
+        "pricePointReference": {
+          "$ref": "#/$defs/nonEmpty"
+        },
+        "familySharing": {
+          "type": "boolean"
+        },
+        "reviewNotes": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "reviewScreenshot": {
+          "$ref": "#/$defs/repoPath"
+        }
+      }
+    },
+    "subscriptionProduct": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "productId",
+        "referenceName",
+        "duration",
+        "level",
+        "localizations",
+        "pricePointReference",
+        "familySharing",
+        "reviewNotes",
+        "reviewScreenshot"
+      ],
+      "properties": {
+        "productId": {
+          "$ref": "#/$defs/productId"
+        },
+        "referenceName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "duration": {
+          "enum": [
+            "P1W",
+            "P1M",
+            "P2M",
+            "P3M",
+            "P6M",
+            "P1Y"
+          ]
+        },
+        "level": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "localizations": {
+          "type": "object",
+          "minProperties": 1,
+          "patternProperties": {
+            "^[a-z]{2,3}(?:-[A-Z][a-z]{3}|-[A-Z]{2})?(?:-[A-Z]{2})?$": {
+              "$ref": "#/$defs/localization"
+            }
+          },
+          "additionalProperties": false
+        },
+        "pricePointReference": {
+          "$ref": "#/$defs/nonEmpty"
+        },
+        "introductoryOffer": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "duration"
+          ],
+          "properties": {
+            "type": {
+              "enum": [
+                "free-trial",
+                "pay-up-front",
+                "pay-as-you-go"
+              ]
+            },
+            "duration": {
+              "enum": [
+                "P3D",
+                "P1W",
+                "P2W",
+                "P1M",
+                "P2M",
+                "P3M",
+                "P6M",
+                "P1Y"
+              ]
+            },
+            "pricePointReference": {
+              "$ref": "#/$defs/nonEmpty"
+            },
+            "numberOfPeriods": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 12
+            }
+          }
+        },
+        "familySharing": {
+          "type": "boolean"
+        },
+        "reviewNotes": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "reviewScreenshot": {
+          "$ref": "#/$defs/repoPath"
+        }
+      }
+    },
+    "free": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "confirmation"
+      ],
+      "properties": {
+        "type": {
+          "const": "free"
+        },
+        "confirmation": {
+          "$ref": "#/$defs/confirmation"
+        }
+      }
+    },
+    "paidApp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "pricePointReference"
+      ],
+      "properties": {
+        "type": {
+          "const": "paid-app"
+        },
+        "pricePointReference": {
+          "$ref": "#/$defs/nonEmpty"
+        }
+      }
+    },
+    "nonConsumables": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "products",
+        "paywallNavigation",
+        "restorePath",
+        "purchasePresentation",
+        "confirmation"
+      ],
+      "properties": {
+        "type": {
+          "const": "non-consumables"
+        },
+        "products": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/nonConsumableProduct"
+          }
+        },
+        "paywallNavigation": {
+          "$ref": "#/$defs/nonEmpty"
+        },
+        "restorePath": {
+          "$ref": "#/$defs/nonEmpty"
+        },
+        "purchasePresentation": {
+          "$ref": "#/$defs/purchasePresentation"
+        },
+        "confirmation": {
+          "$ref": "#/$defs/confirmation"
+        }
+      }
+    },
+    "subscriptions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "group",
+        "baseTerritory",
+        "baseTerritoryConfirmation",
+        "products",
+        "paywallNavigation",
+        "restorePath",
+        "purchasePresentation",
+        "termsUrl",
+        "termsOfUse",
+        "privacyUrl",
+        "disclosureConfirmation",
+        "confirmation"
+      ],
+      "properties": {
+        "type": {
+          "const": "subscriptions"
+        },
+        "group": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "referenceName",
+            "localizations"
+          ],
+          "properties": {
+            "referenceName": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "subscriptionGroupId": {
+              "type": "string"
+            },
+            "localizations": {
+              "type": "object",
+              "minProperties": 1,
+              "patternProperties": {
+                "^[a-z]{2,3}(?:-[A-Z][a-z]{3}|-[A-Z]{2})?(?:-[A-Z]{2})?$": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "displayName"
+                  ],
+                  "properties": {
+                    "displayName": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[^<>\\u0000-\\u001F\\u007F]+$"
+                    }
+                  }
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "baseTerritory": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        },
+        "baseTerritoryConfirmation": {
+          "$ref": "#/$defs/confirmation"
+        },
+        "products": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/subscriptionProduct"
+          }
+        },
+        "paywallNavigation": {
+          "$ref": "#/$defs/nonEmpty"
+        },
+        "restorePath": {
+          "$ref": "#/$defs/nonEmpty"
+        },
+        "purchasePresentation": {
+          "$ref": "#/$defs/purchasePresentation"
+        },
+        "termsUrl": {
+          "$ref": "#/$defs/url"
+        },
+        "termsOfUse": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "confirmation"],
+          "properties": {
+            "type": {
+              "enum": ["apple-standard-eula", "custom"]
+            },
+            "confirmation": {
+              "$ref": "#/$defs/confirmation"
+            }
+          }
+        },
+        "privacyUrl": {
+          "$ref": "#/$defs/url"
+        },
+        "disclosureConfirmation": {
+          "$ref": "#/$defs/confirmation"
+        },
+        "confirmation": {
+          "$ref": "#/$defs/confirmation"
+        }
+      }
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "signing"
+      ],
+      "properties": {
+        "signing": {
+          "enum": [
+            "automatic",
+            "manual",
+            "unknown"
+          ]
+        },
+        "exportCompliance": {
+          "enum": [
+            "exempt",
+            "documentation-required",
+            "unknown"
+          ]
+        },
+        "testFlightUpload": {
+          "type": "boolean"
+        }
+      }
+    },
+    "sync": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "dry-run",
+            "apply"
+          ]
+        },
+        "appStoreConnectKeyIdEnv": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]*$"
+        },
+        "issuerIdEnv": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]*$"
+        },
+        "privateKeyPathEnv": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]*$"
+        }
+      }
+    },
+    "confirmations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "privacy",
+        "legal",
+        "trader",
+        "paidAgreements",
+        "ageRating",
+        "contentRights"
+      ],
+      "properties": {
+        "privacy": {
+          "$ref": "#/$defs/confirmation"
+        },
+        "legal": {
+          "$ref": "#/$defs/confirmation"
+        },
+        "trader": {
+          "$ref": "#/$defs/confirmation"
+        },
+        "paidAgreements": {
+          "$ref": "#/$defs/confirmation"
+        },
+        "ageRating": {
+          "$ref": "#/$defs/confirmation"
+        },
+        "contentRights": {
+          "$ref": "#/$defs/confirmation"
+        }
+      }
+    }
+  }
+}

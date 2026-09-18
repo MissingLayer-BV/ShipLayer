@@ -1,0 +1,49 @@
+{
+  "name": "shiplayer",
+  "version": "0.1.0",
+  "private": true,
+  "files": [
+    "dist",
+    "assets",
+    "README.md",
+    "docs",
+    "skills",
+    ".env.example"
+  ],
+  "description": "A safe, local-first App Store Connect release CLI.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git@github.com:MissingLayer-BV/ShipLayer.git"
+  },
+  "homepage": "https://github.com/MissingLayer-BV/ShipLayer",
+  "bugs": "https://github.com/MissingLayer-BV/ShipLayer/issues",
+  "keywords": ["app-store-connect", "app-store", "release-automation", "swift"],
+  "type": "module",
+  "bin": {
+    "shiplayer": "./dist/index.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && cp src/schema.json dist/schema.json && chmod +x dist/index.js",
+    "dev": "tsx src/index.ts",
+    "lint": "tsc --noEmit -p tsconfig.json",
+    "test": "tsx --test test/*.test.ts",
+    "check": "npm run lint && npm test && npm run build",
+    "install-skill": "bash scripts/install.sh install",
+    "uninstall-skill": "bash scripts/install.sh uninstall",
+    "install-status": "bash scripts/install.sh status"
+  },
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "jpeg-js": "^0.4.4",
+    "yaml": "^2.5.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
