@@ -1,5 +1,7 @@
 # ShipLayer
 
+[![check](https://github.com/MissingLayer-BV/ShipLayer/actions/workflows/check.yml/badge.svg)](https://github.com/MissingLayer-BV/ShipLayer/actions/workflows/check.yml)
+
 **From repo to review.** ShipLayer is a local-first, safety-first release CLI for App Store Connect and Google Play. It scans your native app repository, captures evidence instead of guessing, and generates the assets and checklists between a build and App Review.
 
 > Status: v0.1 beta. The happy path works end to end, but final App Review submission stays human-controlled by design, and several declarations still need your explicit confirmation. See [docs/automation-boundaries.md](docs/automation-boundaries.md) for what ShipLayer will and won't do.
@@ -13,6 +15,8 @@ Shipping a mobile release means dozens of small, high-stakes facts spread across
 - **Agent-friendly.** Ships a `ship-app-store` skill so a coding agent can run the whole flow without improvising release logic.
 
 ## How it works
+
+v0.1 is distributed as a git checkout, not an npm package (`private: true`) — clone, build, and run from `./dist/index.js`, or `npm link` it onto PATH.
 
 ```bash
 npm ci && npm run build
