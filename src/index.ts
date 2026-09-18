@@ -5,6 +5,7 @@ import { draftDescriptions } from "./asc-description-draft.js";
 import { draftListing } from "./asc-listing-draft.js";
 import { draftReview } from "./asc-review-draft.js";
 import { draftVersion } from "./asc-version-draft.js";
+import { draft, parseDraftStages } from "./asc-draft.js";
 import { existsSync } from "node:fs";
 import { analyzeRepository, detectScreenshotHarness, findValue } from "./scanner.js";
 import { appStorePlan } from "./asc.js";
@@ -25,11 +26,22 @@ async function main(args: string[]): Promise<void> {
   const [command, repositoryArgument, ...options] = args;
   if (!command || command === "--help" || command === "help") return printHelp();
   if (command === "--version" || command === "version") return write(`${VERSION}\n`);
-  if (!new Set(["init", "analyze", "prepare", "check", "plan", "capture", "apply", "submit", "draft-descriptions", "draft-listing", "draft-review", "draft-screenshots", "draft-version"]).has(command)) throw new Error(`Unknown command '${command}'.\n\n${helpText()}`);
+  if (!new Set(["init", "analyze", "prepare", "check", "plan", "capture", "apply", "submit", "draft", "draft-descriptions", "draft-listing", "draft-review", "draft-screenshots", "draft-version"]).has(command)) throw new Error(`Unknown command '${command}'.\n\n${helpText()}`);
   if (!repositoryArgument) throw new Error(`Missing <repo>.\n\n${helpText()}`);
   const repository = path.resolve(repositoryArgument); if (!existsSync(repository)) throw new Error(`Repository does not exist: ${repository}`);
   validateOptions(command, options);
   const json = options.includes("--json");
+  if (command === "draft") {
+    const result = await draft(repository, await readManifest(repository), {
+      stages: parseDraftStages(optionValue(options, "--only")),
+      locales: optionValue(options, "--locales")?.split(",").filter(Boolean),
+      replaceIncompleteScreenshots: options.includes("--replace-incomplete"),
+    }, options.includes("--apply"), options.includes("--yes-i-understand"));
+    output(result, json, JSON.stringify(result, null, 2));
+    if (result.failed) process.exitCode = 1;
+    return;
+  }
+  // The draft-* spellings below are kept for workflows pinned to them; `draft --only <stage>` replaces them.
   if (command === "draft-screenshots") {
     const locales = optionValue(options, "--locales")?.split(",").filter(Boolean);
     const result = await draftScreenshots(repository, await readManifest(repository), options.includes("--apply"), options.includes("--yes-i-understand"), undefined, locales, options.includes("--replace-incomplete"));
@@ -201,9 +213,9 @@ function placeholderPrivacyPolicyUrl(host: string): string {
 }
 function humanAnalysis(report: Awaited<ReturnType<typeof analyzeRepository>>): string { return `Repository: ${report.repository}\nScanned ${report.ignored.filesScanned} bounded files.\n\n${report.findings.map((finding) => `- ${finding.key}: ${Array.isArray(finding.value) ? finding.value.join(", ") : String(finding.value)} [${finding.confidence}] (${finding.evidence.map((item) => item.source).join(", ")})${finding.proposal ? " — proposal; human confirmation required" : ""}`).join("\n")}\n\nUnresolved questions:\n${report.unresolvedQuestions.map((item) => `- ${item}`).join("\n")}${report.contradictions.length ? `\n\nContradictions:\n${report.contradictions.map((item) => `- ${item}`).join("\n")}` : ""}`; }
 function optionValue(options: string[], name: string): string | undefined { const index = options.indexOf(name); return index >= 0 ? options[index + 1] : undefined; }
-const VALUE_OPTIONS: Record<string, Set<string>> = { prepare: new Set(["--out"]), capture: new Set(["--from", "--family", "--locale"]), "draft-listing": new Set(["--locales"]), "draft-screenshots": new Set(["--locales"]) };
+const VALUE_OPTIONS: Record<string, Set<string>> = { prepare: new Set(["--out"]), capture: new Set(["--from", "--family", "--locale"]), "draft-listing": new Set(["--locales"]), "draft-screenshots": new Set(["--locales"]), draft: new Set(["--locales", "--only"]) };
 function validateOptions(command: string, options: string[]): void {
-  const allowed: Record<string, Set<string>> = { "draft-screenshots": new Set(["--json", "--apply", "--yes-i-understand", "--locales", "--replace-incomplete"]), "draft-descriptions": new Set(["--json", "--apply", "--yes-i-understand"]), "draft-review": new Set(["--json", "--apply", "--yes-i-understand"]), "draft-version": new Set(["--json", "--apply", "--yes-i-understand"]), "draft-listing": new Set(["--json", "--apply", "--yes-i-understand", "--locales"]), init: new Set(["--force", "--json"]), analyze: new Set(["--json"]), prepare: new Set(["--out", "--json"]), check: new Set(["--json", "--remote"]), plan: new Set(["--json", "--remote"]), capture: new Set(["--json", "--execute", "--yes-execute", "--from", "--family", "--locale"]), apply: new Set(["--json", "--apply", "--yes-i-understand"]), submit: new Set(["--json", "--submit", "--yes-submit"]) };
+  const allowed: Record<string, Set<string>> = { draft: new Set(["--json", "--apply", "--yes-i-understand", "--only", "--locales", "--replace-incomplete"]), "draft-screenshots": new Set(["--json", "--apply", "--yes-i-understand", "--locales", "--replace-incomplete"]), "draft-descriptions": new Set(["--json", "--apply", "--yes-i-understand"]), "draft-review": new Set(["--json", "--apply", "--yes-i-understand"]), "draft-version": new Set(["--json", "--apply", "--yes-i-understand"]), "draft-listing": new Set(["--json", "--apply", "--yes-i-understand", "--locales"]), init: new Set(["--force", "--json"]), analyze: new Set(["--json"]), prepare: new Set(["--out", "--json"]), check: new Set(["--json", "--remote"]), plan: new Set(["--json", "--remote"]), capture: new Set(["--json", "--execute", "--yes-execute", "--from", "--family", "--locale"]), apply: new Set(["--json", "--apply", "--yes-i-understand"]), submit: new Set(["--json", "--submit", "--yes-submit"]) };
   const known = allowed[command]; if (!known) return; const valueOptions = VALUE_OPTIONS[command] || new Set<string>();
   for (let index = 0; index < options.length; index++) {
     const option = options[index];
@@ -214,5 +226,5 @@ function validateOptions(command: string, options: string[]): void {
 function output(value: unknown, json: boolean, text: string): void { write(json ? stableJson(value) : `${text}\n`); }
 function write(value: string): void { process.stdout.write(value); }
 function printHelp(): void { write(`${helpText()}\n`); }
-function helpText(): string { return `ShipLayer ${VERSION} — The missing layer between your repo and the App Store.\n\nUsage: shiplayer <command> <repo> [options]\n\nCommands:\n  draft-screenshots <repo> [--apply --yes-i-understand]\n                            Synchronize reviewed screenshots in an existing unsubmitted App Store draft.\n  draft-descriptions <repo> [--apply --yes-i-understand]\n                            Preview or save descriptions in an unsubmitted App Store update draft.\n  init <repo> [--force]       Create shiplayer.yml from detected facts; never overwrites by default.\n  analyze <repo> [--json]     Read-only scan with evidence and unresolved questions.\n  prepare <repo> [--out DIR]  Generate a deterministic release package.\n  check <repo> [--json]       Run preflight; exits 2 for blockers.\n  plan <repo> [--remote]      Print an offline plan or read-only App Store Connect discovery.\n  capture <repo>               Print screenshot-harness/workflow hand-off requirements.\n  capture <repo> --from DIR --family iphone|ipad --locale LOCALE\n                              Ingest and validate already-exported PNG screenshots.\n  apply <repo> [--apply --yes-i-understand]\n                              App Store change preview by default; writes only through both explicit gates.\n  submit <repo> [--submit --yes-submit]\n                              Separate final App Store gate; unsupported execution exits 3.\n\nSecrets come only from environment-variable references.`; }
+function helpText(): string { return `ShipLayer ${VERSION} — The missing layer between your repo and the App Store.\n\nUsage: shiplayer <command> <repo> [options]\n\nCommands:\n  draft <repo> [--only listing,screenshots,review,version] [--locales a,b] [--apply --yes-i-understand]\n                            Preview or fill an existing unsubmitted App Store draft, stage by stage; never submits.\n                            (--only descriptions can create the version; draft-<stage> spellings remain as aliases.)\n  init <repo> [--force]       Create shiplayer.yml from detected facts; never overwrites by default.\n  analyze <repo> [--json]     Read-only scan with evidence and unresolved questions.\n  prepare <repo> [--out DIR]  Generate a deterministic release package.\n  check <repo> [--json]       Run preflight; exits 2 for blockers.\n  plan <repo> [--remote]      Print an offline plan or read-only App Store Connect discovery.\n  capture <repo>               Print screenshot-harness/workflow hand-off requirements.\n  capture <repo> --from DIR --family iphone|ipad --locale LOCALE\n                              Ingest and validate already-exported PNG screenshots.\n  apply <repo> [--apply --yes-i-understand]\n                              App Store change preview by default; writes only through both explicit gates.\n  submit <repo> [--submit --yes-submit]\n                              Separate final App Store gate; unsupported execution exits 3.\n\nSecrets come only from environment-variable references.`; }
 main(process.argv.slice(2)).catch((error: unknown) => { const message = error instanceof Error ? error.message : String(error); const exitCode = error instanceof BlockerError ? 2 : 1; if (process.argv.includes("--json")) process.stdout.write(`${JSON.stringify({ error: message, exitCode })}\n`); else process.stderr.write(`ShipLayer error: ${message}\n`); process.exitCode = exitCode; });

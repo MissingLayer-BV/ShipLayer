@@ -8,7 +8,7 @@ import { inspectImage } from "./image.js";
 import { validateAscPrivateKey } from "./asc.js";
 import { appReviewNotes } from "./generator.js";
 import { DEFAULT_MARKETING_FINAL_DIR } from "./marketing.js";
-import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, isLoopbackOrPrivateEndpoint, isNonProductionSourcePath, MONETIZATION_CONTRADICTION_FINDING, PURCHASE_UNAVAILABLE_CONTRADICTION_FINDING, productionEvidenceOnly, resolveContradictionOverride, storekitPurchaseEvidence, stripCodeComments } from "./evidence.js";
+import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, isLoopbackOrPrivateEndpoint, isNonProductionSourcePath, AI_CONSENT_FLOW_FINDING, MONETIZATION_CONTRADICTION_FINDING, PURCHASE_UNAVAILABLE_CONTRADICTION_FINDING, productionEvidenceOnly, resolveContradictionOverride, storekitPurchaseEvidence, stripCodeComments } from "./evidence.js";
 import { assessNotCollectionAttestation, notCollectionAttestationIssueMessage } from "./collection-attestation.js";
 import { assessNotCollectionEvidence } from "./not-collection-evidence.js";
 import { assessExternalServiceReadiness } from "./external-service-assessment.js";
@@ -888,14 +888,22 @@ async function aiDataSharingChecks(repository: string, manifest: ShipLayerManife
   // be loadable; this check is where Apple's transmission-language expectation is judged, not
   // manifest validation (see src/manifest.ts) — a manifest that could not hold the real label
   // would leave the app unable to reach `check` at all.
+  // The dedicated consent screen is ShipLayer's strict reading of 5.1.2(i). An owner who obtains
+  // consent another way can say so with a confirmed override citing the consent evidence file;
+  // every consent-flow blocker then stays visible as a warning instead of silently clearing.
+  // The privacy-policy checks below are not covered: the policy must still disclose everything.
+  const consentOverride = await resolveContradictionOverride(repository, manifest, AI_CONSENT_FLOW_FINDING, sharing.consent.evidence);
+  const addConsent: Add = (id, severity, message, remediation) => consentOverride && severity === "block"
+    ? add(id, "warn", `${message} Human-overridden: ${consentOverride.reason}`, "Re-verify this override whenever the consent flow, the privacy policy, or Apple's guideline changes.")
+    : add(id, severity, message, remediation);
   const affirmativeActionSaysTransmission = /(?:send|share|upload|transmit)/i.test(sharing.consent.affirmativeAction);
-  if (!affirmativeActionSaysTransmission) add("ai-sharing.consent-action-language", "block", `The declared affirmative action "${sharing.consent.affirmativeAction}" does not clearly say data will be sent, shared, uploaded, or transmitted.`, `Apple expects the pre-transmission action to explicitly state that data leaves the device (e.g. "Allow & Send to AI", "Scan & Upload"). Rename the action, then re-confirm it still matches what the production consent screen renders.`);
+  if (!affirmativeActionSaysTransmission) addConsent("ai-sharing.consent-action-language", "block", `The declared affirmative action "${sharing.consent.affirmativeAction}" does not clearly say data will be sent, shared, uploaded, or transmitted.`, `Apple expects the pre-transmission action to explicitly state that data leaves the device (e.g. "Allow & Send to AI", "Scan & Upload"). Rename the action, then re-confirm it still matches what the production consent screen renders.`);
   const consentReady = sharing.consent.shownBeforeTransmission
     && sharing.consent.privacyPolicyLinkVisible
     && sharing.consent.confirmation === "confirmed"
     && affirmativeActionSaysTransmission
     && Boolean(sharing.consent.declinePath);
-  if (!consentReady) add("ai-sharing.consent", "block", "The in-context AI disclosure/permission is incomplete or uses a generic affirmative action.", "Before transmission, state what is sent, name who receives it and why, provide a visible privacy link and non-AI decline path, and use an explicit action such as 'Allow and send to AI'.");
+  if (!consentReady) addConsent("ai-sharing.consent", "block", "The in-context AI disclosure/permission is incomplete or uses a generic affirmative action.", "Before transmission, state what is sent, name who receives it and why, provide a visible privacy link and non-AI decline path, and use an explicit action such as 'Allow and send to AI'.");
   else add("ai-sharing.consent", "pass", "AI sharing has a human-confirmed, explicit pre-transmission consent flow and decline path.");
 
   const policy = sharing.privacyPolicy;
@@ -925,12 +933,12 @@ async function aiDataSharingChecks(repository: string, manifest: ShipLayerManife
     const actionVisible = buttonLabels.some((value) => value.includes(sharing.consent.affirmativeAction.toLocaleLowerCase("en-US")));
     const declineVisible = buttonLabels.some((value) => value.includes(sharing.consent.declinePath.toLocaleLowerCase("en-US")));
     const privacyLinkVisible = visibleUICallArguments(consentSource, new Set(["Link", "NavigationLink"])).some((value) => /privacy(?:\s+policy)?/i.test(value));
-    if (missing.length) add("ai-sharing.consent-recipients", "block", `The in-app consent evidence does not visibly name: ${missing.join(", ")}.`, "Use exact user-facing recipient names in the disclosure shown before transmission.");
-    if (missingData.length) add("ai-sharing.consent-data", "block", `The in-app consent evidence does not visibly identify: ${missingData.join(", ")}.`, "State the exact personal data sent before transmission, not only that AI is used.");
-    if (!purposeVisible) add("ai-sharing.consent-purpose", "block", "The in-app consent evidence does not visibly state the declared processing purpose.", "Explain why the data is sent before requesting permission.");
-    if (!actionVisible) add("ai-sharing.consent-action", "block", `The in-app consent evidence does not render the declared affirmative action “${sharing.consent.affirmativeAction}”.`, "Render an affirmative action that explicitly says data will be sent, shared, uploaded, or transmitted.");
-    if (!declineVisible) add("ai-sharing.consent-decline", "block", `The in-app consent evidence does not render the declared non-AI path “${sharing.consent.declinePath}”.`, "Render a clear local/manual path that does not transmit data.");
-    if (!privacyLinkVisible) add("ai-sharing.consent-privacy-link", "block", "The in-app consent evidence does not render a visible Privacy Policy link.", "Add a visible Link or NavigationLink labeled Privacy/Privacy Policy to the pre-transmission disclosure.");
+    if (missing.length) addConsent("ai-sharing.consent-recipients", "block", `The in-app consent evidence does not visibly name: ${missing.join(", ")}.`, "Use exact user-facing recipient names in the disclosure shown before transmission.");
+    if (missingData.length) addConsent("ai-sharing.consent-data", "block", `The in-app consent evidence does not visibly identify: ${missingData.join(", ")}.`, "State the exact personal data sent before transmission, not only that AI is used.");
+    if (!purposeVisible) addConsent("ai-sharing.consent-purpose", "block", "The in-app consent evidence does not visibly state the declared processing purpose.", "Explain why the data is sent before requesting permission.");
+    if (!actionVisible) addConsent("ai-sharing.consent-action", "block", `The in-app consent evidence does not render the declared affirmative action “${sharing.consent.affirmativeAction}”.`, "Render an affirmative action that explicitly says data will be sent, shared, uploaded, or transmitted.");
+    if (!declineVisible) addConsent("ai-sharing.consent-decline", "block", `The in-app consent evidence does not render the declared non-AI path “${sharing.consent.declinePath}”.`, "Render a clear local/manual path that does not transmit data.");
+    if (!privacyLinkVisible) addConsent("ai-sharing.consent-privacy-link", "block", "The in-app consent evidence does not render a visible Privacy Policy link.", "Add a visible Link or NavigationLink labeled Privacy/Privacy Policy to the pre-transmission disclosure.");
     if (consentSourceRoleValid && !missing.length && !missingData.length && purposeVisible && actionVisible && declineVisible && privacyLinkVisible) add("ai-sharing.consent-evidence", "pass", "Production consent evidence names every recipient, the data and purpose, and renders the declared actions and Privacy Policy link.");
   }
   if (!policyText.complete) add("ai-sharing.policy-evidence", "block", "AI privacy-policy evidence is missing, symlinked, unreadable, or oversized.", "Reference the public policy source containing the confirmed AI disclosures.");

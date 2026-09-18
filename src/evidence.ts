@@ -301,6 +301,9 @@ export function externalServiceFindings(analysis: AnalysisReport): Finding[] {
 
 export const MONETIZATION_CONTRADICTION_FINDING = "monetization.source-contradiction";
 export const PURCHASE_UNAVAILABLE_CONTRADICTION_FINDING = "purchase.unavailable-source";
+/** The owner decided how consent to third-party AI processing is obtained (for example by accepting
+ * the Privacy Policy at sign-in) instead of the dedicated pre-transmission screen ShipLayer looks for. */
+export const AI_CONSENT_FLOW_FINDING = "ai-sharing.consent";
 export function aiContradictionFindingId(finding: Finding): string { return `ai-sharing.source-contradiction:${finding.key}`; }
 
 export function findContradictionOverride(manifest: ShipLayerManifest, findingId: string): SourceContradictionOverride | undefined {
