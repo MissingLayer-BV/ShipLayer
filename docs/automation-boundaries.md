@@ -20,4 +20,11 @@ ShipLayer can prepare facts, drafts, asset plans, and an idempotent remote chang
 | Initial app record, agreements, tax/banking, trader | Human/App Store Connect UI only. |
 | Apply / final submission | `plan --remote` and `apply` without flags are read-only. `apply --apply --yes-i-understand` writes only after the user has reviewed the plan and opted the manifest into `sync.mode: apply`. `submit` remains separate, human-controlled, and unsupported; explicit submit still exits 3 without submitting. |
 
+## Known gaps (deliberately deferred)
+
+- **Sign in with Apple (4.8).** Third-party login SDKs without Sign in with Apple are not detected; no heuristic warns today.
+- **Background modes / launch screen.** `UIBackgroundModes`, push entitlements, associated domains, and launch-screen presence are never inspected.
+- **Play versionCode vs live track.** `play-plan` catches same-code collisions and completed→draft downgrades, but a versionCode below the track's current max plans silently.
+- **Offline AAB validation.** The bundle is hashed and its versionCode is verified server-side at apply time; a corrupt or mismatched AAB is only caught mid-apply.
+
 Never add secret keys to a manifest, fixture, generated package, or terminal output. Never browser-scrape App Store Connect or Play Console.
