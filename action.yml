@@ -120,6 +120,12 @@ runs:
           draft-listing-apply)
             node "${{ github.action_path }}/dist/index.js" draft-listing "${repository_path}" "${locale_args[@]}" --apply --yes-i-understand --json | tee "${result_path}"
             ;;
+          draft-version-plan)
+            node "${{ github.action_path }}/dist/index.js" draft-version "${repository_path}" --json | tee "${result_path}"
+            ;;
+          draft-version-apply)
+            node "${{ github.action_path }}/dist/index.js" draft-version "${repository_path}" --apply --yes-i-understand --json | tee "${result_path}"
+            ;;
           draft-review-plan)
             node "${{ github.action_path }}/dist/index.js" draft-review "${repository_path}" --json | tee "${result_path}"
             ;;

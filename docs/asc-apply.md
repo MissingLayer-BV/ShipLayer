@@ -50,7 +50,13 @@ not touched. A stale review screenshot is replaced and a current one (matched
 by MD5 checksum) is kept. A manifest with `review.demoAccount.required: true`
 is refused, because credentials only travel through the fully gated `apply`.
 
-Both commands preview by default, write only with `sync.mode: apply` and
+`shiplayer draft-version <repo>` synchronizes the release settings of the
+draft: copyright and release mode, the declared primary and secondary
+category on the editable App Info, and the declared build, which must be the
+single valid, unexpired build with that number for that version.
+
+All three commands preview by default, write only with `sync.mode: apply` and
 `--apply --yes-i-understand`, read everything back, and never attach a build
 or submit. The composite action exposes them as `draft-listing-plan`,
-`draft-listing-apply`, `draft-review-plan`, and `draft-review-apply`.
+`draft-listing-apply`, `draft-review-plan`, `draft-review-apply`,
+`draft-version-plan`, and `draft-version-apply`.
