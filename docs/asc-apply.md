@@ -31,3 +31,26 @@ release-note approval still apply when preparing the eventual release.
 
 The composite action exposes `draft-descriptions-plan` and
 `draft-descriptions-apply` with `render-screenshots: "false"`.
+
+## Fill the listing and review material of a draft
+
+`shiplayer draft-listing <repo> --locales <a,b>` synchronizes the confirmed
+version copy (description, promotional text, keywords, support and marketing
+URLs, plus What's New on an update) and, on an existing localization of the
+editable App Info record, the declared name, subtitle, and Privacy Policy URL.
+It never creates a localization and leaves a live app's read-only App Info
+alone (`appInfoStatus: not-editable`).
+
+`shiplayer draft-review <repo>` synchronizes what App Review reads but the
+store never shows: `review.contact` and `review.notes` on the draft version,
+and the private review note and review screenshot of every product in
+`monetization.products` and `monetization.consumables`. The products must
+already exist in App Store Connect; prices, availability, and localizations are
+not touched. A stale review screenshot is replaced and a current one (matched
+by MD5 checksum) is kept. A manifest with `review.demoAccount.required: true`
+is refused, because credentials only travel through the fully gated `apply`.
+
+Both commands preview by default, write only with `sync.mode: apply` and
+`--apply --yes-i-understand`, read everything back, and never attach a build
+or submit. The composite action exposes them as `draft-listing-plan`,
+`draft-listing-apply`, `draft-review-plan`, and `draft-review-apply`.

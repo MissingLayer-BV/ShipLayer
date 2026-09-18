@@ -1373,7 +1373,7 @@ async function validateIconCatalog(repository: string, files: string[], iconCata
 }
 
 async function purchaseAssetChecks(repository: string, manifest: ShipLayerManifest, add: Add): Promise<void> {
-  const products = manifest.monetization.type === "subscriptions" || manifest.monetization.type === "non-consumables" ? manifest.monetization.products : [];
+  const products = manifest.monetization.type === "subscriptions" || manifest.monetization.type === "non-consumables" ? [...manifest.monetization.products, ...(manifest.monetization.consumables ?? [])] : [];
   for (const product of products) {
     try {
       const image = await resolveContained(repository, product.reviewScreenshot, `review screenshot for ${product.productId}`);
@@ -1572,7 +1572,7 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
   for (const [index, question] of actionableQuestions.entries()) add(`source.question.${index + 1}`, "warn", `Scanner question: ${question}`, "Resolve or record this scanner question during human release review.");
   const storeKit = report.findings.find((finding) => finding.key === "storekitProductId")?.value;
   const sourceIds = new Set(Array.isArray(storeKit) ? storeKit.filter((value): value is string => typeof value === "string") : typeof storeKit === "string" ? [storeKit] : []);
-  const manifestIds = new Set(manifest.monetization.type === "subscriptions" || manifest.monetization.type === "non-consumables" ? manifest.monetization.products.map((product) => product.productId) : []);
+  const manifestIds = new Set(manifest.monetization.type === "subscriptions" || manifest.monetization.type === "non-consumables" ? [...manifest.monetization.products, ...(manifest.monetization.consumables ?? [])].map((product) => product.productId) : []);
   for (const id of sourceIds) if (!manifestIds.has(id)) add(`storekit.${id}`, "block", `StoreKit product ${id} is missing from monetization manifest.`);
   for (const id of manifestIds) if (sourceIds.size && !sourceIds.has(id)) add(`manifest.${id}`, "block", `Manifest product ${id} is absent from StoreKit evidence.`);
 }

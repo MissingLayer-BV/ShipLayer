@@ -3,6 +3,7 @@ import path from "node:path";
 import { draftScreenshots } from "./asc-screenshot-draft.js";
 import { draftDescriptions } from "./asc-description-draft.js";
 import { draftListing } from "./asc-listing-draft.js";
+import { draftReview } from "./asc-review-draft.js";
 import { existsSync } from "node:fs";
 import { analyzeRepository, detectScreenshotHarness, findValue } from "./scanner.js";
 import { appStorePlan } from "./asc.js";
@@ -23,7 +24,7 @@ async function main(args: string[]): Promise<void> {
   const [command, repositoryArgument, ...options] = args;
   if (!command || command === "--help" || command === "help") return printHelp();
   if (command === "--version" || command === "version") return write(`${VERSION}\n`);
-  if (!new Set(["init", "analyze", "prepare", "check", "plan", "capture", "apply", "submit", "draft-descriptions", "draft-listing", "draft-screenshots"]).has(command)) throw new Error(`Unknown command '${command}'.\n\n${helpText()}`);
+  if (!new Set(["init", "analyze", "prepare", "check", "plan", "capture", "apply", "submit", "draft-descriptions", "draft-listing", "draft-review", "draft-screenshots"]).has(command)) throw new Error(`Unknown command '${command}'.\n\n${helpText()}`);
   if (!repositoryArgument) throw new Error(`Missing <repo>.\n\n${helpText()}`);
   const repository = path.resolve(repositoryArgument); if (!existsSync(repository)) throw new Error(`Repository does not exist: ${repository}`);
   validateOptions(command, options);
@@ -42,6 +43,11 @@ async function main(args: string[]): Promise<void> {
   if (command === "draft-listing") {
     const locales = optionValue(options, "--locales")?.split(",").filter(Boolean) ?? [];
     const result = await draftListing(await readManifest(repository), locales, options.includes("--apply"), options.includes("--yes-i-understand"));
+    output(result, json, JSON.stringify(result, null, 2));
+    return;
+  }
+  if (command === "draft-review") {
+    const result = await draftReview(await readManifest(repository), repository, options.includes("--apply"), options.includes("--yes-i-understand"));
     output(result, json, JSON.stringify(result, null, 2));
     return;
   }
@@ -191,7 +197,7 @@ function humanAnalysis(report: Awaited<ReturnType<typeof analyzeRepository>>): s
 function optionValue(options: string[], name: string): string | undefined { const index = options.indexOf(name); return index >= 0 ? options[index + 1] : undefined; }
 const VALUE_OPTIONS: Record<string, Set<string>> = { prepare: new Set(["--out"]), capture: new Set(["--from", "--family", "--locale"]), "draft-listing": new Set(["--locales"]), "draft-screenshots": new Set(["--locales"]) };
 function validateOptions(command: string, options: string[]): void {
-  const allowed: Record<string, Set<string>> = { "draft-screenshots": new Set(["--json", "--apply", "--yes-i-understand", "--locales", "--replace-incomplete"]), "draft-descriptions": new Set(["--json", "--apply", "--yes-i-understand"]), "draft-listing": new Set(["--json", "--apply", "--yes-i-understand", "--locales"]), init: new Set(["--force", "--json"]), analyze: new Set(["--json"]), prepare: new Set(["--out", "--json"]), check: new Set(["--json", "--remote"]), plan: new Set(["--json", "--remote"]), capture: new Set(["--json", "--execute", "--yes-execute", "--from", "--family", "--locale"]), apply: new Set(["--json", "--apply", "--yes-i-understand"]), submit: new Set(["--json", "--submit", "--yes-submit"]) };
+  const allowed: Record<string, Set<string>> = { "draft-screenshots": new Set(["--json", "--apply", "--yes-i-understand", "--locales", "--replace-incomplete"]), "draft-descriptions": new Set(["--json", "--apply", "--yes-i-understand"]), "draft-review": new Set(["--json", "--apply", "--yes-i-understand"]), "draft-listing": new Set(["--json", "--apply", "--yes-i-understand", "--locales"]), init: new Set(["--force", "--json"]), analyze: new Set(["--json"]), prepare: new Set(["--out", "--json"]), check: new Set(["--json", "--remote"]), plan: new Set(["--json", "--remote"]), capture: new Set(["--json", "--execute", "--yes-execute", "--from", "--family", "--locale"]), apply: new Set(["--json", "--apply", "--yes-i-understand"]), submit: new Set(["--json", "--submit", "--yes-submit"]) };
   const known = allowed[command]; if (!known) return; const valueOptions = VALUE_OPTIONS[command] || new Set<string>();
   for (let index = 0; index < options.length; index++) {
     const option = options[index];
