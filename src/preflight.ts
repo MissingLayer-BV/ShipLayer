@@ -60,6 +60,7 @@ export async function preflight(repository: string, manifest: ShipLayerManifest,
   addRequired(add, "app.primary-category", app.primaryCategory, "Primary App Store category is missing.", "Choose app.primaryCategory.");
   if (app.primaryCategory && !APPLE_CATEGORIES.has(app.primaryCategory)) add("app.primary-category.allowed", "block", `${app.primaryCategory} is not an Apple App Store primary category.`, "Choose an Apple category name from the current App Store Connect list.");
   if (app.secondaryCategory && !APPLE_CATEGORIES.has(app.secondaryCategory)) add("app.secondary-category.allowed", "block", `${app.secondaryCategory} is not an Apple App Store secondary category.`, "Choose an Apple category name from the current App Store Connect list.");
+  if (app.secondaryCategory && app.primaryCategory && app.secondaryCategory === app.primaryCategory) add("app.secondary-category.duplicate", "block", `Secondary category '${app.secondaryCategory}' duplicates the primary category.`, "Choose a different secondary category or remove it; App Store Connect does not accept the same category twice.");
   addRequired(add, "contacts.support-url", isHttps(manifest.contacts.supportUrl), "A public HTTPS Support URL is required.", "Set contacts.supportUrl.");
   addRequired(add, "contacts.privacy-url", isHttps(manifest.contacts.privacyUrl), "A public HTTPS Privacy Policy URL is required.", "Set contacts.privacyUrl after legal review.");
   addRequired(add, "contacts.copyright", manifest.contacts.copyright, "Copyright is missing.", "Set contacts.copyright.");
@@ -88,7 +89,7 @@ export async function preflight(repository: string, manifest: ShipLayerManifest,
   else add("review.notes.length", "pass", `Generated App Review notes have ${reviewBytes} UTF-8 bytes.`);
 
   metadataChecks(manifest, add);
-  permissionChecks(manifest, add);
+  permissionChecks(manifest, scan, add);
   await permissionFlowChecks(repository, manifest, scan, add);
   exportComplianceCheck(manifest, add);
   confirmationChecks(manifest, add);
@@ -429,11 +430,27 @@ function metadataContradictionChecks(manifest: ShipLayerManifest, add: Add): voi
   if (manifest.aiDataSharing.enabled && !anyMentionsAi) add("metadata.ai-mention", "warn", "aiDataSharing.enabled is true, but no configured locale's App Store copy mentions AI or names an AI processor.", "Disclose the AI-powered feature in the listing (subtitle/description/whatsNew) so users form accurate expectations before downloading — this app has previously been rejected for undisclosed AI processing.");
 }
 
-function permissionChecks(manifest: ShipLayerManifest, add: Add): void {
+function permissionChecks(manifest: ShipLayerManifest, scan: AnalysisReport, add: Add): void {
   for (const permission of manifest.permissions) {
     if (!permission.purpose) add(`permission.${permission.key}`, "block", `${permission.key} has no user-facing purpose string.`, "Add a specific purpose string matching actual access.");
     else if (permission.confirmation !== "confirmed") add(`permission.${permission.key}`, "block", `${permission.key} is not human-confirmed.`, "Confirm the permission and purpose before submission.");
     else add(`permission.${permission.key}`, "pass", `${permission.key} has a confirmed purpose string.`);
+    // The manifest purpose is the human-confirmed claim; the Info.plist string is what
+    // actually ships and what App Review reads. An empty or placeholder plist string is
+    // rejected even when the manifest claim is confirmed, because the reviewer never sees
+    // the manifest. A wording difference is only a warning: either side may hold the
+    // better text, and only a human reading both can decide which is accurate.
+    const plistValues = scan.findings
+      .filter((finding) => finding.key === `permission:${permission.key}` && finding.evidence.some((item) => item.kind === "plist"))
+      .flatMap((finding) => stringValues(finding.value));
+    for (const value of plistValues) {
+      // The sibling source.permission.<key>.purpose gate already blocks when the manifest
+      // purpose differs from plist evidence; these two cases are what it cannot see: an
+      // empty plist string (whose remediation is to write one, not to adopt it), and a
+      // placeholder confirmed identically on both sides (so no drift exists to catch).
+      if (!value.trim()) add(`permission.${permission.key}.plist-purpose`, "block", `${permission.key} has an empty purpose string in Info.plist.`, "Write a specific user-facing purpose string in the production Info.plist; App Review rejects empty purpose strings.");
+      else if (/TODO|FIXME|XXX|lorem ipsum|<\s*your|placeholder/i.test(value)) add(`permission.${permission.key}.plist-purpose`, "block", `${permission.key} has a placeholder purpose string in Info.plist: "${value.slice(0, 80)}".`, "Replace the placeholder with the actual reason the app needs this access.");
+    }
   }
 }
 
@@ -1369,6 +1386,30 @@ async function purchaseAssetChecks(repository: string, manifest: ShipLayerManife
   }
 }
 
+// Apple enforces required-reason API declarations (NSPrivacyAccessedAPITypes with an
+// approved reason) since May 2024. The scanner detects live call sites
+// (`requiredReasonApi:<category>`, test/fixture sources already excluded) and parses
+// PrivacyInfo.xcprivacy declarations (`privacyManifestAccessedAPI:<category>`); this gate
+// demands the two agree. The fix lives in source (declare the category with an approved
+// reason), so no manifest field or override is involved.
+const REQUIRED_REASON_API_SLUGS: Record<string, string> = {
+  NSPrivacyAccessedAPICategoryUserDefaults: "user-defaults",
+  NSPrivacyAccessedAPICategoryFileTimestamp: "file-timestamp",
+  NSPrivacyAccessedAPICategorySystemBootTime: "system-boot-time",
+  NSPrivacyAccessedAPICategoryDiskSpace: "disk-space",
+  NSPrivacyAccessedAPICategoryActiveKeyboards: "active-keyboards",
+};
+function privacyManifestAccessChecks(report: AnalysisReport, add: Add): void {
+  const declared = new Set(report.findings.filter((finding) => finding.key.startsWith("privacyManifestAccessedAPI:")).map((finding) => finding.key.slice("privacyManifestAccessedAPI:".length)));
+  const used = new Set(productionEvidenceOnly(report.findings.filter((finding) => finding.key.startsWith("requiredReasonApi:"))).map((finding) => finding.key.slice("requiredReasonApi:".length)));
+  for (const category of [...used].sort()) {
+    const slug = REQUIRED_REASON_API_SLUGS[category] || "unknown";
+    const sources = evidenceSources(report.findings.filter((finding) => finding.key === `requiredReasonApi:${category}`));
+    if (declared.has(category)) add(`privacy.manifest.access.${slug}`, "pass", `PrivacyInfo.xcprivacy declares required-reason API category ${category}.`);
+    else add(`privacy.manifest.access.${slug}`, "block", `Source calls a ${category} API (${sources.join(", ") || "unknown source"}) without declaring it in PrivacyInfo.xcprivacy.`, "Add an NSPrivacyAccessedAPITypes entry with an approved reason for this category, or remove the API usage; Apple rejects undeclared required-reason API use.");
+  }
+}
+
 async function sourceConsistencyChecks(repository: string, manifest: ShipLayerManifest, report: AnalysisReport, add: Add): Promise<void> {
   if (!report.project.xcodeProjects.length && !report.project.workspaces.length && !report.project.projectYml.length) add("source.project", "block", "No Xcode project, workspace, or XcodeGen project.yml evidence was found.", "Run ShipLayer against the native app repository and retain a readable production project definition.");
   else add("source.project", "pass", "Native project definition evidence was found.");
@@ -1508,7 +1549,8 @@ async function sourceConsistencyChecks(repository: string, manifest: ShipLayerMa
       } catch { add(`privacy.manifest.${category}`, "block", `PrivacyInfo.xcprivacy evidence for ${category} could not be interpreted safely.`, "Review and explicitly model this data category before submission."); }
     }
   }
-  for (const finding of report.findings.filter((item) => item.key === "privacyManifestUnparsed")) add("privacy.manifest.unparsed", "block", `PrivacyInfo.xcprivacy contains unsupported or incomplete collected-data declaration(s): ${stringValues(finding.value).join(", ")}.`, "Map each declaration to the exact App Privacy category/purpose or obtain a human-reviewed manual disposition before submission.");
+  for (const finding of report.findings.filter((item) => item.key === "privacyManifestUnparsed")) add("privacy.manifest.unparsed", "block", `PrivacyInfo.xcprivacy contains unsupported or incomplete privacy declaration(s): ${stringValues(finding.value).join(", ")}.`, "Map each declaration to the exact App Privacy category/purpose or required-reason API type, or obtain a human-reviewed manual disposition before submission.");
+  privacyManifestAccessChecks(report, add);
   const secondary = report.findings.find((finding) => finding.key === "secondaryBundleId");
   if (secondary) {
     const sourcePaths = new Set(secondary.evidence.map((item) => item.source));

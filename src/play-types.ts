@@ -10,6 +10,18 @@ export interface PlayManifest {
     directory: string;
     confirmation: Confirmation;
   };
+  /** Human-confirmed Google Play policy questionnaires. Google blocks releases until
+   * the content rating, target audience, data safety section, and ads declaration are
+   * completed; a privacy policy and contact email are required for listings that
+   * collect sensitive data or need user contact. */
+  policy: {
+    contentRating: Confirmation;
+    targetAudience: Confirmation;
+    dataSafety: Confirmation;
+    adsDeclaration: Confirmation;
+    privacyPolicy: Confirmation;
+    contactEmail: Confirmation;
+  };
   release?: {
     versionCode: number;
     versionName: string;

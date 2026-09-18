@@ -14,7 +14,7 @@ export async function readPlayManifest(repository: string): Promise<PlayManifest
   try { raw = parse(await readText(file)); }
   catch (error) { throw new Error(`Cannot read ${PLAY_MANIFEST_NAME}: ${message(error)}`); }
   if (!record(raw)) throw new Error(`${PLAY_MANIFEST_NAME} must contain a mapping.`);
-  exactKeys(raw, new Set(["schemaVersion", "packageName", "metadata", "release", "sync"]), "manifest");
+  exactKeys(raw, new Set(["schemaVersion", "packageName", "metadata", "policy", "release", "sync"]), "manifest");
   if (raw.schemaVersion !== 1) throw new Error(`${PLAY_MANIFEST_NAME} schemaVersion must be 1.`);
   const packageName = requiredString(raw.packageName, "packageName");
   if (!/^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/.test(packageName)) throw new Error("packageName is not a valid Android application ID.");
@@ -48,6 +48,17 @@ export async function readPlayManifest(repository: string): Promise<PlayManifest
     await resolveContained(repository, release.bundle, "Android App Bundle");
   }
 
+  if (!record(raw.policy)) throw new Error("policy must be a mapping.");
+  exactKeys(raw.policy, new Set(["contentRating", "targetAudience", "dataSafety", "adsDeclaration", "privacyPolicy", "contactEmail"]), "policy");
+  const policy = {
+    contentRating: confirmation(raw.policy.contentRating, "policy.contentRating"),
+    targetAudience: confirmation(raw.policy.targetAudience, "policy.targetAudience"),
+    dataSafety: confirmation(raw.policy.dataSafety, "policy.dataSafety"),
+    adsDeclaration: confirmation(raw.policy.adsDeclaration, "policy.adsDeclaration"),
+    privacyPolicy: confirmation(raw.policy.privacyPolicy, "policy.privacyPolicy"),
+    contactEmail: confirmation(raw.policy.contactEmail, "policy.contactEmail"),
+  };
+
   if (!record(raw.sync)) throw new Error("sync must be a mapping.");
   exactKeys(raw.sync, new Set(["mode", "accessTokenEnv", "serviceAccountJsonEnv"]), "sync");
   const mode = requiredString(raw.sync.mode, "sync.mode");
@@ -56,11 +67,34 @@ export async function readPlayManifest(repository: string): Promise<PlayManifest
   if (accessTokenEnv && !/^[A-Z_][A-Z0-9_]*$/.test(accessTokenEnv)) throw new Error("sync.accessTokenEnv must name an uppercase environment variable.");
   const serviceAccountJsonEnv = raw.sync.serviceAccountJsonEnv === undefined ? undefined : requiredString(raw.sync.serviceAccountJsonEnv, "sync.serviceAccountJsonEnv");
   if (serviceAccountJsonEnv && !/^[A-Z_][A-Z0-9_]*$/.test(serviceAccountJsonEnv)) throw new Error("sync.serviceAccountJsonEnv must name an uppercase environment variable.");
-  return { schemaVersion: 1, packageName, metadata, release, sync: { mode, accessTokenEnv, serviceAccountJsonEnv } };
+  return { schemaVersion: 1, packageName, metadata, policy, release, sync: { mode, accessTokenEnv, serviceAccountJsonEnv } };
+}
+
+const POLICY_LABELS: Record<keyof PlayManifest["policy"], string> = {
+  contentRating: "content rating",
+  targetAudience: "target audience",
+  dataSafety: "data safety section",
+  adsDeclaration: "ads declaration",
+  privacyPolicy: "privacy policy",
+  contactEmail: "contact email",
+};
+
+export function playPolicyWarnings(manifest: PlayManifest): string[] {
+  return (Object.keys(POLICY_LABELS) as Array<keyof PlayManifest["policy"]>)
+    .filter((field) => manifest.policy[field] === "needs-human-confirmation")
+    .map((field) => `Google Play policy '${POLICY_LABELS[field]}' is not human-confirmed; apply will be blocked until it is confirmed.`);
+}
+
+export function assertPlayPolicyReady(manifest: PlayManifest): void {
+  for (const field of ["contentRating", "targetAudience", "dataSafety", "adsDeclaration", "contactEmail"] as const) {
+    if (manifest.policy[field] !== "confirmed") throw new Error(`Google Play apply requires policy.${field}: confirmed. Complete the ${POLICY_LABELS[field]} questionnaire in Play Console first.`);
+  }
+  if (manifest.policy.privacyPolicy !== "confirmed" && manifest.policy.privacyPolicy !== "not-applicable") throw new Error("Google Play apply requires policy.privacyPolicy: confirmed (or not-applicable when the app collects no personal or sensitive data).");
 }
 
 export async function assertPlayApplyReady(repository: string, manifest: PlayManifest, scope: PlayScope): Promise<void> {
   if (manifest.sync.mode !== "apply") throw new Error("Google Play apply is blocked because sync.mode is dry-run.");
+  assertPlayPolicyReady(manifest);
   if ((scope === "listings" || scope === "all") && manifest.metadata.confirmation !== "confirmed") throw new Error("Google Play listing apply requires metadata.confirmation: confirmed.");
   if (scope === "release" || scope === "all") {
     if (!manifest.release) throw new Error("Google Play release scope requires a release configuration.");

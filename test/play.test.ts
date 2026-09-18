@@ -7,6 +7,7 @@ import test from "node:test";
 import { applyGooglePlayChanges, planGooglePlayChanges } from "../src/play.js";
 import { readPlayManifest } from "../src/play-manifest.js";
 import { GooglePlayClient, type PlayFetchLike } from "../src/play-client.js";
+import { png } from "./helpers.js";
 
 function response(body: unknown, status = 200) { return { ok: status >= 200 && status < 300, status, text: async () => body === undefined ? "" : JSON.stringify(body) }; }
 
@@ -19,7 +20,10 @@ async function fixture(mode: "dry-run" | "apply" = "dry-run") {
   await writeFile(path.join(locale, "short_description.txt"), "Daily Quran study\n");
   await writeFile(path.join(locale, "full_description.txt"), "Read, listen and reflect every day.\n");
   await writeFile(path.join(locale, "changelogs/6.txt"), "A refreshed reading experience.\n");
-  await writeFile(path.join(locale, "images/phoneScreenshots/01-reader.png"), Buffer.from("reviewed screenshot"));
+  await writeFile(path.join(locale, "images/phoneScreenshots/01-reader.png"), png(1080, 1920));
+  await writeFile(path.join(locale, "images/phoneScreenshots/02-player.png"), png(1080, 1920));
+  await writeFile(path.join(locale, "images/icon.png"), png(512, 512));
+  await writeFile(path.join(locale, "images/featureGraphic.png"), png(1024, 500));
   await mkdir(path.join(root, "app/build/outputs/bundle/release"), { recursive: true });
   await writeFile(path.join(root, "app/build/outputs/bundle/release/app-release.aab"), Buffer.from("signed aab"));
   await writeFile(path.join(root, "shiplayer-play.yml"), `schemaVersion: 1
@@ -27,6 +31,13 @@ packageName: com.example.kevser
 metadata:
   directory: build/play-metadata
   confirmation: confirmed
+policy:
+  contentRating: confirmed
+  targetAudience: confirmed
+  dataSafety: confirmed
+  adsDeclaration: confirmed
+  privacyPolicy: confirmed
+  contactEmail: confirmed
 release:
   versionCode: 6
   versionName: "1.3"
@@ -58,9 +69,9 @@ function playApi() {
     if (method === "POST" && /\/edits$/.test(url)) return response({ id: `edit-${++edit}` });
     if (method === "DELETE" && /\/edits\/edit-\d+$/.test(url)) return response(undefined, 204);
     if (method === "GET" && /\/listings$/.test(url)) return response({ listings: [{ language: "en-US", title: "Old", shortDescription: "Old", fullDescription: "Old" }] });
-    if (method === "GET" && /\/listings\/en-US\/phoneScreenshots$/.test(url)) return response({ images: [{ id: "old", sha256: "old" }] });
-    if (method === "DELETE" && /\/listings\/en-US\/phoneScreenshots$/.test(url)) return response({ deleted: [{ id: "old" }] });
-    if (method === "POST" && url.includes("/upload/androidpublisher/") && url.includes("/phoneScreenshots")) return response({ image: { id: "new" } });
+    if (method === "GET" && /\/listings\/en-US\/(?:phoneScreenshots|icon|featureGraphic)$/.test(url)) return response({ images: [{ id: "old", sha256: "old" }] });
+    if (method === "DELETE" && /\/listings\/en-US\/(?:phoneScreenshots|icon|featureGraphic)$/.test(url)) return response({ deleted: [{ id: "old" }] });
+    if (method === "POST" && url.includes("/upload/androidpublisher/") && /\/(?:phoneScreenshots|icon|featureGraphic)/.test(url)) return response({ image: { id: "new" } });
     if (method === "PUT" && /\/listings\/en-US$/.test(url)) return response(body);
     if (method === "GET" && /\/bundles$/.test(url)) return response({ bundles: [] });
     if (method === "POST" && url.includes("/upload/androidpublisher/") && url.includes("/bundles")) return response({ versionCode: 6, sha256: "new" });
@@ -77,7 +88,7 @@ test("Google Play preview compares listings, screenshots, bundle, and draft trac
   const { root, environment, manifest } = await fixture(); const api = playApi();
   const plan = await planGooglePlayChanges(root, manifest, "all", { environment, fetcher: api.fetcher });
   assert.equal(plan.credentialsPresent, true); assert.equal(plan.ephemeralEditDeleted, true);
-  assert.deepEqual(plan.operations.map((item) => item.id), ["listing.en-US", "screenshots.en-US.phoneScreenshots", "bundle.6", "track.production.6"]);
+  assert.deepEqual(plan.operations.map((item) => item.id), ["listing.en-US", "screenshots.en-US.phoneScreenshots", "screenshots.en-US.icon", "screenshots.en-US.featureGraphic", "bundle.6", "track.production.6"]);
   assert.ok(plan.operations.every((item) => item.status === "planned"));
   assert.equal(api.committed(), false);
   assert.ok(api.calls.some((call) => call.method === "POST" && /\/edits$/.test(call.url)));
@@ -145,7 +156,9 @@ test("Google Play reconciles an ambiguous screenshot transport failure before re
   };
   const result = await applyGooglePlayChanges(root, manifest, "listings", { environment, fetcher, userConfirmed: true, reviewedPlan });
   assert.equal(result.committed, true);
-  assert.equal(uploadAttempts, 2);
+  // Two reviewed phone screenshots are uploaded; the first retries once after the
+  // transport failure, the second succeeds immediately.
+  assert.equal(uploadAttempts, 3);
 });
 
 test("Google Play apply requires both manifest and CLI gates before network access", async () => {
