@@ -23,9 +23,23 @@ function desiredAttributes(manifest: ShipLayerManifest, locale: string): Record<
   };
 }
 
-/** Synchronize only version-localized listing fields in an existing editable
- * draft. No App Info, build, screenshots, review details, or submission state
- * are changed. */
+/** Name, subtitle and Privacy Policy URL live on the App Info localization,
+ * not on the version. Only fields the manifest actually declares are synced. */
+function desiredAppInfoAttributes(manifest: ShipLayerManifest, locale: string): Record<string, string> {
+  const copy = manifest.metadata.localizations[locale]!;
+  const privacyPolicyUrl = copy.privacyPolicyUrl ?? manifest.contacts.privacyUrl;
+  return {
+    ...(copy.name?.trim() ? { name: copy.name } : {}),
+    ...(copy.subtitle?.trim() ? { subtitle: copy.subtitle } : {}),
+    ...(privacyPolicyUrl ? { privacyPolicyUrl } : {}),
+  };
+}
+
+/** Synchronize the listing fields of an existing editable draft: the
+ * version-localized copy, plus name, subtitle and Privacy Policy URL on an
+ * existing localization of the editable App Info. It never creates a
+ * localization, and no build, screenshots, review details, categories, or
+ * submission state are changed. */
 export async function draftListing(
   manifest: ShipLayerManifest,
   selectedLocales: string[],
@@ -63,14 +77,47 @@ export async function draftListing(
     return matches[0];
   };
   const differences = (locale: string) => Object.fromEntries(Object.entries(desired.get(locale)!).filter(([key, value]) => lookup(locale).attributes?.[key] !== value));
+  // App Info: only the editable record (a live app also keeps a read-only one).
+  const desiredAppInfo = new Map(selectedLocales.map(locale => [locale, desiredAppInfoAttributes(manifest, locale)]));
+  const editableAppInfos = resources(await client.get(`/apps/${id(apps[0])}/appInfos?limit=200`)).filter(info =>
+    isEditableAppVersionState(info.attributes?.state ?? info.attributes?.appStoreState)
+  );
+  if (editableAppInfos.length > 1) throw new Error('More than one editable App Info exists.');
+  const appInfo = editableAppInfos[0];
+  const readAppInfoLocalizations = async () => appInfo ? resources(await client.get(`/appInfos/${id(appInfo)}/appInfoLocalizations?limit=200`)) : [];
+  let remoteAppInfo = await readAppInfoLocalizations();
+  const lookupAppInfo = (locale: string) => {
+    const matches = remoteAppInfo.filter(item => item.attributes?.locale === locale);
+    if (matches.length > 1) throw new Error(`More than one App Info localization exists for ${locale}.`);
+    return matches[0];
+  };
+  const appInfoDifferences = (locale: string) => {
+    const existing = lookupAppInfo(locale);
+    if (!existing) return {};
+    return Object.fromEntries(Object.entries(desiredAppInfo.get(locale)!).filter(([key, value]) => existing.attributes?.[key] !== value));
+  };
+  const appInfoStatus = (locale: string) => !appInfo ? 'not-editable' : !lookupAppInfo(locale) ? 'missing-localization'
+    : Object.keys(appInfoDifferences(locale)).length ? 'planned' : 'already-matches';
+
   const operations = selectedLocales.map(locale => {
     const changed = differences(locale);
-    return { locale, fields: Object.keys(changed), status: Object.keys(changed).length ? 'planned' : 'already-matches' };
+    return {
+      locale, fields: Object.keys(changed), status: Object.keys(changed).length ? 'planned' : 'already-matches',
+      appInfoFields: Object.keys(appInfoDifferences(locale)), appInfoStatus: appInfoStatus(locale),
+    };
   });
   if (!apply) return { mode: 'preview', version: manifest.app.version, operations, submitted: false };
 
   for (const [index, locale] of selectedLocales.entries()) {
     const changed = differences(locale);
+    const appInfoChanged = appInfoDifferences(locale);
+    if (Object.keys(appInfoChanged).length) {
+      const localization = lookupAppInfo(locale)!;
+      await client.patch(`/appInfoLocalizations/${id(localization)}`, {
+        data: { type: 'appInfoLocalizations', id: localization.id, attributes: appInfoChanged },
+      });
+      operations[index].appInfoStatus = 'applied';
+    }
     if (!Object.keys(changed).length) continue;
     const current = resources(await client.get(`/appStoreVersions/${id(version)}`));
     if (current.length !== 1) throw new Error('Target draft disappeared. Partial changes may have occurred.');
@@ -83,7 +130,12 @@ export async function draftListing(
   }
 
   remote = await readLocalizations();
+  remoteAppInfo = await readAppInfoLocalizations();
   for (const locale of selectedLocales) {
+    const appInfoLocalization = lookupAppInfo(locale);
+    if (appInfoLocalization) for (const [key, value] of Object.entries(desiredAppInfo.get(locale)!)) {
+      if (appInfoLocalization.attributes?.[key] !== value) throw new Error(`Read-back verification failed for App Info ${locale}.${key}. Partial changes may have occurred.`);
+    }
     for (const [key, value] of Object.entries(desired.get(locale)!)) {
       if (lookup(locale).attributes?.[key] !== value) throw new Error(`Read-back verification failed for ${locale}.${key}. Partial changes may have occurred.`);
     }
