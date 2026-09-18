@@ -145,6 +145,8 @@ test("ASC never signs or sends a JWT to an untrusted URL and rejects RSA keys", 
   const client = new AppStoreConnectClient({ issuerId: "issuer", keyId: "kid", privateKeyPath }, async () => { calls++; return { ok: true, status: 200, text: async () => "{}" }; });
   await assert.rejects(() => client.get("https://attacker.example/v1/apps"), /official HTTPS/);
   await assert.rejects(() => client.get("https://api.appstoreconnect.apple.com/not-v1"), /official HTTPS/);
+  await assert.rejects(() => client.get("https://api.appstoreconnect.apple.com/v2/apps"), /official HTTPS/);
+  await assert.rejects(() => client.get("https://attacker.example/v2/inAppPurchases/1"), /official HTTPS/);
   assert.equal(calls, 0);
   const rsa = generateKeyPairSync("rsa", { modulusLength: 2048 }); const dir = await mkdtemp(path.join(tmpdir(), "shiplayer-rsa-")); const rsaPath = path.join(dir, "key.pem"); await writeFile(rsaPath, rsa.privateKey.export({ type: "pkcs8", format: "pem" }));
   await assert.rejects(() => validateAscPrivateKey(rsaPath), /EC P-256/);

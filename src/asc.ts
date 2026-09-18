@@ -107,11 +107,12 @@ export class AppStoreConnectClient {
 export function dataOf(value: unknown): unknown[] { const data = (value as { data?: unknown })?.data; return Array.isArray(data) ? data : data && typeof data === "object" ? [data] : []; }
 function includedOf(value: unknown): unknown[] { return Array.isArray((value as { included?: unknown[] }).included) ? (value as { included: unknown[] }).included : []; }
 function dedupeResources(values: unknown[]): unknown[] { const seen = new Map<string, unknown>(); for (const value of values) { const key = `${String((value as { type?: unknown }).type || "")}:${String(idOf(value) || "")}:${JSON.stringify(value)}`; if (!seen.has(key)) seen.set(key, value); } return [...seen.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, value]) => value); }
+// In-app purchases are the one resource Apple serves only under /v2.
 function safeAscUrl(pathOrUrl: string): string {
   const candidate = pathOrUrl.startsWith("/") ? `${API_ROOT}${pathOrUrl}` : pathOrUrl;
   let url: URL;
   try { url = new URL(candidate); } catch { throw new Error("App Store Connect request URL is invalid."); }
-  if (url.protocol !== "https:" || url.hostname !== "api.appstoreconnect.apple.com" || url.port || !url.pathname.startsWith("/v1/")) throw new Error("App Store Connect requests are restricted to the official HTTPS /v1 API host.");
+  if (url.protocol !== "https:" || url.hostname !== "api.appstoreconnect.apple.com" || url.port || !(url.pathname.startsWith("/v1/") || url.pathname.startsWith("/v2/inAppPurchases/"))) throw new Error("App Store Connect requests are restricted to the official HTTPS /v1 API host.");
   return url.toString();
 }
 function nextLink(value: unknown): string | undefined { const next = (value as { links?: { next?: unknown } })?.links?.next; if (typeof next !== "string") return undefined; safeAscUrl(next); return next; }
