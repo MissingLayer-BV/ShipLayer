@@ -53,6 +53,7 @@ export async function draftReview(
   apply = false,
   confirmed = false,
   suppliedClient?: Client,
+  readBackDelayMs = 1500,
 ) {
   if (apply && (!confirmed || manifest.sync.mode !== 'apply')) throw new Error('Draft review writes require sync.mode: apply and explicit confirmation.');
   if (!manifest.app.appStoreAppId || !manifest.app.bundleId || !manifest.app.version) throw new Error('Explicit app identity and target version are required.');
@@ -153,10 +154,15 @@ export async function draftReview(
     operations[index + 1].status = 'applied';
   }
 
-  // Read everything back; a committed upload reports its checksum immediately.
+  // Read everything back. Apple reports a committed upload's checksum only once
+  // it has processed the asset, which can take a few seconds.
   if (Object.keys(detailDifferences(await readDetails())).length) throw new Error('Read-back verification failed for App Review details. Partial changes may have occurred.');
   for (const { product, remote } of productPlans) {
-    const screenshot = await readReviewScreenshot(remote);
+    let screenshot = await readReviewScreenshot(remote);
+    for (let attempt = 0; attempt < 40 && String(screenshot?.attributes?.sourceFileChecksum ?? '').toLowerCase() !== product.screenshot.checksum; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, readBackDelayMs));
+      screenshot = await readReviewScreenshot(remote);
+    }
     if (String(screenshot?.attributes?.sourceFileChecksum ?? '').toLowerCase() !== product.screenshot.checksum) {
       throw new Error(`Read-back verification failed for the ${product.productId} review screenshot. Partial changes may have occurred.`);
     }

@@ -29,6 +29,7 @@ async function fixture() {
   const purchase: any = { id: 'iap', attributes: { productId: 'com.example.pack', reviewNote: 'Open Plans, pick the pack.' } };
   const screenshots = new Map<string, any>();
   const calls: Array<{ method: string; path: string; body?: any }> = [];
+  let pendingChecksumReads = 0;
   const notFound = () => { throw new Error('GET -> 404 NOT_FOUND'); };
   const client = {
     async get(path: string) {
@@ -39,7 +40,13 @@ async function fixture() {
       if (path === '/subscriptionGroups/group/subscriptions?limit=200') return { data: [subscription] };
       if (path === '/apps/app/inAppPurchasesV2?limit=200') return { data: [purchase] };
       if (path === '/subscriptions/sub/appStoreReviewScreenshot') return screenshots.has('sub') ? { data: screenshots.get('sub') } : notFound();
-      if (path.endsWith('/v2/inAppPurchases/iap/appStoreReviewScreenshot')) return screenshots.has('iap') ? { data: screenshots.get('iap') } : notFound();
+      if (path.endsWith('/v2/inAppPurchases/iap/appStoreReviewScreenshot')) {
+        if (!screenshots.has('iap')) return notFound();
+        const resource = screenshots.get('iap');
+        // Apple withholds the checksum while it is still processing the upload.
+        if (resource.attributes.uploaded && pendingChecksumReads-- > 0) return { data: { ...resource, attributes: { ...resource.attributes, sourceFileChecksum: null } } };
+        return { data: resource };
+      }
       throw new Error(`Unexpected GET ${path}`);
     },
     async post(path: string, body: any) {
@@ -60,7 +67,7 @@ async function fixture() {
     async delete(path: string) { calls.push({ method: 'DELETE', path }); },
     async uploadAsset(operations: unknown, bytes: Buffer) { calls.push({ method: 'UPLOAD', path: JSON.stringify(operations), body: bytes.length }); },
   };
-  return { repository, manifest, client, calls, screenshots, setState(value: string) { state = value; }, seedScreenshot(owner: string, sum: string) { screenshots.set(owner, { id: `old-${owner}`, attributes: { sourceFileChecksum: sum } }); } };
+  return { repository, manifest, client, calls, screenshots, delayChecksum(reads: number) { pendingChecksumReads = reads; }, setState(value: string) { state = value; }, seedScreenshot(owner: string, sum: string) { screenshots.set(owner, { id: `old-${owner}`, attributes: { sourceFileChecksum: sum } }); } };
 }
 
 test('previews without writing, then creates review details, notes and both review screenshots', async () => {
@@ -105,4 +112,11 @@ test('refuses writes without both gates, on a locked version, and with demo cred
   f.manifest.review.demoAccount = { required: true };
   await assert.rejects(draftReview(f.manifest, f.repository, false, false, f.client), /fully gated apply/);
   assert.equal(f.calls.length, 0);
+});
+
+test('waits for Apple to finish processing an upload before verifying it', async () => {
+  const f = await fixture();
+  f.delayChecksum(3);
+  const applied = await draftReview(f.manifest, f.repository, true, true, f.client, 0);
+  assert.equal(applied.verifiedProducts, 2);
 });
