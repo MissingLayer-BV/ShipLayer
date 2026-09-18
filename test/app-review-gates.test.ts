@@ -1137,3 +1137,26 @@ test("a confirmed owner override turns the AI consent-flow blockers into warning
   const policyGap = await preflight(root, manifest);
   assert.ok(policyGap.results.some((item) => item.id === "ai-sharing.privacy-policy" && item.severity === "block"), "policy checks are not overridable");
 });
+
+test("generated review notes use sign-in instructions and the owner's consent reason instead of claiming a consent screen", async () => {
+  const { appReviewNotes } = await import("../src/generator.js");
+  const { analyzeRepository } = await import("../src/scanner.js");
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-review-notes-override-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  addCompleteAISharing(manifest);
+  await writeAISharingEvidence(root);
+  const analysis = await analyzeRepository(root);
+
+  const standard = await appReviewNotes(root, manifest, analysis);
+  assert.match(standard, /No account, registration, or login is required\./);
+  assert.match(standard, /Before transmission the app states that it sends/);
+
+  manifest.review.demoAccount = { required: false, setupInstructions: "Sign in with any Apple ID; no demo account is needed." };
+  manifest.sourceContradictionOverrides = [{ finding: "ai-sharing.consent", reason: "Consent is given by accepting the Privacy Policy at sign-in.", evidence: [...(manifest.aiDataSharing as any).consent.evidence], confirmation: "confirmed" }];
+  const owner = await appReviewNotes(root, manifest, analysis);
+  assert.match(owner, /No demo account is supplied\. Sign in with any Apple ID; no demo account is needed\./);
+  assert.doesNotMatch(owner, /No account, registration, or login is required/);
+  assert.match(owner, /Consent is given by accepting the Privacy Policy at sign-in\./);
+  assert.doesNotMatch(owner, /Before transmission the app states/);
+});
