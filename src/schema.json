@@ -1031,6 +1031,7 @@
         }
       }
     },
+    "consumableProduct": {"type": "object", "additionalProperties": false, "required": ["productId", "referenceName", "reviewNotes", "reviewScreenshot"], "properties": {"productId": {"$ref": "#/$defs/productId"}, "referenceName": {"type": "string", "minLength": 1, "maxLength": 64}, "reviewNotes": {"type": "string", "minLength": 1, "maxLength": 4000}, "reviewScreenshot": {"$ref": "#/$defs/repoPath"}}},
     "nonConsumableProduct": {
       "type": "object",
       "additionalProperties": false,
@@ -1232,6 +1233,13 @@
             "$ref": "#/$defs/nonConsumableProduct"
           }
         },
+        "consumables": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "$ref": "#/$defs/consumableProduct"
+          }
+        },
         "paywallNavigation": {
           "$ref": "#/$defs/nonEmpty"
         },
@@ -1319,6 +1327,13 @@
           "minItems": 1,
           "items": {
             "$ref": "#/$defs/subscriptionProduct"
+          }
+        },
+        "consumables": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "$ref": "#/$defs/consumableProduct"
           }
         },
         "paywallNavigation": {

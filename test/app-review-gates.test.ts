@@ -1100,3 +1100,63 @@ if let product {
   assert.equal(report.results.some((item) => item.id === "purchase.legal-links-source" && item.severity === "block"), false);
   assert.equal(report.results.some((item) => item.id === "purchase.presentation-source" && item.severity === "pass"), true);
 });
+
+test("a confirmed owner override turns the AI consent-flow blockers into warnings but not the policy checks", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-ai-consent-override-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  addCompleteAISharing(manifest);
+  await writeAISharingEvidence(root);
+  // No dedicated consent screen: the cited source only renders a sign-in agreement line.
+  await writeFile(path.join(root, "Sources/AIConsent.swift"), `Text("By continuing you agree to the Terms of Use and Privacy Policy.")\n`);
+  const consentIds = ["ai-sharing.consent-recipients", "ai-sharing.consent-data", "ai-sharing.consent-purpose", "ai-sharing.consent-action", "ai-sharing.consent-decline", "ai-sharing.consent-privacy-link"];
+
+  const blocked = await preflight(root, manifest);
+  for (const id of consentIds) assert.ok(blocked.results.some((item) => item.id === id && item.severity === "block"), id);
+
+  const override = { finding: "ai-sharing.consent", reason: "Consent is given by accepting the Privacy Policy at sign-in.", evidence: ["Sources/AIConsent.swift"], confirmation: "needs-human-confirmation" as const };
+  manifest.sourceContradictionOverrides = [override];
+  const unconfirmed = await preflight(root, manifest);
+  assert.ok(unconfirmed.results.some((item) => item.id === "ai-sharing.consent-decline" && item.severity === "block"), "an unconfirmed override changes nothing");
+
+  manifest.sourceContradictionOverrides = [{ ...override, confirmation: "confirmed" }];
+  const overridden = await preflight(root, manifest);
+  for (const id of consentIds) {
+    const result = overridden.results.find((item) => item.id === id);
+    assert.equal(result?.severity, "warn", id);
+    assert.match(result?.message ?? "", /Human-overridden: Consent is given by accepting the Privacy Policy at sign-in\./);
+  }
+
+  manifest.sourceContradictionOverrides = [{ ...override, confirmation: "confirmed", evidence: ["README.md"] }];
+  await writeFile(path.join(root, "README.md"), "unrelated\n");
+  const wrongEvidence = await preflight(root, manifest);
+  assert.ok(wrongEvidence.results.some((item) => item.id === "ai-sharing.consent-decline" && item.severity === "block"), "evidence must cite the consent source");
+
+  manifest.sourceContradictionOverrides = [{ ...override, confirmation: "confirmed" }];
+  manifest.aiDataSharing = { ...manifest.aiDataSharing, privacyPolicy: { ...(manifest.aiDataSharing as any).privacyPolicy, confirmsEqualProtection: false } } as typeof manifest.aiDataSharing;
+  const policyGap = await preflight(root, manifest);
+  assert.ok(policyGap.results.some((item) => item.id === "ai-sharing.privacy-policy" && item.severity === "block"), "policy checks are not overridable");
+});
+
+test("generated review notes use sign-in instructions and the owner's consent reason instead of claiming a consent screen", async () => {
+  const { appReviewNotes } = await import("../src/generator.js");
+  const { analyzeRepository } = await import("../src/scanner.js");
+  const root = await mkdtemp(path.join(tmpdir(), "shiplayer-review-notes-override-"));
+  const manifest = readyManifest();
+  await writeReadyAssets(root, manifest);
+  addCompleteAISharing(manifest);
+  await writeAISharingEvidence(root);
+  const analysis = await analyzeRepository(root);
+
+  const standard = await appReviewNotes(root, manifest, analysis);
+  assert.match(standard, /No account, registration, or login is required\./);
+  assert.match(standard, /Before transmission the app states that it sends/);
+
+  manifest.review.demoAccount = { required: false, setupInstructions: "Sign in with any Apple ID; no demo account is needed." };
+  manifest.sourceContradictionOverrides = [{ finding: "ai-sharing.consent", reason: "Consent is given by accepting the Privacy Policy at sign-in.", evidence: [...(manifest.aiDataSharing as any).consent.evidence], confirmation: "confirmed" }];
+  const owner = await appReviewNotes(root, manifest, analysis);
+  assert.match(owner, /No demo account is supplied\. Sign in with any Apple ID; no demo account is needed\./);
+  assert.doesNotMatch(owner, /No account, registration, or login is required/);
+  assert.match(owner, /Consent is given by accepting the Privacy Policy at sign-in\./);
+  assert.doesNotMatch(owner, /Before transmission the app states/);
+});

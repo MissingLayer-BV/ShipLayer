@@ -31,3 +31,42 @@ release-note approval still apply when preparing the eventual release.
 
 The composite action exposes `draft-descriptions-plan` and
 `draft-descriptions-apply` with `render-screenshots: "false"`.
+
+## Fill an existing draft: `shiplayer draft`
+
+`shiplayer draft <repo>` fills an existing editable App Store draft stage by
+stage. It previews by default, writes only with `sync.mode: apply` and
+`--apply --yes-i-understand`, reads everything back, and never submits.
+
+| Stage | What it synchronizes |
+|---|---|
+| `listing` | Confirmed version copy (description, promotional text, keywords, support and marketing URLs, What's New on an update) and, on an existing localization of the editable App Info, the declared name, subtitle, and Privacy Policy URL. It never creates a localization and reports a live app's read-only App Info as `not-editable`. |
+| `screenshots` | The reviewed final screenshot decks and their order. |
+| `review` | `review.contact` and `review.notes`, plus the private review note and review screenshot of every product in `monetization.products` and `monetization.consumables`. Products must already exist; prices and localizations are not touched. A manifest with `review.demoAccount.required: true` is refused, because credentials only travel through the fully gated `apply`. |
+| `version` | Copyright and release mode, the declared categories on the editable App Info, and the single valid, unexpired build with the declared number. |
+| `descriptions` | Descriptions only; can create the version record. Runs only when named. |
+
+`--only listing,review` selects stages (they always run in the order above);
+without it, every stage except `descriptions` runs. `--locales a,b` scopes the
+listing and screenshot stages. A preview runs every stage and reports each
+failure, for example a `version` stage that has no processed build yet; an
+apply stops at the first failed stage and marks the rest `skipped`.
+
+`draft` does not run preflight: it is for filling a draft while declarations
+are still being confirmed. The fully gated `apply` remains the path that
+checks everything. The older `draft-descriptions`, `draft-listing`,
+`draft-screenshots`, `draft-review`, and `draft-version` spellings still work.
+The composite action exposes `draft-plan` and `draft-apply` with the optional
+`only` and `locales` inputs.
+
+## Owner-decided AI consent flow
+
+ShipLayer's consent checks look for a dedicated pre-transmission screen. An
+owner who obtains consent another way, for example by having the user accept
+the Privacy Policy at sign-in, records that as a `sourceContradictionOverrides`
+entry with `finding: ai-sharing.consent`, a human-authored `reason`, `evidence`
+citing the same file as `aiDataSharing.consent.evidence`, and
+`confirmation: confirmed`. Every consent-flow blocker then becomes a visible
+warning that quotes the reason. The privacy-policy checks are not covered: the
+policy must still name the processors, the data, the purpose, retention, and
+equal protection.

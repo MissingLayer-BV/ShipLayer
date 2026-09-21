@@ -18,6 +18,10 @@ inputs:
     description: Optional comma-separated locale scope for draft listing and screenshot commands.
     required: false
     default: ""
+  only:
+    description: "Optional comma-separated stages for the draft commands: descriptions, listing, screenshots, review, version."
+    required: false
+    default: ""
   replace-incomplete-screenshots:
     description: On an explicitly gated screenshot apply, remove incomplete Apple screenshot reservations before resuming.
     required: false
@@ -75,6 +79,7 @@ runs:
         SHIPLAYER_ACTION_COMMAND: ${{ inputs.command }}
         SHIPLAYER_ACTION_REPOSITORY: ${{ inputs.repository }}
         SHIPLAYER_ACTION_LOCALES: ${{ inputs.locales }}
+        SHIPLAYER_ACTION_ONLY: ${{ inputs.only }}
         SHIPLAYER_ACTION_REPLACE_INCOMPLETE: ${{ inputs['replace-incomplete-screenshots'] }}
       run: |
         set -euo pipefail
@@ -100,6 +105,10 @@ runs:
         if [[ -n "${SHIPLAYER_ACTION_LOCALES}" ]]; then
           locale_args=(--locales "${SHIPLAYER_ACTION_LOCALES}")
         fi
+        only_args=()
+        if [[ -n "${SHIPLAYER_ACTION_ONLY}" ]]; then
+          only_args=(--only "${SHIPLAYER_ACTION_ONLY}")
+        fi
         incomplete_args=()
         if [[ "${SHIPLAYER_ACTION_REPLACE_INCOMPLETE}" == "true" ]]; then
           incomplete_args=(--replace-incomplete)
@@ -107,6 +116,12 @@ runs:
         case "${SHIPLAYER_ACTION_COMMAND}" in
           plan)
             node "${{ github.action_path }}/dist/index.js" plan "${repository_path}" --remote --json | tee "${result_path}"
+            ;;
+          draft-plan)
+            node "${{ github.action_path }}/dist/index.js" draft "${repository_path}" "${only_args[@]}" "${locale_args[@]}" --json | tee "${result_path}"
+            ;;
+          draft-apply)
+            node "${{ github.action_path }}/dist/index.js" draft "${repository_path}" "${only_args[@]}" "${locale_args[@]}" "${incomplete_args[@]}" --apply --yes-i-understand --json | tee "${result_path}"
             ;;
           draft-screenshots-plan)
             node "${{ github.action_path }}/dist/index.js" draft-screenshots "${repository_path}" "${locale_args[@]}" --json | tee "${result_path}"
@@ -119,6 +134,18 @@ runs:
             ;;
           draft-listing-apply)
             node "${{ github.action_path }}/dist/index.js" draft-listing "${repository_path}" "${locale_args[@]}" --apply --yes-i-understand --json | tee "${result_path}"
+            ;;
+          draft-version-plan)
+            node "${{ github.action_path }}/dist/index.js" draft-version "${repository_path}" --json | tee "${result_path}"
+            ;;
+          draft-version-apply)
+            node "${{ github.action_path }}/dist/index.js" draft-version "${repository_path}" --apply --yes-i-understand --json | tee "${result_path}"
+            ;;
+          draft-review-plan)
+            node "${{ github.action_path }}/dist/index.js" draft-review "${repository_path}" --json | tee "${result_path}"
+            ;;
+          draft-review-apply)
+            node "${{ github.action_path }}/dist/index.js" draft-review "${repository_path}" --apply --yes-i-understand --json | tee "${result_path}"
             ;;
           draft-descriptions-plan)
             node "${{ github.action_path }}/dist/index.js" draft-descriptions "${repository_path}" --json | tee "${result_path}"
