@@ -79,3 +79,15 @@ test("Sign in with Apple needs its entitlement and a confirmed device test of th
   assert.equal(severity(await run(root, manifestWith({ build: "3", devices: ["iphone", "ipad"], confirmation: "needs-human-confirmation" })), "signing.device-sign-in-test"), "block");
   assert.equal(severity(await run(root, manifestWith({ build: "3", devices: ["iphone", "ipad"], confirmation: "confirmed" })), "signing.device-sign-in-test"), "pass");
 });
+
+test("review notes sent to App Store Connect drop the draft title and instruction and use plain headings", async () => {
+  const { submittedReviewNotes } = await import("../src/generator.js");
+  const draft = "# LinkVoice — App Review Notes\n\n> Draft only. Verify every statement and enter actual demo credentials in App Store Connect's secure review fields, not this file.\n\n## Access\nSign in with Apple.\n\n\n## Setup\n- Speak.\n";
+  assert.equal(submittedReviewNotes(draft), "Access\nSign in with Apple.\n\nSetup\n- Speak.\n");
+});
+
+test("the products step describes the website flow, because the API refuses first products", () => {
+  const { operations } = productSubmissionReadiness({ subscriptions: [product("pro", "READY_TO_SUBMIT")], inAppPurchases: [] });
+  assert.match(operations[0].description, /not the API/);
+  assert.match(operations[0].description, /group alone does not include its subscriptions/);
+});

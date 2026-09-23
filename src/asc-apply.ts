@@ -3,7 +3,7 @@ import { lstat, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { AppStoreConnectClient, attribute, credentialsFromEnvironment, dataOf, idOf, type AscResource, type FetchLike, type RemoteDiscovery } from "./asc.js";
 import { analyzeRepository } from "./scanner.js";
-import { appReviewNotes } from "./generator.js";
+import { appReviewNotes, submittedReviewNotes } from "./generator.js";
 import { preflight } from "./preflight.js";
 import { resolveContained } from "./fs.js";
 import { DEFAULT_MARKETING_FINAL_DIR } from "./marketing.js";
@@ -87,7 +87,7 @@ async function createContext(repository: string, manifest: ShipLayerManifest, en
     localScreenshotSets(repository, manifest)
   ]);
   const demo = manifest.review.demoAccount; const demoCredentialsPresent = !demo?.required || Boolean(demo.usernameEnv && environment[demo.usernameEnv] && demo.passwordEnv && environment[demo.passwordEnv]);
-  const desired = { releaseType: manifest.app.releaseMode === "automatic" ? "AFTER_APPROVAL" as const : "MANUAL" as const, reviewNotes: await appReviewNotes(repository, manifest, analysis), screenshots, demoCredentialsPresent };
+  const desired = { releaseType: manifest.app.releaseMode === "automatic" ? "AFTER_APPROVAL" as const : "MANUAL" as const, reviewNotes: submittedReviewNotes(await appReviewNotes(repository, manifest, analysis)), screenshots, demoCredentialsPresent };
   return { client, discovery, desired, credentialsPresent: true };
 }
 

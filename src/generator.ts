@@ -369,6 +369,17 @@ async function termsOfUseDraft(repository: string, manifest: ShipLayerManifest, 
   const terms = manifest.monetization.termsOfUse;
   return `# Terms of Use / EULA\n\n> Draft only; not legal advice. A human must confirm the App Store Connect selection and publish/review any custom terms.\n\n- Selection: **${terms.type}**\n- Confirmation: **${terms.confirmation}**\n- Public terms URL: ${manifest.monetization.termsUrl}\n\n${terms.type === "apple-standard-eula" ? "Use Apple's Standard Licensed Application End User License Agreement in App Store Connect. Verify it is appropriate for this app before submission." : "Use the public custom Terms of Use URL above only after legal review. ShipLayer does not author or validate custom legal terms."}\n`;
 }
+/**
+ * The text actually sent to App Review: the package's Markdown draft without its title and
+ * "Draft only" instruction to the human (LinkVoice 1.0 (2) went to Apple with both), and with
+ * Markdown headings as plain lines, because App Store Connect shows notes as plain text.
+ */
+export function submittedReviewNotes(markdown: string): string {
+  return markdown.split("\n")
+    .filter((line, index) => !(index === 0 && /^# /.test(line)) && !/^> Draft only\b/.test(line))
+    .map((line) => line.replace(/^#{1,6}\s+/, ""))
+    .join("\n").replace(/\n{3,}/g, "\n\n").trim() + "\n";
+}
 export async function appReviewNotes(repository: string, manifest: ShipLayerManifest, analysis: AnalysisReport): Promise<string> {
   const confirmedProcessors = manifest.externalProcessors.filter((processor) => processor.confirmation === "confirmed");
   const unresolvedServices = await unresolvedExternalServiceMessage(repository, manifest, analysis);
