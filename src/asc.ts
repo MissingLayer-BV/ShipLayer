@@ -165,8 +165,8 @@ export async function appStorePlan(manifest: ShipLayerManifest, remote = false, 
 const SUBMITTED_PRODUCT_STATES = new Set(["WAITING_FOR_REVIEW", "IN_REVIEW", "APPROVED", "READY_FOR_SALE"]);
 /**
  * In-app purchases and subscriptions the binary sells but App Review has not received. A first
- * product must be attached to an app version (its "In-App Purchases and Subscriptions" section) and
- * submitted with it; a version submitted alone is rejected under 2.1(b), as LinkVoice 1.0 (2) was on
+ * product must go into the same review submission as an app version, added from its own page
+ * (Add for Review > draft submission) in the website; a version submitted alone is rejected under 2.1(b), as LinkVoice 1.0 (2) was on
  * 2026-09-23 with every product READY_TO_SUBMIT. ShipLayer does not submit, so this is a manual step.
  */
 export function productSubmissionReadiness(discovery: Pick<RemoteDiscovery, "inAppPurchases" | "subscriptions">): { warnings: string[]; operations: AscOperation[] } {
@@ -177,7 +177,7 @@ export function productSubmissionReadiness(discovery: Pick<RemoteDiscovery, "inA
   const incomplete = pending.filter(({ resource }) => attribute(resource, "state") !== "READY_TO_SUBMIT");
   const warnings = [`App Review has not received ${pending.length} product(s) the app sells: ${pending.map(describe).join(", ")}. Submitting the version without them is rejected under guideline 2.1(b).`];
   if (incomplete.length) warnings.push(`Not ready to submit: ${incomplete.map(describe).join(", ")}. Add the missing localization, price, availability or App Review screenshot first.`);
-  return { warnings, operations: [{ id: "manual.submit-products", action: "manual", resource: "In-app purchases and subscriptions", description: `Before submitting the version, add ${pending.map(describe).join(", ")} to it under "In-App Purchases and Subscriptions" (first products must go with a version), each with an App Review screenshot, and confirm they appear in the review submission.`, safety: "manual", status: "planned" }] };
+  return { warnings, operations: [{ id: "manual.submit-products", action: "manual", resource: "In-app purchases and subscriptions", description: `App Store Connect accepts first products only through its website, not the API (FIRST_SUBSCRIPTION_MUST_BE_SUBMITTED_ON_VERSION). On the version page click Add for Review to start a draft submission, then on each of ${pending.map(describe).join(", ")} (and the subscription group page) choose Add for Review > the draft iOS submission. Submit only when the draft lists the version, the group and every product; the group alone does not include its subscriptions.`, safety: "manual", status: "planned" }] };
 }
 function baseOperations(manifest: ShipLayerManifest): AscOperation[] { const operations: AscOperation[] = [
   { id: "read.app", action: "read", resource: "App identity", description: `Discover app with bundle ID ${manifest.app.bundleId || "MISSING"}.`, safety: "read-only", status: "planned" },
