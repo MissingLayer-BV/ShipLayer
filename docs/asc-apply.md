@@ -59,14 +59,12 @@ checks everything. The older `draft-descriptions`, `draft-listing`,
 The composite action exposes `draft-plan` and `draft-apply` with the optional
 `only` and `locales` inputs.
 
-## Owner-decided AI consent flow
+## AI consent cannot be overridden
 
-ShipLayer's consent checks look for a dedicated pre-transmission screen. An
-owner who obtains consent another way, for example by having the user accept
-the Privacy Policy at sign-in, records that as a `sourceContradictionOverrides`
-entry with `finding: ai-sharing.consent`, a human-authored `reason`, `evidence`
-citing the same file as `aiDataSharing.consent.evidence`, and
-`confirmation: confirmed`. Every consent-flow blocker then becomes a visible
-warning that quotes the reason. The privacy-policy checks are not covered: the
-policy must still name the processors, the data, the purpose, retention, and
-equal protection.
+App Review wants an in-app screen, shown before any data leaves the device,
+that names the recipient, lists the data, links the Privacy Policy and asks
+with an explicit action. A Terms/Privacy agreement line at sign-in is not
+enough: LinkVoice was rejected on 2026-09-23 (5.1.1(i)/5.1.2(i)) after an
+owner override had turned ShipLayer's consent blockers into warnings. A
+`sourceContradictionOverrides` entry for `ai-sharing.consent` is now itself a
+blocker (`ai-sharing.consent-override`) and downgrades nothing.

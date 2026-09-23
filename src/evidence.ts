@@ -301,8 +301,10 @@ export function externalServiceFindings(analysis: AnalysisReport): Finding[] {
 
 export const MONETIZATION_CONTRADICTION_FINDING = "monetization.source-contradiction";
 export const PURCHASE_UNAVAILABLE_CONTRADICTION_FINDING = "purchase.unavailable-source";
-/** The owner decided how consent to third-party AI processing is obtained (for example by accepting
- * the Privacy Policy at sign-in) instead of the dedicated pre-transmission screen ShipLayer looks for. */
+/** An override naming this finding claims consent to third-party AI processing is obtained without
+ * a dedicated pre-transmission screen (for example by accepting the Privacy Policy at sign-in).
+ * App Review rejected that shape (LinkVoice, 2026-09-23), so preflight blocks on the override itself
+ * and never downgrades a consent blocker. */
 export const AI_CONSENT_FLOW_FINDING = "ai-sharing.consent";
 export function aiContradictionFindingId(finding: Finding): string { return `ai-sharing.source-contradiction:${finding.key}`; }
 

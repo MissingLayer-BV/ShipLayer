@@ -1395,6 +1395,16 @@
         },
         "testFlightUpload": {
           "type": "boolean"
+        },
+        "deviceSignInTest": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["build", "devices", "confirmation"],
+          "properties": {
+            "build": { "$ref": "#/$defs/nonEmpty" },
+            "devices": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "enum": ["iphone", "ipad"] } },
+            "confirmation": { "$ref": "#/$defs/confirmation" }
+          }
         }
       }
     },
