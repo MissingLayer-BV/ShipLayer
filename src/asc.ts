@@ -156,7 +156,28 @@ export async function appStorePlan(manifest: ShipLayerManifest, remote = false, 
   else for (const operation of operations) if (operation.resource === "App identity") operation.status = "already-matches";
   if (manifest.app.version && !discovery.versions.length) warnings.push(`Requested iOS version ${manifest.app.version} was not discovered; an explicitly authorized apply can create it.`);
   if (manifest.app.build && !discovery.builds.length) warnings.push(`Requested build ${manifest.app.build} was not discovered; apply will remain blocked until that build is processed and App Store eligible.`);
+  const products = productSubmissionReadiness(discovery);
+  warnings.push(...products.warnings); operations.push(...products.operations);
   return { mode: "remote", operations, credentialsPresent: true, warnings };
+}
+
+// Product states in which App Review already has, or has finished with, the product.
+const SUBMITTED_PRODUCT_STATES = new Set(["WAITING_FOR_REVIEW", "IN_REVIEW", "APPROVED", "READY_FOR_SALE"]);
+/**
+ * In-app purchases and subscriptions the binary sells but App Review has not received. A first
+ * product must be attached to an app version (its "In-App Purchases and Subscriptions" section) and
+ * submitted with it; a version submitted alone is rejected under 2.1(b), as LinkVoice 1.0 (2) was on
+ * 2026-09-23 with every product READY_TO_SUBMIT. ShipLayer does not submit, so this is a manual step.
+ */
+export function productSubmissionReadiness(discovery: Pick<RemoteDiscovery, "inAppPurchases" | "subscriptions">): { warnings: string[]; operations: AscOperation[] } {
+  const products = [...discovery.subscriptions.map((resource) => ({ resource, kind: "subscription" })), ...discovery.inAppPurchases.map((resource) => ({ resource, kind: "in-app purchase" }))];
+  const pending = products.filter(({ resource }) => !SUBMITTED_PRODUCT_STATES.has(String(attribute(resource, "state") ?? "")) && attribute(resource, "state") !== "REMOVED_FROM_SALE");
+  if (!pending.length) return { warnings: [], operations: [] };
+  const describe = ({ resource, kind }: { resource: AscResource; kind: string }) => `${kind} ${String(attribute(resource, "productId") ?? attribute(resource, "name") ?? idOf(resource))} (${String(attribute(resource, "state") ?? "unknown state")})`;
+  const incomplete = pending.filter(({ resource }) => attribute(resource, "state") !== "READY_TO_SUBMIT");
+  const warnings = [`App Review has not received ${pending.length} product(s) the app sells: ${pending.map(describe).join(", ")}. Submitting the version without them is rejected under guideline 2.1(b).`];
+  if (incomplete.length) warnings.push(`Not ready to submit: ${incomplete.map(describe).join(", ")}. Add the missing localization, price, availability or App Review screenshot first.`);
+  return { warnings, operations: [{ id: "manual.submit-products", action: "manual", resource: "In-app purchases and subscriptions", description: `Before submitting the version, add ${pending.map(describe).join(", ")} to it under "In-App Purchases and Subscriptions" (first products must go with a version), each with an App Review screenshot, and confirm they appear in the review submission.`, safety: "manual", status: "planned" }] };
 }
 function baseOperations(manifest: ShipLayerManifest): AscOperation[] { const operations: AscOperation[] = [
   { id: "read.app", action: "read", resource: "App identity", description: `Discover app with bundle ID ${manifest.app.bundleId || "MISSING"}.`, safety: "read-only", status: "planned" },

@@ -8,6 +8,7 @@ import { inspectImage } from "./image.js";
 import { validateAscPrivateKey } from "./asc.js";
 import { appReviewNotes } from "./generator.js";
 import { DEFAULT_MARKETING_FINAL_DIR } from "./marketing.js";
+import { signingGates } from "./signing-gates.js";
 import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, isLoopbackOrPrivateEndpoint, isNonProductionSourcePath, AI_CONSENT_FLOW_FINDING, MONETIZATION_CONTRADICTION_FINDING, PURCHASE_UNAVAILABLE_CONTRADICTION_FINDING, productionEvidenceOnly, resolveContradictionOverride, storekitPurchaseEvidence, stripCodeComments } from "./evidence.js";
 import { assessNotCollectionAttestation, notCollectionAttestationIssueMessage } from "./collection-attestation.js";
 import { assessNotCollectionEvidence } from "./not-collection-evidence.js";
@@ -76,6 +77,7 @@ export async function preflight(repository: string, manifest: ShipLayerManifest,
   else add("contacts.support-email", "warn", "Support email is absent.", "Add a support email for a real support channel.");
   if (app.appStoreAppId) add("app.store-id", "pass", "App Store Connect app ID is present.");
   else add("app.store-id", "block", "App Store Connect app ID is absent; submission cannot target a confirmed app record.", "Create the initial app record manually, then add app.appStoreAppId.");
+  await signingGates(repository, manifest, add);
 
   const contact = manifest.review.contact;
   addRequired(add, "review.contact", Boolean(contact?.firstName && contact.lastName && contact.email && contact.phone), "App Review contact is incomplete.", "Set first name, last name, email, and phone.");
@@ -888,14 +890,14 @@ async function aiDataSharingChecks(repository: string, manifest: ShipLayerManife
   // be loadable; this check is where Apple's transmission-language expectation is judged, not
   // manifest validation (see src/manifest.ts) — a manifest that could not hold the real label
   // would leave the app unable to reach `check` at all.
-  // The dedicated consent screen is ShipLayer's strict reading of 5.1.2(i). An owner who obtains
-  // consent another way can say so with a confirmed override citing the consent evidence file;
-  // every consent-flow blocker then stays visible as a warning instead of silently clearing.
-  // The privacy-policy checks below are not covered: the policy must still disclose everything.
+  // The dedicated in-app consent screen is App Review's reading of 5.1.2(i), not a stricter one:
+  // LinkVoice was rejected on 2026-09-23 when consent was only a Terms/Privacy agreement line on
+  // its sign-in screen ("only including this information in the app's Terms of Service or
+  // Privacy Policy is not sufficient"). An override therefore no longer downgrades any consent
+  // blocker; declaring one is itself a blocker so the manifest cannot claim a waiver it lacks.
   const consentOverride = await resolveContradictionOverride(repository, manifest, AI_CONSENT_FLOW_FINDING, sharing.consent.evidence);
-  const addConsent: Add = (id, severity, message, remediation) => consentOverride && severity === "block"
-    ? add(id, "warn", `${message} Human-overridden: ${consentOverride.reason}`, "Re-verify this override whenever the consent flow, the privacy policy, or Apple's guideline changes.")
-    : add(id, severity, message, remediation);
+  if (consentOverride) add("ai-sharing.consent-override", "block", `A sourceContradictionOverrides entry for ${AI_CONSENT_FLOW_FINDING} is declared ("${consentOverride.reason}"), but App Review rejects apps whose only AI consent is a Terms/Privacy agreement (5.1.1(i)/5.1.2(i)).`, "Remove the override and ship an in-app screen, shown before any data is sent, that names the recipient, lists the data, links the Privacy Policy and asks with an explicit action.");
+  const addConsent: Add = add;
   const affirmativeActionSaysTransmission = /(?:send|share|upload|transmit)/i.test(sharing.consent.affirmativeAction);
   if (!affirmativeActionSaysTransmission) addConsent("ai-sharing.consent-action-language", "block", `The declared affirmative action "${sharing.consent.affirmativeAction}" does not clearly say data will be sent, shared, uploaded, or transmitted.`, `Apple expects the pre-transmission action to explicitly state that data leaves the device (e.g. "Allow & Send to AI", "Scan & Upload"). Rename the action, then re-confirm it still matches what the production consent screen renders.`);
   const consentReady = sharing.consent.shownBeforeTransmission

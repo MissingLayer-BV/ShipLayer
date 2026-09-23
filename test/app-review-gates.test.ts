@@ -1101,7 +1101,7 @@ if let product {
   assert.equal(report.results.some((item) => item.id === "purchase.presentation-source" && item.severity === "pass"), true);
 });
 
-test("a confirmed owner override turns the AI consent-flow blockers into warnings but not the policy checks", async () => {
+test("an AI consent override never clears the consent-flow blockers (LinkVoice rejection, 2026-09-23)", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "shiplayer-ai-consent-override-"));
   const manifest = readyManifest();
   await writeReadyAssets(root, manifest);
@@ -1121,11 +1121,12 @@ test("a confirmed owner override turns the AI consent-flow blockers into warning
 
   manifest.sourceContradictionOverrides = [{ ...override, confirmation: "confirmed" }];
   const overridden = await preflight(root, manifest);
-  for (const id of consentIds) {
-    const result = overridden.results.find((item) => item.id === id);
-    assert.equal(result?.severity, "warn", id);
-    assert.match(result?.message ?? "", /Human-overridden: Consent is given by accepting the Privacy Policy at sign-in\./);
-  }
+  // App Review rejected exactly this shape: a sign-in agreement line is not in-app consent.
+  for (const id of consentIds) assert.equal(overridden.results.find((item) => item.id === id)?.severity, "block", id);
+  const declared = overridden.results.find((item) => item.id === "ai-sharing.consent-override");
+  assert.equal(declared?.severity, "block");
+  assert.match(declared?.message ?? "", /Consent is given by accepting the Privacy Policy at sign-in\./);
+  assert.equal(overridden.results.some((item) => /Human-overridden/.test(item.message)), false);
 
   manifest.sourceContradictionOverrides = [{ ...override, confirmation: "confirmed", evidence: ["README.md"] }];
   await writeFile(path.join(root, "README.md"), "unrelated\n");
