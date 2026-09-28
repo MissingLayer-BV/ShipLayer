@@ -349,7 +349,7 @@
           "type": "array",
           "items": {
             "type": "string",
-            "minLength": 3
+            "minLength": 1
           }
         },
         "whatsNew": {

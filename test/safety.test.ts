@@ -99,3 +99,13 @@ test("image inspection rejects empty PNG streams and empty JPEG scans", async ()
   await writeFile(path.join(root, "empty.png"), fakePng); await writeFile(path.join(root, "empty.jpg"), fakeJpeg);
   assert.equal(await inspectImage(path.join(root, "empty.png")), undefined); assert.equal(await inspectImage(path.join(root, "empty.jpg")), undefined);
 });
+
+test("schema accepts short CJK keywords and rejects empty ones", () => {
+  const manifest = defaultManifest({ name: "Example", bundleId: "com.example.app" });
+  // Two-character words are ordinary search terms in Chinese, Japanese, and Korean.
+  manifest.app.locales = ["en-US", "zh-Hans", "ja", "ko"];
+  manifest.metadata.localizations = { "en-US": {}, "zh-Hans": { keywords: ["退款", "报销"] }, ja: { keywords: ["返金"] }, ko: { keywords: ["환불"] } };
+  assert.doesNotThrow(() => validateManifest(manifest));
+  manifest.metadata.localizations["en-US"] = { keywords: [""] };
+  assert.throws(() => validateManifest(manifest), /Invalid shiplayer/);
+});
