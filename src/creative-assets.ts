@@ -50,13 +50,13 @@ const WORDMARK_MIN = 0.05;
 const HYPHEN_KEEP_RATIO = 0.8;
 // Beside a device the text column takes 57% of the safe width (a 3% gap included) and the device
 // the rest: at 55% an 88-character Malay subline needed a fourth line at the 7% floor. The
-// device is about 1.9x the safe height, its top a tenth of the safe height above the safe area,
-// so it runs off the bottom edge like Apple's examples. It is centred in its column when it fits
+// device is about 1.9x the safe height (never taller than the canvas less a margin above and
+// below) and centred on the safe area's middle, so the whole device shows: run off the bottom
+// edge, its home area was cropped and the screen read off-centre. It is centred in its column when it fits
 // in 90% of it; a wider device keeps its inner edge clear of the text and runs past the safe
 // area's outer edge, which Apple allows for device art, but stays a canvas margin from the edge.
 const TEXT_COLUMN_OF_SAFE_WIDTH = 0.57;
 const DEVICE_HEIGHT_TO_SAFE_HEIGHT = 1.9;
-const DEVICE_TOP_ABOVE_SAFE = 0.10;
 const DEVICE_MAX_WIDTH_OF_COLUMN = 0.9;
 const DEVICE_CANVAS_MARGIN = 0.03;
 const TEXT_GAP_OF_SAFE_WIDTH = 0.03;
@@ -152,7 +152,7 @@ export function creativeSlideManifestRows(entries: CreativeSlideEntry[]): object
 
 interface Box { left: number; top: number; width: number; height: number }
 
-export function creativeLayout(entry: Pick<CreativeSlideEntry, "width" | "safeArea" | "locale" | "screenshot">): { text: Box; device?: Box; fit: CreativeTextFit } {
+export function creativeLayout(entry: Pick<CreativeSlideEntry, "width" | "height" | "safeArea" | "locale" | "screenshot">): { text: Box; device?: Box; fit: CreativeTextFit } {
   const safe = entry.safeArea;
   const safeWidth = safe.right - safe.left;
   const safeHeight = safe.bottom - safe.top;
@@ -168,7 +168,8 @@ export function creativeLayout(entry: Pick<CreativeSlideEntry, "width" | "safeAr
   const boundary = rtl ? safe.right - column : safe.left + column;
   const frame = frameForFamily(entry.screenshot.family);
   const aspect = frame.canvasWidthPx / frame.canvasHeightPx;
-  let height = safeHeight * DEVICE_HEIGHT_TO_SAFE_HEIGHT;
+  const verticalMargin = entry.height * DEVICE_CANVAS_MARGIN;
+  let height = Math.min(safeHeight * DEVICE_HEIGHT_TO_SAFE_HEIGHT, entry.height - 2 * verticalMargin);
   let width = height * aspect;
   let left: number;
   if (width <= deviceColumn * DEVICE_MAX_WIDTH_OF_COLUMN) left = (rtl ? safe.left : boundary) + (deviceColumn - width) / 2;
@@ -180,7 +181,7 @@ export function creativeLayout(entry: Pick<CreativeSlideEntry, "width" | "safeAr
   }
   return {
     text: { left: rtl ? boundary + gap : safe.left + inset, top: safe.top, width: column - gap - inset, height: safeHeight },
-    device: { left, top: safe.top - safeHeight * DEVICE_TOP_ABOVE_SAFE, width, height },
+    device: { left, top: safe.top + (safeHeight - height) / 2, width, height },
     fit: SIDE_TEXT
   };
 }

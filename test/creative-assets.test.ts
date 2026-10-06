@@ -106,8 +106,8 @@ test("the text block sits inside the safe area, and RTL locales mirror text and 
   const screenshot = { family: "iphone" as const, pngHref: "a.png", jpgHref: "a.jpg", frameHref: "f.png" };
   const inside = (box: { left: number; top: number; width: number; height: number }) => box.left >= safeArea.left && box.top >= safeArea.top && box.left + box.width <= safeArea.right && box.top + box.height <= safeArea.bottom;
   const width = CREATIVE_PLACEMENT_SPECS.searchResults.width;
-  const ltr = creativeLayout({ width, safeArea, locale: "en-US", screenshot });
-  const rtl = creativeLayout({ width, safeArea, locale: "ar-SA", screenshot });
+  const ltr = creativeLayout({ width, height: CREATIVE_PLACEMENT_SPECS.searchResults.height, safeArea, locale: "en-US", screenshot });
+  const rtl = creativeLayout({ width, height: CREATIVE_PLACEMENT_SPECS.searchResults.height, safeArea, locale: "ar-SA", screenshot });
   assert.ok(inside(ltr.text) && inside(rtl.text));
   assert.ok(ltr.device && rtl.device);
   assert.ok(ltr.text.left + ltr.text.width <= ltr.device.left, "LTR: text leads, device trails");
@@ -116,15 +116,17 @@ test("the text block sits inside the safe area, and RTL locales mirror text and 
   assert.ok(Math.abs(ltr.text.left + ltr.text.width - (safeArea.left + 0.54 * safeWidth)) < 1, "the text column takes 57% of the safe width, less the gap");
   assert.ok(ltr.device.left >= safeArea.left + 0.57 * safeWidth, "the device stays in its own column");
   assert.deepEqual([ltr.fit.sublineLines, ltr.fit.sublineMin, ltr.fit.headlineMin], [3, 0.07, 0.095], "beside a device the subline may take 3 lines and keeps a legible floor");
-  assert.equal(Math.round(ltr.device.top), Math.round(safeArea.top - 0.1 * (safeArea.bottom - safeArea.top)));
-  assert.ok(ltr.device.top + ltr.device.height > CREATIVE_PLACEMENT_SPECS.searchResults.height, "the device runs off the bottom edge");
+  const canvasHeight = CREATIVE_PLACEMENT_SPECS.searchResults.height;
+  assert.ok(Math.abs(ltr.device.top + ltr.device.height / 2 - (safeArea.top + safeArea.bottom) / 2) < 1, "the device is centred on the safe area's middle");
+  assert.ok(ltr.device.top > 0 && ltr.device.top + ltr.device.height < canvasHeight, "the whole device shows, nothing cropped at the bottom");
+  assert.ok(Math.abs(ltr.device.height - 1.9 * (safeArea.bottom - safeArea.top)) < 1, "the device keeps its size where the canvas has room");
   // An iPad is too wide for its column: it keeps clear of the text and runs past the safe area instead of shrinking.
-  const ipad = creativeLayout({ width, safeArea, locale: "en-US", screenshot: { ...screenshot, family: "ipad" } });
-  const ipadRtl = creativeLayout({ width, safeArea, locale: "he", screenshot: { ...screenshot, family: "ipad" } });
+  const ipad = creativeLayout({ width, height: CREATIVE_PLACEMENT_SPECS.searchResults.height, safeArea, locale: "en-US", screenshot: { ...screenshot, family: "ipad" } });
+  const ipadRtl = creativeLayout({ width, height: CREATIVE_PLACEMENT_SPECS.searchResults.height, safeArea, locale: "he", screenshot: { ...screenshot, family: "ipad" } });
   assert.ok(ipad.device && ipadRtl.device);
   assert.ok(ipad.text.left + ipad.text.width < ipad.device.left && ipad.device.left + ipad.device.width > safeArea.right && ipad.device.left + ipad.device.width <= width);
   assert.ok(ipadRtl.device.left + ipadRtl.device.width < ipadRtl.text.left && ipadRtl.device.left < safeArea.left && ipadRtl.device.left >= 0);
-  const centered = creativeLayout({ width: CREATIVE_PLACEMENT_SPECS.header.width, safeArea: CREATIVE_PLACEMENT_SPECS.header.safeArea, locale: "en-US" });
+  const centered = creativeLayout({ width: CREATIVE_PLACEMENT_SPECS.header.width, height: CREATIVE_PLACEMENT_SPECS.header.height, safeArea: CREATIVE_PLACEMENT_SPECS.header.safeArea, locale: "en-US" });
   const inset = 1646 * 0.01; // glyph-overhang inset inside the safe area
   assert.deepEqual(centered.text, { left: 1097 + inset, top: 493, width: 1646 - 2 * inset, height: 661 });
   assert.equal(centered.device, undefined);
