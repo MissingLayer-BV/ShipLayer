@@ -123,6 +123,9 @@
     "screenshots": {
       "$ref": "#/$defs/screenshots"
     },
+    "creativeAssets": {
+      "$ref": "#/$defs/creativeAssets"
+    },
     "monetization": {
       "oneOf": [
         {
@@ -1020,6 +1023,81 @@
         },
         "finalOutputDir": {
           "$ref": "#/$defs/repoPath"
+        }
+      }
+    },
+    "creativeColor": {
+      "type": "string",
+      "pattern": "^#[0-9A-Fa-f]{6}$"
+    },
+    "creativeScreenshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["family", "capture"],
+      "properties": {
+        "family": { "enum": ["iphone", "ipad"] },
+        "capture": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" }
+      }
+    },
+    "creativeScreenshotPlacement": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "screenshot": { "$ref": "#/$defs/creativeScreenshot" }
+      }
+    },
+    "creativeCopy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["headline"],
+      "properties": {
+        "headline": { "type": "string", "minLength": 1, "maxLength": 60, "pattern": "^[^\\r\\n]+$" },
+        "subline": { "type": "string", "minLength": 1, "maxLength": 120, "pattern": "^[^\\r\\n]+$" }
+      }
+    },
+    "creativeAssets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outputDir", "locales", "placements", "localizations"],
+      "properties": {
+        "outputDir": { "$ref": "#/$defs/repoPath" },
+        "wordmark": { "type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[^\\r\\n]+$" },
+        "style": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "background": { "$ref": "#/$defs/creativeColor" },
+            "text": { "$ref": "#/$defs/creativeColor" },
+            "secondaryText": { "$ref": "#/$defs/creativeColor" },
+            "accent": { "$ref": "#/$defs/creativeColor" }
+          }
+        },
+        "locales": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/locale" } },
+        "placements": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "header": { "type": "object", "additionalProperties": false, "properties": {} },
+            "searchResults": { "$ref": "#/$defs/creativeScreenshotPlacement" },
+            "universal": { "$ref": "#/$defs/creativeScreenshotPlacement" }
+          }
+        },
+        "localizations": {
+          "type": "object",
+          "patternProperties": {
+            "^[a-z]{2,3}(?:-[A-Z][a-z]{3}|-[A-Z]{2})?(?:-[A-Z]{2})?$": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "confirmation": { "$ref": "#/$defs/confirmation" },
+                "header": { "$ref": "#/$defs/creativeCopy" },
+                "searchResults": { "$ref": "#/$defs/creativeCopy" },
+                "universal": { "$ref": "#/$defs/creativeCopy" }
+              }
+            }
+          },
+          "additionalProperties": false
         }
       }
     },

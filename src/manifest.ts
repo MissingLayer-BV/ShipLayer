@@ -8,6 +8,7 @@ import schema from "./schema.json" with { type: "json" };
 import type { ShipLayerManifest } from "./types.js";
 import { assessPublicEvidenceUrl } from "./collection-attestation.js";
 import { containsCredentialUrlMaterial, containsDirectCredentialMaterial } from "./secrets.js";
+import { CREATIVE_PLACEMENTS, declaredCreativePlacements } from "./creative-assets.js";
 
 const ajv = new Ajv2020({ allErrors: true, strict: false });
 const validateSchema = ajv.compile(schema);
@@ -108,9 +109,23 @@ export function validateManifest(candidate: unknown): asserts candidate is ShipL
     if (configuration.sourceLocale && !APPLE_LOCALES.has(configuration.sourceLocale)) errors.push(`screenshots.configurations contains unsupported source localization '${configuration.sourceLocale}'`);
     else if (configuration.sourceLocale && !manifest.app.locales.includes(configuration.sourceLocale)) errors.push(`screenshots.configurations sourceLocale '${configuration.sourceLocale}' is not declared in app.locales`);
   }
-  for (const [label, candidatePath] of [["screenshots.rawOutputDir", manifest.screenshots.rawOutputDir], ["screenshots.marketingProjectPath", manifest.screenshots.marketingProjectPath], ["screenshots.finalOutputDir", manifest.screenshots.finalOutputDir]] as const) {
+  for (const [label, candidatePath] of [["screenshots.rawOutputDir", manifest.screenshots.rawOutputDir], ["screenshots.marketingProjectPath", manifest.screenshots.marketingProjectPath], ["screenshots.finalOutputDir", manifest.screenshots.finalOutputDir], ["creativeAssets.outputDir", manifest.creativeAssets?.outputDir]] as const) {
     if (!candidatePath) continue;
     try { safeRelativePath(candidatePath, label); } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
+  }
+  const creative = manifest.creativeAssets;
+  if (creative) {
+    for (const locale of creative.locales) {
+      if (!APPLE_LOCALES.has(locale)) errors.push(`creativeAssets.locales contains unsupported App Store localization '${locale}'`);
+      else if (!manifest.app.locales.includes(locale)) errors.push(`creativeAssets.locales contains ${locale}, which is not declared in app.locales`);
+      const copy = creative.localizations[locale];
+      if (!copy) { errors.push(`creativeAssets.localizations is missing locale ${locale}`); continue; }
+      for (const placement of declaredCreativePlacements(creative)) if (!copy[placement]) errors.push(`creativeAssets.localizations.${locale} needs ${placement} copy`);
+    }
+    for (const [locale, copy] of Object.entries(creative.localizations)) {
+      if (!creative.locales.includes(locale)) errors.push(`creativeAssets.localizations.${locale} is not listed in creativeAssets.locales`);
+      for (const placement of CREATIVE_PLACEMENTS) if (copy[placement] && !creative.placements[placement]) errors.push(`creativeAssets.localizations.${locale} has ${placement} copy, but creativeAssets.placements does not declare ${placement}`);
+    }
   }
   if (manifest.app.productionIconCatalog) try { safeRelativePath(manifest.app.productionIconCatalog, "app.productionIconCatalog"); } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
   if (manifest.app.productionIconAsset) try { safeRelativePath(manifest.app.productionIconAsset, "app.productionIconAsset"); } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }

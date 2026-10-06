@@ -8,6 +8,7 @@ import type { AnalysisReport, Finding, LocaleCopy, PreflightReport, ShipLayerMan
 import { AI_CONSENT_FLOW_FINDING, aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, MONETIZATION_CONTRADICTION_FINDING, resolveContradictionOverride, storekitPurchaseEvidence } from "./evidence.js";
 import { detectScreenshotHarness } from "./scanner.js";
 import { buildMarketingSlideEntries, DEFAULT_MARKETING_FINAL_DIR, DEFAULT_OUTPUT_DIRECTORY, EXPORT_MJS, frameForFamily, renderPackageJson, renderReadme, renderSlideHtml, renderSlidesManifestJson, STRIP_ALPHA_MJS } from "./marketing.js";
+import { buildCreativeSlideEntries, creativeSlideManifestRows, renderCreativeHtml, renderCreativeReadmeSection } from "./creative-assets.js";
 import { assessNotCollectionAttestation, notCollectionAttestationIssueMessage } from "./collection-attestation.js";
 import { assessNotCollectionEvidence } from "./not-collection-evidence.js";
 import { assessExternalServiceReadiness } from "./external-service-assessment.js";
@@ -59,6 +60,19 @@ function assertOutputDoesNotCollide(manifest: ShipLayerManifest, outputRelative:
   const inputs = ["shiplayer.yml", manifest.screenshots.rawOutputDir, manifest.screenshots.marketingProjectPath, ...(manifest.monetization.type === "subscriptions" || manifest.monetization.type === "non-consumables" ? manifest.monetization.products.map((product) => product.reviewScreenshot) : [])].filter((item): item is string => Boolean(item)).map((item) => safeRelativePath(item, "manifest input"));
   const normalizedOutput = outputRelative.toLocaleLowerCase("en-US");
   if (inputs.map((input) => input.toLocaleLowerCase("en-US")).some((input) => normalizedOutput === input || normalizedOutput.startsWith(`${input}/`) || input.startsWith(`${normalizedOutput}/`))) throw new Error("--out collides with a manifest source input. Choose a separate managed release directory.");
+  assertCreativeOutputDirSeparate(manifest, outputRelative);
+}
+// creativeAssets.outputDir holds rendered PNGs a human uploads by hand; it is a repository asset
+// directory, never part of the regenerated release package. Inside --out, the next prepare's
+// atomic replace would delete every rendered creative asset, and overlapping the raw capture or
+// final screenshot directories would mix creative PNGs into decks check and apply read.
+function assertCreativeOutputDirSeparate(manifest: ShipLayerManifest, outputRelative: string): void {
+  const creative = manifest.creativeAssets;
+  if (!creative) return;
+  const outputDir = safeRelativePath(creative.outputDir, "creativeAssets.outputDir").toLocaleLowerCase("en-US");
+  const overlaps = (other: string): boolean => { const normalized = other.toLocaleLowerCase("en-US"); return outputDir === normalized || outputDir.startsWith(`${normalized}/`) || normalized.startsWith(`${outputDir}/`); };
+  if (overlaps(outputRelative)) throw new Error(`creativeAssets.outputDir ('${creative.outputDir}') overlaps --out ('${outputRelative}'). Rendered creative assets must live outside the regenerated release package (e.g. app-store-assets/creative), or the next prepare deletes them.`);
+  for (const [label, other] of [["screenshots.rawOutputDir", manifest.screenshots.rawOutputDir], ["screenshots.finalOutputDir", manifest.screenshots.finalOutputDir || `${outputRelative}/screenshots/final`]] as const) if (overlaps(safeRelativePath(other, label))) throw new Error(`creativeAssets.outputDir ('${creative.outputDir}') overlaps ${label} ('${other}'). Keep creative assets in their own directory.`);
 }
 /**
  * screenshots.finalOutputDir, when unset, resolves relative to THIS RUN's actual --out (see
@@ -180,12 +194,13 @@ async function installStage(stage: string, destination: string): Promise<void> {
 // ".github/screenshots" and generateReleasePackage would happily emit a slides.json instructing
 // export.mjs to write PNGs into the app repository's own .github/, the exact boundary
 // docs/automation-boundaries.md states ShipLayer itself never writes into, and the same value
-// --out already explicitly refuses. See PR review round-3 finding N3.
-function assertFinalOutputDirNotReserved(finalOutputDir: string): void {
-  const reserved = finalOutputDir.split("/").find((component) => RESERVED_OUTPUT_ROOTS.has(component.toLowerCase()));
-  if (reserved) throw new Error(`screenshots.finalOutputDir cannot use reserved or source-control path '${reserved}'. Choose a location that does not overlap a VCS/build/dependency directory.`);
+// --out already explicitly refuses. See PR review round-3 finding N3. creativeAssets.outputDir,
+// the other directory export.mjs writes PNGs into, gets the same scan.
+function assertNotReservedPath(value: string, label: string): void {
+  const reserved = value.split("/").find((component) => RESERVED_OUTPUT_ROOTS.has(component.toLowerCase()));
+  if (reserved) throw new Error(`${label} cannot use reserved or source-control path '${reserved}'. Choose a location that does not overlap a VCS/build/dependency directory.`);
 }
-function assertManifestPaths(manifest: ShipLayerManifest): void { safeRelativePath(manifest.screenshots.rawOutputDir, "screenshots.rawOutputDir"); if (manifest.screenshots.marketingProjectPath) safeRelativePath(manifest.screenshots.marketingProjectPath, "screenshots.marketingProjectPath"); if (manifest.screenshots.finalOutputDir) { safeRelativePath(manifest.screenshots.finalOutputDir, "screenshots.finalOutputDir"); assertFinalOutputDirNotReserved(manifest.screenshots.finalOutputDir); } if (manifest.monetization.type === "non-consumables" || manifest.monetization.type === "subscriptions") for (const product of manifest.monetization.products) safeRelativePath(product.reviewScreenshot, `review screenshot for ${product.productId}`); }
+function assertManifestPaths(manifest: ShipLayerManifest): void { safeRelativePath(manifest.screenshots.rawOutputDir, "screenshots.rawOutputDir"); if (manifest.screenshots.marketingProjectPath) safeRelativePath(manifest.screenshots.marketingProjectPath, "screenshots.marketingProjectPath"); if (manifest.screenshots.finalOutputDir) { safeRelativePath(manifest.screenshots.finalOutputDir, "screenshots.finalOutputDir"); assertNotReservedPath(manifest.screenshots.finalOutputDir, "screenshots.finalOutputDir"); } if (manifest.creativeAssets) { safeRelativePath(manifest.creativeAssets.outputDir, "creativeAssets.outputDir"); assertNotReservedPath(manifest.creativeAssets.outputDir, "creativeAssets.outputDir"); } if (manifest.monetization.type === "non-consumables" || manifest.monetization.type === "subscriptions") for (const product of manifest.monetization.products) safeRelativePath(product.reviewScreenshot, `review screenshot for ${product.productId}`); }
 function assertNoSecretOutput(contents: string, label: string): void { if (containsDirectCredentialMaterial(contents) || containsCredentialUrlMaterial(contents)) throw new Error(`Refusing to generate ${label} because it appears to contain credential material.`); }
 
 // --- shared "did the scan contradict this declaration" helpers, used by every generated ------
@@ -463,13 +478,18 @@ async function emitMarketingProject(manifest: ShipLayerManifest, outputRelative:
   const finalOutputDir = manifest.screenshots.finalOutputDir || `${outputRelative}/screenshots/final`;
   const entries = buildMarketingSlideEntries({ outputDirectory: outputRelative, rawOutputDir: manifest.screenshots.rawOutputDir, finalOutputDir, configurations: manifest.screenshots.configurations, scenarios: manifest.screenshots.scenarios });
   const root = "screenshots/marketing";
+  // App Store creative assets (Header / Search results / Universal) render through the same
+  // project and export.mjs, into creativeAssets.outputDir. See src/creative-assets.ts.
+  const creative = manifest.creativeAssets;
+  const creativeEntries = creative ? buildCreativeSlideEntries({ outputDirectory: outputRelative, rawOutputDir: manifest.screenshots.rawOutputDir, configurations: manifest.screenshots.configurations, creativeAssets: creative }) : [];
   for (const entry of entries) await emit(`${root}/${entry.htmlRelativePath}`, renderSlideHtml(entry));
-  await emit(`${root}/slides.json`, renderSlidesManifestJson(entries));
+  for (const entry of creativeEntries) await emit(`${root}/${entry.htmlRelativePath}`, renderCreativeHtml(entry));
+  await emit(`${root}/slides.json`, renderSlidesManifestJson(entries, creativeSlideManifestRows(creativeEntries)));
   await emit(`${root}/package.json`, renderPackageJson());
   await emit(`${root}/strip-alpha.mjs`, STRIP_ALPHA_MJS);
   await emit(`${root}/export.mjs`, EXPORT_MJS);
-  await emit(`${root}/README.md`, renderReadme(entries, finalOutputDir));
-  const families = [...new Set(manifest.screenshots.configurations.map((configuration) => configuration.family))].sort();
+  await emit(`${root}/README.md`, renderReadme(entries, finalOutputDir, creative ? renderCreativeReadmeSection(creativeEntries, creative.outputDir) : ""));
+  const families = [...new Set([...manifest.screenshots.configurations.map((configuration) => configuration.family), ...creativeEntries.flatMap((entry) => entry.screenshot ? [entry.screenshot.family] : [])])].sort();
   for (const family of families) {
     const geometry = frameForFamily(family);
     await emitDeviceFrameAsset(`${root}/assets/${family}-frame.png`, geometry.assetFile);
