@@ -1,6 +1,7 @@
 import path from "node:path";
 import { lstat, readFile, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { scenariosForFamily } from "./types.js";
 import type { AnalysisReport, CheckResult, LocaleCopy, PreflightReport, ShipLayerManifest } from "./types.js";
 import { analyzeRepository, findPermissionRequestSites, findValue } from "./scanner.js";
 import { readText, relative, resolveContained, walkRepository } from "./fs.js";
@@ -1174,7 +1175,8 @@ function screenshotConfigurationChecks(manifest: ShipLayerManifest, add: Add): v
   // every set it renders. Warn here instead of only discovering it after a full render (the
   // post-hoc marketingScreenshotChecks/screenshotChecks file-count block below still catches it,
   // but only after `npm install && npm run export` has already done the (wasted) work).
-  if (manifest.screenshots.scenarios.length > 10) add("screenshots.scenarios.count", "warn", `${manifest.screenshots.scenarios.length} screenshot scenarios are declared; App Store allows at most 10 screenshots per family/locale set. The marketing composition project will render one slide per scenario for every configured family/locale, over-producing each set.`, "Reduce to 10 or fewer scenarios, or accept that check will block the resulting set(s) after rendering.");
+  const oversizedFamilies = manifest.app.deviceFamilies.map((family) => ({ family, count: scenariosForFamily(manifest, family).length })).filter((item) => item.count > 10);
+  if (oversizedFamilies.length) add("screenshots.scenarios.count", "warn", `${oversizedFamilies.map((item) => `${item.count} ${item.family}`).join(", ")} screenshot scenarios are declared; App Store allows at most 10 screenshots per family/locale set. The marketing composition project will render one slide per scenario for every configured family/locale, over-producing each set.`, "Reduce to 10 or fewer scenarios per family, or accept that check will block the resulting set(s) after rendering.");
   // A scenario detected from an existing UI-test harness, or copied from the generated template,
   // is never silently promoted to confirmed — a human must verify the real on-screen navigation.
   // An absent confirmation field also blocks (rather than being treated as implicitly confirmed):
@@ -1248,7 +1250,7 @@ async function screenshotChecks(repository: string, manifest: ShipLayerManifest,
     // extension of another id (e.g. a dedup suffix "home" / "home-2") lets one file such as
     // home-2.png satisfy both scenarios at once, silently passing a set that is missing a real
     // screenshot for "home".
-    const scenarioIds = manifest.screenshots.scenarios.map((scenario) => scenario.id);
+    const scenarioIds = scenariosForFamily(manifest, config.family).map((scenario) => scenario.id);
     for (const scenario of new Set(scenarioIds)) {
       const covered = imageFiles.some((image) => {
         const stem = path.basename(image, path.extname(image));
@@ -1290,8 +1292,8 @@ async function marketingScreenshotChecks(repository: string, manifest: ShipLayer
   // finding F3) precisely so a real render survives; nothing else ever prunes it when a scenario
   // disappears. Without this check, that orphaned PNG sits in the set `check` approves and a human
   // uploads it as if it still represented a current scenario. See PR review finding N5.
-  const currentScenarioIds = new Set(manifest.screenshots.scenarios.map((scenario) => scenario.id));
   for (const config of manifest.screenshots.configurations) {
+    const currentScenarioIds = new Set(scenariosForFamily(manifest, config.family).map((scenario) => scenario.id));
     const id = `marketing.${config.family}.${config.locale}`;
     const relativeDirectory = `${finalOutputDir}/${config.family}/${config.locale}`;
     let directory: string;

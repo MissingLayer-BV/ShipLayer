@@ -163,7 +163,7 @@ export const DEFAULT_MARKETING_FINAL_DIR = `${DEFAULT_OUTPUT_DIRECTORY}/screensh
  * relative-path math is done against a shared synthetic "/" root so it is independent of
  * process.cwd() and stays deterministic/testable without touching disk.
  */
-export function buildMarketingSlideEntries(params: { outputDirectory: string; rawOutputDir: string; finalOutputDir: string; configurations: Array<{ device: string; family: "iphone" | "ipad"; locale: string; sourceLocale?: string; requiredDimensions: { width: number; height: number } }>; scenarios: Array<{ id: string; title: string; caption?: string; confirmation?: string; localizations?: Record<string, { title?: string; caption: string; confirmation?: string }> }> }): MarketingSlideEntry[] {
+export function buildMarketingSlideEntries(params: { outputDirectory: string; rawOutputDir: string; finalOutputDir: string; configurations: Array<{ device: string; family: "iphone" | "ipad"; locale: string; sourceLocale?: string; requiredDimensions: { width: number; height: number } }>; scenarios: Array<{ id: string; title: string; caption?: string; confirmation?: string; families?: Array<"iphone" | "ipad">; localizations?: Record<string, { title?: string; caption: string; confirmation?: string }> }> }): MarketingSlideEntry[] {
   const abs = (relative: string): string => path.posix.join("/", relative);
   const relativeFrom = (fromDir: string, to: string): string => path.posix.relative(abs(fromDir), abs(to));
   const marketingRoot = path.posix.join(params.outputDirectory, MARKETING_PROJECT_ROOT);
@@ -171,6 +171,7 @@ export function buildMarketingSlideEntries(params: { outputDirectory: string; ra
   for (const config of params.configurations) {
     const slideDir = path.posix.join(marketingRoot, "slides", config.family, config.locale);
     for (const scenario of params.scenarios) {
+      if (scenario.families && !scenario.families.includes(config.family)) continue;
       const localized = scenario.localizations?.[config.locale];
       const htmlAbsolute = path.posix.join(slideDir, `${scenario.id}.html`);
       const rawLocale = config.sourceLocale ?? config.locale;

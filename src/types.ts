@@ -261,6 +261,8 @@ export interface ScreenshotScenario {
   title: string;
   launchArguments?: string[];
   steps: string[];
+  /** Device families this scenario is captured and uploaded for; absent means every family. Lets one set carry an extra slide (an iPad-only landscape screenshot). */
+  families?: Array<"iphone" | "ipad">;
   /** Absent (legacy/manually-authored) is treated as confirmed. A scenario proposed from a
    * detected or templated UI-test harness is always written with "needs-human-confirmation" and
    * must never be silently promoted to "confirmed" by ShipLayer itself. */
@@ -348,3 +350,6 @@ export interface PreflightReport { repository: string; results: CheckResult[]; s
 export interface AscOperation { id: string; action: "read" | "create" | "update" | "upload" | "delete" | "submit" | "manual"; resource: string; description: string; safety: "read-only" | "requires-apply" | "requires-submit" | "manual"; status: "planned" | "unsupported" | "already-matches" | "applied" }
 export interface AscPlan { mode: "offline" | "remote"; operations: AscOperation[]; credentialsPresent: boolean; warnings: string[] }
 export interface AscApplyResult { applied: boolean; operations: AscOperation[]; warnings: string[] }
+
+/** The screenshot scenarios that apply to one device family: those without `families`, or listing it. */
+export function scenariosForFamily(manifest: { screenshots: { scenarios: ScreenshotScenario[] } }, family: "iphone" | "ipad"): ScreenshotScenario[] { return manifest.screenshots.scenarios.filter((scenario) => !scenario.families || scenario.families.includes(family)); }
