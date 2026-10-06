@@ -263,6 +263,10 @@ export interface ScreenshotScenario {
   steps: string[];
   /** Device families this scenario is captured and uploaded for; absent means every family. Lets one set carry an extra slide (an iPad-only landscape screenshot). */
   families?: Array<"iphone" | "ipad">;
+  /** App Store locales this scenario is uploaded for; absent means every locale. Cannot be combined with `excludeLocales`. */
+  locales?: string[];
+  /** App Store locales this scenario is not uploaded for; absent means none. Cannot be combined with `locales`. */
+  excludeLocales?: string[];
   /** Absent (legacy/manually-authored) is treated as confirmed. A scenario proposed from a
    * detected or templated UI-test harness is always written with "needs-human-confirmation" and
    * must never be silently promoted to "confirmed" by ShipLayer itself. */
@@ -378,3 +382,9 @@ export interface AscApplyResult { applied: boolean; operations: AscOperation[]; 
 
 /** The screenshot scenarios that apply to one device family: those without `families`, or listing it. */
 export function scenariosForFamily(manifest: { screenshots: { scenarios: ScreenshotScenario[] } }, family: "iphone" | "ipad"): ScreenshotScenario[] { return manifest.screenshots.scenarios.filter((scenario) => !scenario.families || scenario.families.includes(family)); }
+
+/** The screenshot scenarios that apply to one family/locale set: `scenariosForFamily`, further limited by `locales` / `excludeLocales`. */
+export function scenariosFor(manifest: { screenshots: { scenarios: ScreenshotScenario[] } }, family: "iphone" | "ipad", locale: string): ScreenshotScenario[] { return scenariosForFamily(manifest, family).filter((scenario) => scenarioCoversLocale(scenario, locale)); }
+
+/** Whether a scenario applies to a locale under its `locales` / `excludeLocales`. */
+export function scenarioCoversLocale(scenario: ScreenshotScenario, locale: string): boolean { return (!scenario.locales || scenario.locales.includes(locale)) && !scenario.excludeLocales?.includes(locale); }
