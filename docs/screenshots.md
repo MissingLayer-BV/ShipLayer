@@ -18,7 +18,7 @@ iPhone Duo has its own App Store screenshot slot, so it is a screenshot configur
 
 - Capture needs Xcode 27.1 or later with the iOS 27.1 simulator, which includes the iPhone Duo. The simulator has two displays: name the right one when capturing outside XCUITest (`xcrun simctl io <device> screenshot --display=<id>`; `xcrun simctl io <device> enumerate` lists them).
 - `apply` uploads the set as `APP_IPHONE_DUO`. App Store Connect accepts that value and shows the set in its iPhone Duo gallery, but Apple's published `ScreenshotDisplayType` reference does not list it yet (checked 2026-10-06), so `check` warns on every Duo configuration. Check the first upload in App Store Connect; if Apple names the slot differently, update ShipLayer before applying again.
-- The marketing frame (`assets/device-frames/iphone-duo-frame.png`) is generated in the iPad frame's style with its screen in the outer display's aspect. An inner-display capture is about 2% narrower in aspect and is cropped at the sides.
+- The marketing frame (`assets/device-frames/iphone-duo-frame.png`) is generated in the shape of Apple's outer-display diagram in the Human Interface Guidelines ("Designing for iPhone Duo", Anatomy): the hinge along the left edge with squarer corners on that side, the large rounded corners on the other, and the camera near the top right, drawn over the screenshot where the simulator shows it. Its screen is in the outer display's aspect; an inner-display capture is about 2% narrower in aspect and is cropped at the sides.
 
 ## Marketing screenshot composition
 
