@@ -10,7 +10,7 @@ import { localScreenshotSets } from "../src/asc-apply.js";
 import { generateReleasePackage } from "../src/generator.js";
 import { analyzeRepository } from "../src/scanner.js";
 import { validateManifest, writeManifest } from "../src/manifest.js";
-import { frameForFamily, IPHONE_DUO_FRAME } from "../src/marketing.js";
+import { frameForFamily, IPHONE_DUO_FRAME, renderSlideHtml } from "../src/marketing.js";
 import { inspectImage } from "../src/image.js";
 import type { ShipLayerManifest } from "../src/types.js";
 import { scenariosForFamily } from "../src/types.js";
@@ -129,4 +129,27 @@ test("an iPhone Duo deck uses the iPhone scenarios, never iPad-only ones", () =>
     { id: "landscape", title: "iPad only", steps: ["Rotate"], confirmation: "confirmed", families: ["ipad"] }
   ];
   assert.deepEqual(scenariosForFamily(manifest, "iphone-duo").map((scenario) => scenario.id), ["home", "phone"]);
+});
+
+function slide(family: "iphone" | "iphone-duo"): string {
+  const { width, height } = family === "iphone" ? { width: 1320, height: 2868 } : OUTER;
+  return renderSlideHtml({ id: "home", title: "Home", caption: "Caption", confirmed: true, family, device: family === "iphone" ? "iPhone 17 Pro Max" : "iPhone Duo", locale: "en-US", width, height,
+    screenshotPngHref: "home.png", screenshotJpgHref: "home.jpg", frameHref: "frame.png", htmlRelativePath: "", outputRelativePath: "" });
+}
+
+test("a Duo slide squares the screen's hinge-side corners and draws the camera over the screenshot", () => {
+  const html = slide("iphone-duo");
+  const radius = /\.screenshot-wrap \{[^}]*border-radius: ([^;]+);/.exec(html)?.[1] ?? "";
+  const [horizontal, vertical] = radius.split(" / ").map((side) => side.split(" ").map((value) => Number.parseFloat(value)));
+  assert.equal(horizontal.length, 4); assert.equal(vertical.length, 4);
+  assert.ok(horizontal[0] < horizontal[1] / 4 && horizontal[3] === horizontal[0], `hinge corners on the left: ${radius}`);
+  assert.equal(horizontal[1], horizontal[2]);
+  assert.ok(html.includes('<div class="camera"'));
+});
+
+test("an iPhone slide keeps one corner radius and no camera", () => {
+  const html = slide("iphone");
+  const radius = /\.screenshot-wrap \{[^}]*border-radius: ([^;]+);/.exec(html)?.[1] ?? "";
+  assert.equal(new Set(radius.split(" / ")[0].split(" ")).size, 1, radius);
+  assert.ok(!html.includes('<div class="camera"'));
 });
