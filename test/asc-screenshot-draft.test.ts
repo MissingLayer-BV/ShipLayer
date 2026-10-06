@@ -105,3 +105,14 @@ test('preview follows the ordered relationship even when screenshot resources ar
   assert.equal(result.sets?.[0].status,'already-matches');
  }finally{await rm(f.root,{recursive:true,force:true});}
 });
+
+test('a configured iPhone Duo deck joins the draft as its own set; an unconfigured one is not required',async()=>{
+ const f=await fixture();try {
+  f.manifest.screenshots.configurations.push({device:'iPhone Duo',family:'iphone-duo',locale:'en-US',requiredDimensions:{width:1398,height:2034}});
+  await mkdir(path.join(f.root,'final/iphone-duo/en-US'),{recursive:true});
+  await writeFile(path.join(f.root,'final/iphone-duo/en-US/home.png'),png(1398,2034));
+  const preview=await draftScreenshots(f.root,f.manifest,false,false,f.client);
+  assert.deepEqual(preview.sets.map((set:any)=>set.family).sort(),['iphone','iphone-duo']);
+  assert.equal(f.writes.length,0);
+ } finally {await rm(f.root,{recursive:true,force:true});}
+});

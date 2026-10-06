@@ -983,7 +983,8 @@
               "family": {
                 "enum": [
                   "iphone",
-                  "ipad"
+                  "ipad",
+                  "iphone-duo"
                 ]
               },
               "locale": {
