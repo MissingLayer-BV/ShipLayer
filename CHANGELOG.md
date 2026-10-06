@@ -25,6 +25,7 @@ App Store creative assets (iOS 27):
   `manual.creative-assets`. See docs/creative-assets.md.
 - export.mjs now refuses any slide whose page reports
   `data-shiplayer-overflow`, removing a stale PNG for it.
+- `screenshots.scenarios[].locales` / `excludeLocales` limit a scenario to some App Store locales (one or the other; values from `app.locales`). Caption confirmation, capture plans, marketing slides, preflight coverage and the draft/apply deck counts are per family and locale, so a locale without a slide can still upload its smaller deck.
 
 Gates learned from LinkVoice 1.0 (2), rejected on 2026-09-23:
 

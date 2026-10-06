@@ -1,7 +1,7 @@
 import { AppStoreConnectClient, credentialsFromEnvironment, dataOf, isEditableAppVersionState, type AscResource, type RemoteScreenshotGroup } from './asc.js';
 import { localScreenshotSets, syncScreenshots, type LocalScreenshotSet } from './asc-apply.js';
 import { inspectImage } from './image.js';
-import { scenariosForFamily } from './types.js';
+import { scenarioCoversLocale, scenariosFor } from './types.js';
 import type { AscOperation, ShipLayerManifest } from './types.js';
 
 type Client = Pick<AppStoreConnectClient, 'get' | 'post' | 'patch' | 'delete' | 'uploadAsset'>;
@@ -22,18 +22,18 @@ function matches(local: LocalScreenshotSet, remote: AscResource[]): boolean {
 export async function draftScreenshots(repository: string, manifest: ShipLayerManifest, apply = false, confirmed = false, suppliedClient?: Client, selectedLocales = manifest.app.locales, replaceIncomplete = false) {
   if (apply && (!confirmed || manifest.sync.mode !== 'apply')) throw new Error('Draft screenshot writes require sync.mode: apply and explicit confirmation.');
   if (!manifest.app.appStoreAppId || !manifest.app.bundleId || !manifest.app.version) throw new Error('Explicit app identity and target version are required.');
-  for (const family of manifest.app.deviceFamilies) { const count = scenariosForFamily(manifest, family).length; if (!count || count > 10) throw new Error(`One to ten reviewed scenarios are required for ${family}.`); }
   if (!selectedLocales.length || new Set(selectedLocales).size !== selectedLocales.length) throw new Error('One or more unique screenshot locales are required.');
   for (const locale of selectedLocales) if (!manifest.app.locales.includes(locale)) throw new Error(`Locale ${locale} is not configured in the manifest.`);
+  for (const family of manifest.app.deviceFamilies) for (const locale of selectedLocales) { const count = scenariosFor(manifest, family, locale).length; if (!count || count > 10) throw new Error(`One to ten reviewed scenarios are required for ${family}/${locale}.`); }
   for (const scenario of manifest.screenshots.scenarios) {
     if (scenario.confirmation !== 'confirmed' || !scenario.caption?.trim()) throw new Error('Screenshot captions must be confirmed.');
-    for (const locale of selectedLocales) if (locale !== manifest.app.primaryLocale && (scenario.localizations?.[locale]?.confirmation !== 'confirmed' || !scenario.localizations[locale].caption?.trim())) throw new Error(`Unconfirmed caption ${locale}/${scenario.id}.`);
+    for (const locale of selectedLocales) if (locale !== manifest.app.primaryLocale && scenarioCoversLocale(scenario, locale) && (scenario.localizations?.[locale]?.confirmation !== 'confirmed' || !scenario.localizations[locale].caption?.trim())) throw new Error(`Unconfirmed caption ${locale}/${scenario.id}.`);
   }
   const local = (await localScreenshotSets(repository, manifest)).filter(set => selectedLocales.includes(set.locale));
   const expected = new Set(selectedLocales.flatMap(locale => manifest.app.deviceFamilies.map(family => `${family}/${locale}`)));
   for (const set of local) {
     if (!expected.delete(`${set.family}/${set.locale}`)) throw new Error('Duplicate or unexpected screenshot configuration.');
-    if (set.source !== 'marketing' || set.screenshots.length !== scenariosForFamily(manifest, set.family).length) throw new Error('Complete marketing decks are required; raw fallback is not allowed.');
+    if (set.source !== 'marketing' || set.screenshots.length !== scenariosFor(manifest, set.family, set.locale).length) throw new Error('Complete marketing decks are required; raw fallback is not allowed.');
     const config = manifest.screenshots.configurations.find(c => c.family === set.family && c.locale === set.locale)!;
     for (const screenshot of set.screenshots) {
       const image = await inspectImage(screenshot.filePath);

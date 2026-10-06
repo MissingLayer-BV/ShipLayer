@@ -7,7 +7,7 @@ import { appReviewNotes, submittedReviewNotes } from "./generator.js";
 import { preflight } from "./preflight.js";
 import { resolveContained } from "./fs.js";
 import { DEFAULT_MARKETING_FINAL_DIR } from "./marketing.js";
-import { scenariosForFamily } from "./types.js";
+import { scenariosFor } from "./types.js";
 import type { AnalysisReport, AscApplyResult, AscOperation, AscPlan, ShipLayerManifest } from "./types.js";
 
 interface LocalScreenshot { fileName: string; filePath: string; checksum: string; bytes: Buffer }
@@ -287,7 +287,7 @@ export async function localScreenshotSets(repository: string, manifest: ShipLaye
     const rawLocale = configuration.sourceLocale ?? configuration.locale;
     const rawRelative = `${manifest.screenshots.rawOutputDir}/${configuration.family}/${rawLocale}`;
     const finalFiles = await listImages(repository, finalRelative);
-    const familyScenarios = scenariosForFamily(manifest, configuration.family);
+    const familyScenarios = scenariosFor(manifest, configuration.family, configuration.locale);
     const finalComplete = familyScenarios.every((scenario) => finalFiles.some((file) => path.basename(file, path.extname(file)) === scenario.id));
     const source = finalComplete ? "marketing" as const : "raw" as const; const relativeDirectory = source === "marketing" ? finalRelative : rawRelative; const files = source === "marketing" ? finalFiles : await listImages(repository, rawRelative);
     if (!files.length) throw new Error(`No screenshots exist in ${relativeDirectory}.`);
