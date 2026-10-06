@@ -26,6 +26,8 @@ This recursively finds image files under `<dir>`, validates format, rejects an a
 
 ## 4. Draft captions
 
+A scenario may set `families: [ipad]` (or `[iphone]`) so only that device family captures, renders and uploads it (for example an iPad-only landscape slide mixed into a portrait set); without `families` it applies to every family, and each family's set still holds one to ten.
+
 For the primary locale, draft `screenshots.scenarios[].caption`. For every localized deck, draft `screenshots.scenarios[].localizations.<locale>.caption` and leave its separate confirmation pending until a human reviews the rendered translation. ShipLayer never invents these. Once `screenshots.localizations.<locale>` opts a locale into localized capture, `check` blocks a missing or unconfirmed translated caption instead of silently shipping the primary caption. A configuration may set `sourceLocale` to reuse a reviewed raw in-app deck when the target storefront language is not available in the app; the target locale still owns the output path, copy, direction, and App Store relationship, and `check` warns that the in-frame UI is not translated.
 
 - Max 100 characters, no line breaks. A wide-script caption (CJK, kana, hangul, fullwidth forms) should be noticeably shorter — those glyphs render close to full width.

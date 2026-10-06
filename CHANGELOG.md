@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `screenshots.scenarios[].families` limits a scenario to `iphone` and/or `ipad` (absent: every family), so a set can carry an extra slide such as an iPad-only landscape screenshot. Scenario lists, counts and coverage checks are per family; the draft screenshot gate accepts a landscape image (transposed `requiredDimensions`) in a portrait set.
+
 Gates learned from LinkVoice 1.0 (2), rejected on 2026-09-23:
 
 - `ai-sharing.consent` overrides no longer downgrade consent blockers to

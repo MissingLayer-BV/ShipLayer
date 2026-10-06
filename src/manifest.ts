@@ -126,6 +126,7 @@ export function validateManifest(candidate: unknown): asserts candidate is ShipL
     for (const evidence of [...manifest.monetization.purchasePresentation.sourceEvidence, ...manifest.monetization.purchasePresentation.testEvidence]) try { safeRelativePath(evidence, "purchase presentation evidence"); } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
   }
   const duplicateScenario = (label: string, scenarios: ShipLayerManifest["screenshots"]["scenarios"]): void => { const values = new Set<string>(); for (const scenario of scenarios) { if (values.has(scenario.id)) errors.push(`duplicate ${label} scenario ID '${scenario.id}'`); values.add(scenario.id); } };
+  for (const scenario of manifest.screenshots.scenarios) for (const family of scenario.families || []) { if (family !== "iphone" && family !== "ipad") errors.push(`screenshot scenario ${scenario.id} has unknown family '${family}'`); else if (!manifest.app.deviceFamilies.includes(family)) errors.push(`screenshot scenario ${scenario.id} targets ${family}, which is not in app.deviceFamilies`); }
   duplicateScenario("screenshot", manifest.screenshots.scenarios); duplicateScenario("review", manifest.review.recordingScenarios);
   if (manifest.monetization.type === "subscriptions") {
     requireHttpsUrl("subscriptions.termsUrl", manifest.monetization.termsUrl);

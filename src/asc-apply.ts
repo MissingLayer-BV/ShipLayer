@@ -7,6 +7,7 @@ import { appReviewNotes, submittedReviewNotes } from "./generator.js";
 import { preflight } from "./preflight.js";
 import { resolveContained } from "./fs.js";
 import { DEFAULT_MARKETING_FINAL_DIR } from "./marketing.js";
+import { scenariosForFamily } from "./types.js";
 import type { AnalysisReport, AscApplyResult, AscOperation, AscPlan, ShipLayerManifest } from "./types.js";
 
 interface LocalScreenshot { fileName: string; filePath: string; checksum: string; bytes: Buffer }
@@ -286,10 +287,11 @@ export async function localScreenshotSets(repository: string, manifest: ShipLaye
     const rawLocale = configuration.sourceLocale ?? configuration.locale;
     const rawRelative = `${manifest.screenshots.rawOutputDir}/${configuration.family}/${rawLocale}`;
     const finalFiles = await listImages(repository, finalRelative);
-    const finalComplete = manifest.screenshots.scenarios.every((scenario) => finalFiles.some((file) => path.basename(file, path.extname(file)) === scenario.id));
+    const familyScenarios = scenariosForFamily(manifest, configuration.family);
+    const finalComplete = familyScenarios.every((scenario) => finalFiles.some((file) => path.basename(file, path.extname(file)) === scenario.id));
     const source = finalComplete ? "marketing" as const : "raw" as const; const relativeDirectory = source === "marketing" ? finalRelative : rawRelative; const files = source === "marketing" ? finalFiles : await listImages(repository, rawRelative);
     if (!files.length) throw new Error(`No screenshots exist in ${relativeDirectory}.`);
-    const ordered = orderScreenshotFiles(files, manifest.screenshots.scenarios.map((scenario) => scenario.id)); const screenshots: LocalScreenshot[] = [];
+    const ordered = orderScreenshotFiles(files, familyScenarios.map((scenario) => scenario.id)); const screenshots: LocalScreenshot[] = [];
     for (const fileName of ordered) { const filePath = await resolveContained(repository, `${relativeDirectory}/${fileName}`, "App Store screenshot"); const details = await lstat(filePath); if (!details.isFile() || details.isSymbolicLink() || details.size > 50 * 1024 * 1024) throw new Error(`Screenshot ${fileName} is not a safe bounded regular file.`); const bytes = await readFile(filePath); screenshots.push({ fileName, filePath, bytes, checksum: createHash("md5").update(bytes).digest("hex") }); }
     output.push({ locale: configuration.locale, family: configuration.family, displayType: displayType(configuration.family, configuration.requiredDimensions.width, configuration.requiredDimensions.height), source, screenshots });
   }
