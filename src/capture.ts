@@ -5,7 +5,8 @@ import { resolveContained, walkRepository } from "./fs.js";
 import { detectScreenshotHarness } from "./scanner.js";
 import { inspectImage } from "./image.js";
 import { acceptedDimensionsForConfig } from "./preflight.js";
-import type { ShipLayerManifest } from "./types.js";
+import type { ScreenshotFamily, ShipLayerManifest } from "./types.js";
+import { deviceFamilyOf } from "./types.js";
 
 export interface CapturePlan { executable: false; prerequisites: string[]; commands: string[]; instructions: string[]; detectedHarness: { sourceFiles: string[]; scenarioCount: number } }
 export async function createCapturePlan(repository: string, manifest: ShipLayerManifest): Promise<CapturePlan> {
@@ -27,13 +28,13 @@ export async function createCapturePlan(repository: string, manifest: ShipLayerM
   }
   instructions.push("Run shiplayer prepare to also generate a manually-installed, workflow_dispatch-only capture workflow at screenshots/capture-workflow.yml. A human must copy it into the app repository's own .github/workflows/, review it, and press \"Run workflow\" themselves — ShipLayer never installs, commits, or dispatches it.");
   instructions.push(`The workflow offers one explicit configuration per run: ${manifest.screenshots.configurations.map((configuration) => `${configuration.family}/${configuration.locale}`).join(", ") || "none configured"}. It appends screenshots.localizations.<locale>.launchArguments to each scenario's launch arguments; an existing custom harness must adopt the generated configureLaunchArguments helper.`);
-  instructions.push(`Once you have exported PNG screenshot attachments (from the workflow's uploaded artifact, or a local .xcresult export), ingest them with: shiplayer capture <repo> --from <dir> --family <iphone|ipad> --locale <locale>. This copies and validates each file (readable PNG/JPEG, no alpha, an accepted App Store dimension, and internal consistency with what is already ingested) into ${manifest.screenshots.rawOutputDir}/{family}/{locale}/<scenario-id>.png; it never fabricates or invents a screenshot.`);
+  instructions.push(`Once you have exported PNG screenshot attachments (from the workflow's uploaded artifact, or a local .xcresult export), ingest them with: shiplayer capture <repo> --from <dir> --family <iphone|ipad|iphone-duo> --locale <locale>. This copies and validates each file (readable PNG/JPEG, no alpha, an accepted App Store dimension, and internal consistency with what is already ingested) into ${manifest.screenshots.rawOutputDir}/{family}/{locale}/<scenario-id>.png; it never fabricates or invents a screenshot.`);
   instructions.push("No paid cloud CI is used automatically; the generated workflow is workflow_dispatch-only and stays uninstalled until a human copies and runs it.");
   return { executable: false, prerequisites, commands: [], instructions, detectedHarness: { sourceFiles: harness.sourceFiles, scenarioCount: harness.scenarios.length } };
 }
 export async function executeCapturePlan(plan: CapturePlan): Promise<Array<{ exitCode: number; command: string }>> { throw new Error(`Capture execution is unavailable until a repository-declared screenshot harness adapter is implemented.\n${plan.prerequisites.map((item) => `- ${item}`).join("\n")}`); }
 
-export interface IngestOptions { from: string; family: "iphone" | "ipad"; locale: string }
+export interface IngestOptions { from: string; family: ScreenshotFamily; locale: string }
 export interface IngestedFile { scenarioId: string; sourceFile: string; destinationFile: string; width: number; height: number; format: "png" | "jpeg" }
 export interface SkippedFile { sourceFile: string; reason: string }
 export interface IngestResult { destinationDirectory: string; ingested: IngestedFile[]; skipped: SkippedFile[] }
@@ -45,7 +46,7 @@ export interface IngestResult { destinationDirectory: string; ingested: Ingested
  * re-validated by shiplayer check afterward; this is a convenience pass, not the authoritative gate.
  */
 export async function ingestCaptures(repository: string, manifest: ShipLayerManifest, options: IngestOptions): Promise<IngestResult> {
-  if (!manifest.app.deviceFamilies.includes(options.family)) throw new Error(`${options.family} is not a declared device family in app.deviceFamilies.`);
+  if (!manifest.app.deviceFamilies.includes(deviceFamilyOf(options.family))) throw new Error(`${deviceFamilyOf(options.family)} is not a declared device family in app.deviceFamilies.`);
   if (!manifest.app.locales.includes(options.locale)) throw new Error(`${options.locale} is not a declared locale in app.locales.`);
   if (!manifest.screenshots.scenarios.length) throw new Error("screenshots.scenarios is empty; declare at least one scenario before ingesting captures.");
   const config = manifest.screenshots.configurations.find((item) => item.family === options.family && item.locale === options.locale);

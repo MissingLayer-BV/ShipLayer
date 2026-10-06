@@ -1,8 +1,8 @@
 import path from "node:path";
 import { lstat, readFile, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { scenariosForFamily } from "./types.js";
-import type { AnalysisReport, CheckResult, LocaleCopy, PreflightReport, ShipLayerManifest } from "./types.js";
+import { deviceFamilyOf, scenariosForFamily } from "./types.js";
+import type { AnalysisReport, CheckResult, LocaleCopy, PreflightReport, ScreenshotFamily, ShipLayerManifest } from "./types.js";
 import { analyzeRepository, findPermissionRequestSites, findValue } from "./scanner.js";
 import { readText, relative, resolveContained, walkRepository } from "./fs.js";
 import { inspectImage } from "./image.js";
@@ -30,6 +30,14 @@ const IPHONE_65_INCH_DIMENSIONS = new Set([
   "1284x2778" // iPhone 6.5-inch legacy
 ]);
 const IPHONE_SCREENSHOT_DIMENSIONS = new Set([...IPHONE_69_INCH_DIMENSIONS, ...IPHONE_65_INCH_DIMENSIONS]);
+// iPhone Duo has its own slot (APP_IPHONE_DUO), separate from every other iPhone class: a 6.9-inch
+// capture never fills it and a Duo capture never fills a 6.9-inch slot. The one slot takes both
+// displays (App Store Connect Help, "Screenshot specifications"); one set still needs one uniform
+// size, which the per-set check enforces, so outer and inner captures cannot be mixed in a set.
+const IPHONE_DUO_DIMENSIONS = new Set([
+  "1398x2034", // iPhone Duo outer display (folded)
+  "2007x2853" // iPhone Duo inner display (unfolded)
+]);
 // iPad currently has only one required class, but it gets the same structural per-class Set as
 // iPhone rather than one flat table: today that is equivalent (there is nothing else to leak from),
 // but iPhone's cross-class bug (a 6.5-inch pair passing a 6.9-inch slot) happened precisely because
@@ -1155,7 +1163,8 @@ function screenshotConfigurationChecks(manifest: ShipLayerManifest, add: Add): v
     const key = `${config.family}/${config.locale}`;
     if (seen.has(key)) add(`screenshots.${key}.duplicate`, "block", `Duplicate screenshot configuration for ${key}.`, "Keep one deterministic configuration per family and locale.");
     seen.add(key);
-    if (!manifest.app.deviceFamilies.includes(config.family)) add(`screenshots.${key}.unsupported-family`, "block", `${config.family} screenshots are configured but the app does not declare that device family.`);
+    if (!manifest.app.deviceFamilies.includes(deviceFamilyOf(config.family))) add(`screenshots.${key}.unsupported-family`, "block", `${config.family} screenshots are configured but the app does not declare the ${deviceFamilyOf(config.family)} device family.`);
+    if (config.family === "iphone-duo") add(`screenshots.${key}.undocumented-display-type`, "warn", `${key} uploads to APP_IPHONE_DUO, which App Store Connect accepts but Apple's published API reference does not list yet.`, "Check the first upload in App Store Connect's iPhone Duo gallery. If Apple renames the slot, update ShipLayer before applying again.");
     if (!manifest.app.locales.includes(config.locale)) add(`screenshots.${key}.unsupported-locale`, "block", `${config.locale} screenshots are configured but app.locales does not include it.`);
     if (config.sourceLocale && !manifest.app.locales.includes(config.sourceLocale)) add(`screenshots.${key}.unsupported-source-locale`, "block", `${config.sourceLocale} is used as a screenshot source but app.locales does not include it.`);
     if (config.sourceLocale && config.sourceLocale !== config.locale) sharedSources.push(`${key}←${config.sourceLocale}`);
@@ -2181,25 +2190,27 @@ async function evidenceText(repository: string, evidence: string[]): Promise<{ c
 // Exported for reuse by src/capture.ts screenshot ingestion, so both the preflight gate and the
 // ingestion pre-check read Apple's accepted dimensions from this single table — never two
 // independently-maintained copies that could drift.
-export function isFamilyScreenshotDimensions(family: "iphone" | "ipad", width: number, height: number): boolean { const supported = family === "iphone" ? IPHONE_SCREENSHOT_DIMENSIONS : IPAD_SCREENSHOT_DIMENSIONS; return supported.has(`${width}x${height}`) || supported.has(`${height}x${width}`); }
+export function isFamilyScreenshotDimensions(family: ScreenshotFamily, width: number, height: number): boolean { const supported = family === "iphone" ? IPHONE_SCREENSHOT_DIMENSIONS : family === "iphone-duo" ? IPHONE_DUO_DIMENSIONS : IPAD_SCREENSHOT_DIMENSIONS; return supported.has(`${width}x${height}`) || supported.has(`${height}x${width}`); }
 // Scopes the accepted set to the DISPLAY CLASS a configuration's own requiredDimensions belongs
 // to (e.g. 6.9-inch vs 6.5-inch iPhone), not the whole iphone/ipad family — two classes both
 // containing dimensions accepted "somewhere" is exactly how a 6.5-inch pair previously passed a
 // 6.9-inch-configured slot. Returns an empty Set when requiredDimensions itself is not a
 // recognized size at all (screenshotConfigurationChecks already blocks that configuration on its
 // own; every per-image check then correctly fails closed instead of silently accepting anything).
-export function acceptedDimensionsForConfig(config: { family: "iphone" | "ipad"; requiredDimensions: { width: number; height: number } }): Set<string> {
+export function acceptedDimensionsForConfig(config: { family: ScreenshotFamily; requiredDimensions: { width: number; height: number } }): Set<string> {
   const key = `${config.requiredDimensions.width}x${config.requiredDimensions.height}`; const keyReverse = `${config.requiredDimensions.height}x${config.requiredDimensions.width}`;
   if (config.family === "ipad") { if (IPAD_13_INCH_DIMENSIONS.has(key) || IPAD_13_INCH_DIMENSIONS.has(keyReverse)) return IPAD_13_INCH_DIMENSIONS; return new Set(); }
+  if (config.family === "iphone-duo") { if (IPHONE_DUO_DIMENSIONS.has(key) || IPHONE_DUO_DIMENSIONS.has(keyReverse)) return IPHONE_DUO_DIMENSIONS; return new Set(); }
   if (IPHONE_69_INCH_DIMENSIONS.has(key) || IPHONE_69_INCH_DIMENSIONS.has(keyReverse)) return IPHONE_69_INCH_DIMENSIONS;
   if (IPHONE_65_INCH_DIMENSIONS.has(key) || IPHONE_65_INCH_DIMENSIONS.has(keyReverse)) return IPHONE_65_INCH_DIMENSIONS;
   return new Set();
 }
-function dimensionClassLabel(config: { family: "iphone" | "ipad"; requiredDimensions: { width: number; height: number } }): string {
+function dimensionClassLabel(config: { family: ScreenshotFamily; requiredDimensions: { width: number; height: number } }): string {
   const accepted = acceptedDimensionsForConfig(config);
   if (accepted === IPHONE_69_INCH_DIMENSIONS) return "6.9-inch";
   if (accepted === IPHONE_65_INCH_DIMENSIONS) return "6.5-inch";
   if (accepted === IPAD_13_INCH_DIMENSIONS) return "13-inch";
+  if (accepted === IPHONE_DUO_DIMENSIONS) return "iPhone Duo";
   return "unrecognized-display-class";
 }
 async function nonEmptySafeIconBundle(directory: string): Promise<boolean> {

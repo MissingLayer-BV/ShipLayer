@@ -1,4 +1,6 @@
 import path from "node:path";
+import type { ScreenshotFamily } from "./types.js";
+import { deviceFamilyOf } from "./types.js";
 
 // Marketing screenshot composition: turns a raw device screenshot + an optional human-drafted
 // caption into a self-contained, headless-renderable HTML "advertisement" slide (device frame +
@@ -35,7 +37,13 @@ export const IPHONE_FRAME: FrameGeometry = { canvasWidthPx: 1022, canvasHeightPx
 // geometry below must match exactly what generated that file (see docs comment there / PR body).
 export const IPAD_FRAME: FrameGeometry = { canvasWidthPx: 1600, canvasHeightPx: 2078, screenLeftPct: 70 / 1600, screenTopPct: 70 / 2078, screenWidthPct: 1460 / 1600, screenHeightPct: 1938 / 2078, screenRadiusXPct: 40 / 1460, screenRadiusYPct: 40 / 1938, assetFile: "ipad-frame.png" };
 
-export function frameForFamily(family: "iphone" | "ipad"): FrameGeometry { return family === "iphone" ? IPHONE_FRAME : IPAD_FRAME; }
+// Generated geometric frame in the iPad frame's style and bezel colour (#1A1A1C): a 52 px bezel,
+// outer corner radius 122, and a transparent 1258x1830 cutout with radius 70, in the outer
+// display's aspect (1398x2034, the display the simulator captures folded). An inner-display
+// capture (2007x2853) is slightly narrower in aspect and is cropped about 2% at the sides.
+export const IPHONE_DUO_FRAME: FrameGeometry = { canvasWidthPx: 1362, canvasHeightPx: 1934, screenLeftPct: 52 / 1362, screenTopPct: 52 / 1934, screenWidthPct: 1258 / 1362, screenHeightPct: 1830 / 1934, screenRadiusXPct: 70 / 1258, screenRadiusYPct: 70 / 1830, assetFile: "iphone-duo-frame.png" };
+
+export function frameForFamily(family: ScreenshotFamily): FrameGeometry { return family === "iphone" ? IPHONE_FRAME : family === "iphone-duo" ? IPHONE_DUO_FRAME : IPAD_FRAME; }
 
 // Must match src/schema.json's $defs/scenario.caption maxLength exactly; kept as two literals
 // (schema.json is plain JSON, not importable here) rather than one shared constant.
@@ -112,7 +120,7 @@ export interface MarketingSlideEntry {
    * mirrors preflight.ts's screenshots.scenarios.<id>.confirmation gate exactly (see round-2/3
    * review history in generator.ts: an absent field is NOT confirmed). */
   confirmed: boolean;
-  family: "iphone" | "ipad";
+  family: ScreenshotFamily;
   device: string;
   locale: string;
   width: number;
@@ -163,7 +171,7 @@ export const DEFAULT_MARKETING_FINAL_DIR = `${DEFAULT_OUTPUT_DIRECTORY}/screensh
  * relative-path math is done against a shared synthetic "/" root so it is independent of
  * process.cwd() and stays deterministic/testable without touching disk.
  */
-export function buildMarketingSlideEntries(params: { outputDirectory: string; rawOutputDir: string; finalOutputDir: string; configurations: Array<{ device: string; family: "iphone" | "ipad"; locale: string; sourceLocale?: string; requiredDimensions: { width: number; height: number } }>; scenarios: Array<{ id: string; title: string; caption?: string; confirmation?: string; families?: Array<"iphone" | "ipad">; localizations?: Record<string, { title?: string; caption: string; confirmation?: string }> }> }): MarketingSlideEntry[] {
+export function buildMarketingSlideEntries(params: { outputDirectory: string; rawOutputDir: string; finalOutputDir: string; configurations: Array<{ device: string; family: ScreenshotFamily; locale: string; sourceLocale?: string; requiredDimensions: { width: number; height: number } }>; scenarios: Array<{ id: string; title: string; caption?: string; confirmation?: string; families?: Array<"iphone" | "ipad">; localizations?: Record<string, { title?: string; caption: string; confirmation?: string }> }> }): MarketingSlideEntry[] {
   const abs = (relative: string): string => path.posix.join("/", relative);
   const relativeFrom = (fromDir: string, to: string): string => path.posix.relative(abs(fromDir), abs(to));
   const marketingRoot = path.posix.join(params.outputDirectory, MARKETING_PROJECT_ROOT);
@@ -171,7 +179,7 @@ export function buildMarketingSlideEntries(params: { outputDirectory: string; ra
   for (const config of params.configurations) {
     const slideDir = path.posix.join(marketingRoot, "slides", config.family, config.locale);
     for (const scenario of params.scenarios) {
-      if (scenario.families && !scenario.families.includes(config.family)) continue;
+      if (scenario.families && !scenario.families.includes(deviceFamilyOf(config.family))) continue;
       const localized = scenario.localizations?.[config.locale];
       const htmlAbsolute = path.posix.join(slideDir, `${scenario.id}.html`);
       const rawLocale = config.sourceLocale ?? config.locale;

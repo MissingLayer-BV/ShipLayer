@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- iPhone Duo screenshots: `family: iphone-duo` screenshot configurations with Apple's outer (1398×2034) and inner (2007×2853) display sizes as their own display class, `capture --family iphone-duo`, upload to `APP_IPHONE_DUO` (accepted by App Store Connect but not yet in Apple's API reference, so `check` warns), the draft screenshot flow taking a configured Duo set, and a Duo device frame for marketing slides. A Duo deck uses the `iphone` scenarios. See `docs/screenshots.md`.
 - `screenshots.scenarios[].families` limits a scenario to `iphone` and/or `ipad` (absent: every family), so a set can carry an extra slide such as an iPad-only landscape screenshot. Scenario lists, counts and coverage checks are per family; the draft screenshot gate accepts a landscape image (transposed `requiredDimensions`) in a portrait set.
 
 Gates learned from LinkVoice 1.0 (2), rejected on 2026-09-23:
