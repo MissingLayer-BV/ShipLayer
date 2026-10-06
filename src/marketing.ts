@@ -1,4 +1,6 @@
 import path from "node:path";
+import type { ScreenshotFamily } from "./types.js";
+import { deviceFamilyOf } from "./types.js";
 
 // Marketing screenshot composition: turns a raw device screenshot + an optional human-drafted
 // caption into a self-contained, headless-renderable HTML "advertisement" slide (device frame +
@@ -23,6 +25,11 @@ export interface FrameGeometry {
   /** Elliptical corner radius of the screen cutout, as a fraction of the screen box's own width/height. */
   screenRadiusXPct: number;
   screenRadiusYPct: number;
+  /** Corner radius on the leading (left) side instead, where a hinge squares the screen's corners. */
+  screenLeadingRadiusXPct?: number;
+  screenLeadingRadiusYPct?: number;
+  /** A camera cutout drawn over the screenshot: centre and diameter as fractions of the screen box's width/height. */
+  camera?: { centerXPct: number; centerYPct: number; diameterPct: number };
   /** Filename under assets/device-frames/ (also the emitted assets/<name> filename). */
   assetFile: string;
 }
@@ -35,7 +42,16 @@ export const IPHONE_FRAME: FrameGeometry = { canvasWidthPx: 1022, canvasHeightPx
 // geometry below must match exactly what generated that file (see docs comment there / PR body).
 export const IPAD_FRAME: FrameGeometry = { canvasWidthPx: 1600, canvasHeightPx: 2078, screenLeftPct: 70 / 1600, screenTopPct: 70 / 2078, screenWidthPct: 1460 / 1600, screenHeightPct: 1938 / 2078, screenRadiusXPct: 40 / 1460, screenRadiusYPct: 40 / 1938, assetFile: "ipad-frame.png" };
 
-export function frameForFamily(family: "iphone" | "ipad"): FrameGeometry { return family === "iphone" ? IPHONE_FRAME : IPAD_FRAME; }
+// Generated frame in the shape Apple's "Designing for iPhone Duo" diagrams give the outer display
+// (Human Interface Guidelines, Anatomy): the hinge along the left edge, with squarer corners on that
+// side and the large rounded corners on the other. A 32 px bezel in the iPad frame's colour (#1A1A1C)
+// around a transparent 1258x1830 cutout in the outer display's aspect (1398x2034), inside the back
+// half's rim: 20 px, and 49 px along the hinge. The camera sits where the simulator draws its hole,
+// near the top right; it is drawn over the screenshot, so every slide shows it in the same place.
+// An inner-display capture (2007x2853) is slightly narrower in aspect and is cropped about 2% at the sides.
+export const IPHONE_DUO_FRAME: FrameGeometry = { canvasWidthPx: 1391, canvasHeightPx: 1934, screenLeftPct: 81 / 1391, screenTopPct: 52 / 1934, screenWidthPct: 1258 / 1391, screenHeightPct: 1830 / 1934, screenRadiusXPct: 187 / 1258, screenRadiusYPct: 153 / 1830, screenLeadingRadiusXPct: 20 / 1258, screenLeadingRadiusYPct: 20 / 1830, camera: { centerXPct: 0.897, centerYPct: 0.0703, diameterPct: 0.0794 }, assetFile: "iphone-duo-frame.png" };
+
+export function frameForFamily(family: ScreenshotFamily): FrameGeometry { return family === "iphone" ? IPHONE_FRAME : family === "iphone-duo" ? IPHONE_DUO_FRAME : IPAD_FRAME; }
 
 // Must match src/schema.json's $defs/scenario.caption maxLength exactly; kept as two literals
 // (schema.json is plain JSON, not importable here) rather than one shared constant.
@@ -112,7 +128,7 @@ export interface MarketingSlideEntry {
    * mirrors preflight.ts's screenshots.scenarios.<id>.confirmation gate exactly (see round-2/3
    * review history in generator.ts: an absent field is NOT confirmed). */
   confirmed: boolean;
-  family: "iphone" | "ipad";
+  family: ScreenshotFamily;
   device: string;
   locale: string;
   width: number;
@@ -163,7 +179,7 @@ export const DEFAULT_MARKETING_FINAL_DIR = `${DEFAULT_OUTPUT_DIRECTORY}/screensh
  * relative-path math is done against a shared synthetic "/" root so it is independent of
  * process.cwd() and stays deterministic/testable without touching disk.
  */
-export function buildMarketingSlideEntries(params: { outputDirectory: string; rawOutputDir: string; finalOutputDir: string; configurations: Array<{ device: string; family: "iphone" | "ipad"; locale: string; sourceLocale?: string; requiredDimensions: { width: number; height: number } }>; scenarios: Array<{ id: string; title: string; caption?: string; confirmation?: string; families?: Array<"iphone" | "ipad">; localizations?: Record<string, { title?: string; caption: string; confirmation?: string }> }> }): MarketingSlideEntry[] {
+export function buildMarketingSlideEntries(params: { outputDirectory: string; rawOutputDir: string; finalOutputDir: string; configurations: Array<{ device: string; family: ScreenshotFamily; locale: string; sourceLocale?: string; requiredDimensions: { width: number; height: number } }>; scenarios: Array<{ id: string; title: string; caption?: string; confirmation?: string; families?: Array<"iphone" | "ipad">; localizations?: Record<string, { title?: string; caption: string; confirmation?: string }> }> }): MarketingSlideEntry[] {
   const abs = (relative: string): string => path.posix.join("/", relative);
   const relativeFrom = (fromDir: string, to: string): string => path.posix.relative(abs(fromDir), abs(to));
   const marketingRoot = path.posix.join(params.outputDirectory, MARKETING_PROJECT_ROOT);
@@ -171,7 +187,7 @@ export function buildMarketingSlideEntries(params: { outputDirectory: string; ra
   for (const config of params.configurations) {
     const slideDir = path.posix.join(marketingRoot, "slides", config.family, config.locale);
     for (const scenario of params.scenarios) {
-      if (scenario.families && !scenario.families.includes(config.family)) continue;
+      if (scenario.families && !scenario.families.includes(deviceFamilyOf(config.family))) continue;
       const localized = scenario.localizations?.[config.locale];
       const htmlAbsolute = path.posix.join(slideDir, `${scenario.id}.html`);
       const rawLocale = config.sourceLocale ?? config.locale;
@@ -206,6 +222,9 @@ export function renderSlideHtml(entry: MarketingSlideEntry): string {
   const screenHeight = box.height * frame.screenHeightPct;
   const radiusX = screenWidth * frame.screenRadiusXPct;
   const radiusY = screenHeight * frame.screenRadiusYPct;
+  const leadingX = screenWidth * (frame.screenLeadingRadiusXPct ?? frame.screenRadiusXPct);
+  const leadingY = screenHeight * (frame.screenLeadingRadiusYPct ?? frame.screenRadiusYPct);
+  const camera = frame.camera;
   const captionTop = Math.round(entry.height * CAPTION_TOP_FRACTION) + (entry.confirmed ? 0 : 70);
   const captionSide = Math.round(entry.width * CAPTION_SIDE_MARGIN_FRACTION);
   const hasCaption = Boolean(entry.caption && entry.caption.trim());
@@ -275,7 +294,7 @@ export function renderSlideHtml(entry: MarketingSlideEntry): string {
     top: ${round(screenTop - box.top)}px;
     width: ${round(screenWidth)}px;
     height: ${round(screenHeight)}px;
-    border-radius: ${round(radiusX)}px / ${round(radiusY)}px;
+    border-radius: ${round(leadingX)}px ${round(radiusX)}px ${round(radiusX)}px ${round(leadingX)}px / ${round(leadingY)}px ${round(radiusY)}px ${round(radiusY)}px ${round(leadingY)}px;
     overflow: hidden;
     background: #D9D2C4;
   }
@@ -297,6 +316,11 @@ export function renderSlideHtml(entry: MarketingSlideEntry): string {
     font-size: ${Math.round(fontSize * 0.3)}px;
     padding: 8%;
   }
+  .screenshot-wrap .camera {
+    position: absolute;
+    border-radius: 50%;
+    background: #000000;
+  }
   .device img.frame {
     position: absolute;
     inset: 0;
@@ -315,6 +339,7 @@ export function renderSlideHtml(entry: MarketingSlideEntry): string {
       <img class="screenshot" alt="" src="${escapeAttr(entry.screenshotPngHref)}" data-fallback-src="${escapeAttr(entry.screenshotJpgHref)}"
         onerror="if(!this.dataset.triedFallback){this.dataset.triedFallback='1';this.src=this.dataset.fallbackSrc;}else{this.style.display='none';this.nextElementSibling.style.display='flex';}">
       <div class="missing">Screenshot pending for scenario '${escapeHtml(entry.id)}' — run shiplayer capture, then re-run export.</div>
+      ${camera ? `<div class="camera" style="left: ${round(screenWidth * camera.centerXPct - screenWidth * camera.diameterPct / 2)}px; top: ${round(screenHeight * camera.centerYPct - screenWidth * camera.diameterPct / 2)}px; width: ${round(screenWidth * camera.diameterPct)}px; height: ${round(screenWidth * camera.diameterPct)}px;"></div>` : ""}
     </div>
   </div>
 </div>

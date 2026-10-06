@@ -30,7 +30,8 @@ export async function draftScreenshots(repository: string, manifest: ShipLayerMa
     for (const locale of selectedLocales) if (locale !== manifest.app.primaryLocale && (scenario.localizations?.[locale]?.confirmation !== 'confirmed' || !scenario.localizations[locale].caption?.trim())) throw new Error(`Unconfirmed caption ${locale}/${scenario.id}.`);
   }
   const local = (await localScreenshotSets(repository, manifest)).filter(set => selectedLocales.includes(set.locale));
-  const expected = new Set(selectedLocales.flatMap(locale => manifest.app.deviceFamilies.map(family => `${family}/${locale}`)));
+  // Every declared family, plus an iPhone Duo set where one is configured (it is optional until Apple requires it).
+  const expected = new Set(selectedLocales.flatMap(locale => [...manifest.app.deviceFamilies, ...(manifest.screenshots.configurations.some(c => c.family === 'iphone-duo' && c.locale === locale) ? ['iphone-duo'] : [])].map(family => `${family}/${locale}`)));
   for (const set of local) {
     if (!expected.delete(`${set.family}/${set.locale}`)) throw new Error('Duplicate or unexpected screenshot configuration.');
     if (set.source !== 'marketing' || set.screenshots.length !== scenariosForFamily(manifest, set.family).length) throw new Error('Complete marketing decks are required; raw fallback is not allowed.');

@@ -1,5 +1,11 @@
 export type Confidence = "confirmed" | "high" | "medium" | "low" | "unknown";
 export type Confirmation = "confirmed" | "needs-human-confirmation" | "not-applicable";
+/** A device family the app declares (UIDeviceFamily). */
+export type DeviceFamily = "iphone" | "ipad";
+/** A screenshot slot. iPhone Duo is an iPhone (no device family of its own) with its own App Store slot. */
+export type ScreenshotFamily = DeviceFamily | "iphone-duo";
+/** The declared device family a screenshot slot belongs to. */
+export function deviceFamilyOf(family: ScreenshotFamily): DeviceFamily { return family === "ipad" ? "ipad" : "iphone"; }
 
 export interface Evidence {
   source: string;
@@ -300,7 +306,7 @@ export interface ShipLayerManifest {
     /** A selected Xcode 26 Icon Composer .icon asset. Mutually exclusive with catalog selection. */
     productionIconAsset?: string;
     productionIconAssetConfirmation?: Confirmation;
-    deviceFamilies: Array<"iphone" | "ipad">;
+    deviceFamilies: DeviceFamily[];
     locales: string[];
     primaryLocale: string;
     primaryCategory?: string;
@@ -328,7 +334,7 @@ export interface ShipLayerManifest {
   sourceContradictionOverrides: SourceContradictionOverride[];
   secondaryTargetConfirmations: SecondaryTargetConfirmation[];
   review: { contact?: { firstName?: string; lastName?: string; email?: string; phone?: string }; demoAccount?: { required: boolean; usernameEnv?: string; passwordEnv?: string; setupInstructions?: string; /** Human confirmed these environment-backed credentials work and may be sent during a separately authorized apply. */ credentialsEnteredConfirmation?: Confirmation }; notes?: string; recordingScenarios: ScreenshotScenario[]; sampleData?: string[] };
-  screenshots: { scenarios: ScreenshotScenario[]; configurations: Array<{ device: string; family: "iphone" | "ipad"; locale: string; /** Optional reviewed fallback for the app pixels inside a localized marketing slide. The headline and App Store destination still use locale; only the raw in-frame capture is read from sourceLocale. */ sourceLocale?: string; requiredDimensions: { width: number; height: number } }>; /** App-specific arguments required to launch the UI in each App Store locale. These are appended
+  screenshots: { scenarios: ScreenshotScenario[]; configurations: Array<{ device: string; family: ScreenshotFamily; locale: string; /** Optional reviewed fallback for the app pixels inside a localized marketing slide. The headline and App Store destination still use locale; only the raw in-frame capture is read from sourceLocale. */ sourceLocale?: string; requiredDimensions: { width: number; height: number } }>; /** App-specific arguments required to launch the UI in each App Store locale. These are appended
      * to every scenario's launchArguments by generated capture artifacts. */
     localizations?: Record<string, { launchArguments?: string[] }>;
     rawOutputDir: string; marketingProjectPath?: string;
@@ -352,4 +358,5 @@ export interface AscPlan { mode: "offline" | "remote"; operations: AscOperation[
 export interface AscApplyResult { applied: boolean; operations: AscOperation[]; warnings: string[] }
 
 /** The screenshot scenarios that apply to one device family: those without `families`, or listing it. */
-export function scenariosForFamily(manifest: { screenshots: { scenarios: ScreenshotScenario[] } }, family: "iphone" | "ipad"): ScreenshotScenario[] { return manifest.screenshots.scenarios.filter((scenario) => !scenario.families || scenario.families.includes(family)); }
+/** iPhone Duo decks use the iPhone scenarios: a scenario names device families, not screenshot slots. */
+export function scenariosForFamily(manifest: { screenshots: { scenarios: ScreenshotScenario[] } }, family: ScreenshotFamily): ScreenshotScenario[] { return manifest.screenshots.scenarios.filter((scenario) => !scenario.families || scenario.families.includes(deviceFamilyOf(family))); }
