@@ -28,7 +28,7 @@ npm ci && npm run build
 ./dist/index.js plan /path/to/MySwiftApp --remote  # read-only App Store diff
 ```
 
-`prepare` writes a managed `shiplayer-release/` package: normalized manifest, reports, per-locale metadata drafts, privacy/support/legal drafts, review notes, screenshot harness template and capture workflow, marketing screenshot project, StoreKit checklist, and remaining human actions. Review it, then — only on your explicit go-ahead — `apply` writes the reviewed change set to the store. `submit` stays a manual handoff.
+`prepare` writes a managed `shiplayer-release/` package: normalized manifest, reports, per-locale metadata drafts, privacy/support/legal drafts, review notes, screenshot harness template and capture workflow, marketing screenshot project (including App Store creative assets), StoreKit checklist, and remaining human actions. Review it, then — only on your explicit go-ahead — `apply` writes the reviewed change set to the store. `submit` stays a manual handoff.
 
 | Step | Command | Effect |
 |---|---|---|
@@ -65,6 +65,7 @@ This links the CLI onto PATH and symlinks `skills/ship-app-store` into the skill
 - [docs/safety-model.md](docs/safety-model.md) — credentials, triple-gate writes, manual remainder
 - [docs/manifest-gates.md](docs/manifest-gates.md) — permission flows, contradiction blockers, copy rules
 - [docs/screenshots.md](docs/screenshots.md) — harness, capture, marketing composition
+- [docs/creative-assets.md](docs/creative-assets.md) — App Store Header and Search results images (iOS 27)
 - [docs/asc-apply.md](docs/asc-apply.md) — App Store Connect apply flow and CI action
 - [skills/ship-app-store](skills/ship-app-store) — the agent skill itself
 

@@ -285,6 +285,30 @@ export interface ScreenshotScenario {
   localizations?: Record<string, { title?: string; caption: string; confirmation?: Confirmation }>;
 }
 
+export type CreativePlacement = "header" | "searchResults" | "universal";
+/** A raw capture placed in a device frame beside the copy: <screenshots.rawOutputDir>/<family>/<locale>/<capture>.png. */
+export interface CreativeScreenshot { family: "iphone" | "ipad"; capture: string }
+/** Copy drawn on one creative asset. Headline max 60 characters, subline max 120 (schema-enforced). */
+export interface CreativeCopy { headline: string; subline?: string }
+/**
+ * App Store creative assets (iOS 27 product page Header image, Search results image, and the
+ * optional Universal 16:9 master Apple crops for both). The App Store Connect API has no endpoint
+ * for them yet, so ShipLayer renders and checks the PNGs and a human uploads them in App Store
+ * Connect. See docs/creative-assets.md and src/creative-assets.ts.
+ */
+export interface CreativeAssets {
+  /** Repo-root-relative; rendered PNGs land at <outputDir>/<placement>/<locale>.png. Must stay outside --out. */
+  outputDir: string;
+  /** Brand name drawn in the accent colour above every headline. */
+  wordmark?: string;
+  /** Six-digit hex colours; each falls back to DEFAULT_CREATIVE_STYLE. */
+  style?: { background?: string; text?: string; secondaryText?: string; accent?: string };
+  locales: string[];
+  placements: { header?: Record<string, never>; searchResults?: { screenshot?: CreativeScreenshot }; universal?: { screenshot?: CreativeScreenshot } };
+  /** One entry per locale with copy for every declared placement. Anything but "confirmed" blocks check, like a localized screenshot caption. */
+  localizations: Record<string, { confirmation?: Confirmation; header?: CreativeCopy; searchResults?: CreativeCopy; universal?: CreativeCopy }>;
+}
+
 export interface ShipLayerManifest {
   schemaVersion: 1;
   app: {
@@ -334,6 +358,7 @@ export interface ShipLayerManifest {
     rawOutputDir: string; marketingProjectPath?: string;
     /** Repo-root-relative directory the marketing composition project (screenshots/marketing/) renders final PNGs into, independent of whatever --out was used at generation time — see DEFAULT_MARKETING_FINAL_DIR in src/marketing.ts. Absent falls back to that default for manifests written before this field existed. */
     finalOutputDir?: string; };
+  creativeAssets?: CreativeAssets;
   monetization: Monetization;
   build: { signing: "automatic" | "manual" | "unknown"; exportCompliance?: "exempt" | "documentation-required" | "unknown"; testFlightUpload?: boolean;
     /** A human signed in from a fresh install of this exact uploaded build on real hardware of every

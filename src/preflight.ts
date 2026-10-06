@@ -9,6 +9,7 @@ import { inspectImage } from "./image.js";
 import { validateAscPrivateKey } from "./asc.js";
 import { appReviewNotes } from "./generator.js";
 import { DEFAULT_MARKETING_FINAL_DIR } from "./marketing.js";
+import { CREATIVE_PLACEMENT_SPECS, creativeCaptureBasePath, creativeCopyIssues, creativeOutputPath, creativePlacementScreenshot, declaredCreativePlacements } from "./creative-assets.js";
 import { signingGates } from "./signing-gates.js";
 import { aiContradictionFindingId, classifiedAiEndpointFindings, endpointFindingUrl, evidenceSources, externalFindingId, isLoopbackOrPrivateEndpoint, isNonProductionSourcePath, AI_CONSENT_FLOW_FINDING, MONETIZATION_CONTRADICTION_FINDING, PURCHASE_UNAVAILABLE_CONTRADICTION_FINDING, productionEvidenceOnly, resolveContradictionOverride, storekitPurchaseEvidence, stripCodeComments } from "./evidence.js";
 import { assessNotCollectionAttestation, notCollectionAttestationIssueMessage } from "./collection-attestation.js";
@@ -102,6 +103,7 @@ export async function preflight(repository: string, manifest: ShipLayerManifest,
   screenshotConfigurationChecks(manifest, add);
   await screenshotChecks(repository, manifest, add);
   await marketingScreenshotChecks(repository, manifest, add);
+  await creativeAssetChecks(repository, manifest, add);
   await purchaseAssetChecks(repository, manifest, add);
   await iconChecks(repository, manifest, add);
   await sourceConsistencyChecks(repository, manifest, scan, add);
@@ -1319,6 +1321,64 @@ async function marketingScreenshotChecks(repository: string, manifest: ShipLayer
       if (!reference) { reference = { width: details.width, height: details.height, image }; add(`${imageId}.dimensions`, "pass", `${image} is an accepted ${config.family} dimension (${details.width}×${details.height}).`); }
       else if (details.width !== reference.width || details.height !== reference.height) add(`${imageId}.dimensions`, "block", `Rendered marketing screenshot ${image} is ${details.width}×${details.height}, which differs from ${reference.image} (${reference.width}×${reference.height}) already in this set; App Store Connect requires one uniform size per screenshot set.`);
       else add(`${imageId}.dimensions`, "pass", `${image} matches ${reference.image}'s dimensions.`);
+    }
+  }
+}
+
+// App Store creative assets (src/creative-assets.ts, docs/creative-assets.md). Copy is checked
+// against Apple's creative-asset content rules, a screenshot placement needs its raw capture, and
+// rendered PNGs get the same real-pixel dimension/alpha inspection as rendered marketing
+// screenshots. Not rendered yet is a warning: rendering is a separate human/agent step, and
+// the upload itself stays manual in App Store Connect (no API exists for creative assets).
+async function creativeAssetChecks(repository: string, manifest: ShipLayerManifest, add: Add): Promise<void> {
+  const creative = manifest.creativeAssets;
+  if (!creative) return;
+  const reportCopy = (idPrefix: string, subject: string, text: string): number => {
+    const issues = creativeCopyIssues(text);
+    for (const issue of issues) add(`${idPrefix}.${issue.kind}`, issue.severity, `${subject} contains ${issue.label}: '${text}'.`, issue.severity === "block" ? "Apple's creative-asset rules forbid specific pricing or discounts, website addresses, copyright/trademark symbols, Apple recognitions, and references to other platforms or marketplaces. Rewrite the copy." : "Keep only awards or rankings you can verify, or remove the claim.");
+    return issues.length;
+  };
+  if (creative.wordmark) reportCopy("creative.wordmark", "creativeAssets.wordmark", creative.wordmark);
+  const placements = declaredCreativePlacements(creative);
+  for (const locale of creative.locales) {
+    const localized = creative.localizations[locale];
+    if (localized?.confirmation !== "confirmed") add(`creative.${locale}.confirmation`, "block", `App Store creative asset copy (${locale}) is not human-confirmed.`, "Review the rendered creative assets for this locale, then set creativeAssets.localizations.<locale>.confirmation: confirmed.");
+    let issues = 0;
+    for (const placement of placements) {
+      const copy = localized?.[placement];
+      if (!copy) continue;
+      issues += reportCopy(`creative.${placement}.${locale}.headline`, `${CREATIVE_PLACEMENT_SPECS[placement].label} headline (${locale})`, copy.headline);
+      if (copy.subline) issues += reportCopy(`creative.${placement}.${locale}.subline`, `${CREATIVE_PLACEMENT_SPECS[placement].label} subline (${locale})`, copy.subline);
+    }
+    if (!issues) add(`creative.${locale}.copy`, "pass", `App Store creative asset copy (${locale}) passes the creative-asset content checks.`);
+  }
+  for (const placement of placements) {
+    const spec = CREATIVE_PLACEMENT_SPECS[placement];
+    const screenshot = creativePlacementScreenshot(creative, placement);
+    for (const locale of creative.locales) {
+      const id = `creative.${placement}.${locale}`;
+      if (screenshot) {
+        const base = creativeCaptureBasePath(manifest.screenshots.rawOutputDir, manifest.screenshots.configurations, screenshot, locale);
+        let capture: { relative: string; absolute: string } | undefined;
+        let unsafe = false;
+        for (const relative of [`${base}.png`, `${base}.jpg`]) {
+          try { const absolute = await resolveContained(repository, relative, `creative asset capture for ${placement}`); if (existsSync(absolute)) { capture = { relative, absolute }; break; } }
+          catch (error) { add(`${id}.capture`, "block", error instanceof Error ? error.message : String(error)); unsafe = true; break; }
+        }
+        if (!unsafe && !capture) add(`${id}.capture`, "block", `${spec.label} creative asset (${locale}) needs the raw capture ${base}.png, which does not exist.`, `Capture '${screenshot.capture}' for ${screenshot.family}/${locale} with shiplayer capture, or drop the screenshot from creativeAssets.placements.${placement}.`);
+        else if (capture && !(await inspectImage(capture.absolute))) add(`${id}.capture`, "block", `Raw capture ${capture.relative} for the ${spec.label} creative asset (${locale}) is unreadable.`, "Re-capture it as a readable PNG/JPEG.");
+        else if (capture) add(`${id}.capture`, "pass", `${spec.label} creative asset (${locale}) uses ${capture.relative}.`);
+      }
+      const output = creativeOutputPath(creative.outputDir, placement, locale);
+      let rendered: string;
+      try { rendered = await resolveContained(repository, output, `creative asset ${placement}`); }
+      catch (error) { add(`${id}.render`, "block", error instanceof Error ? error.message : String(error)); continue; }
+      if (!existsSync(rendered)) { add(`${id}.render`, "warn", `${spec.label} creative asset (${locale}) is not rendered yet: ${output}.`, "Run shiplayer prepare, then npm install && npm run export inside shiplayer-release/screenshots/marketing."); continue; }
+      const details = await inspectImage(rendered);
+      if (!details) { add(`${id}.render`, "block", `Rendered creative asset ${output} is unreadable; it must be a readable PNG.`, "Re-run the export."); continue; }
+      if (details.alpha) add(`${id}.render.alpha`, "block", `Rendered creative asset ${output} has an alpha channel.`, "export.mjs must emit alpha-free PNGs; re-run the export.");
+      if (details.width !== spec.width || details.height !== spec.height) add(`${id}.render.dimensions`, "block", `Rendered creative asset ${output} is ${details.width}×${details.height}; the ${spec.label} asset must be exactly ${spec.width}×${spec.height}.`, "Re-render it from the current marketing project.");
+      else add(`${id}.render.dimensions`, "pass", `${output} is ${spec.width}×${spec.height}.`);
     }
   }
 }

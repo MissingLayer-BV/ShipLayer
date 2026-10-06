@@ -127,7 +127,7 @@ export interface MarketingSlideEntry {
 }
 
 const RTL_LANGUAGE_CODES = new Set(["ar", "he", "ur"]);
-function textDirection(locale: string): "ltr" | "rtl" { return RTL_LANGUAGE_CODES.has(locale.split("-")[0]) ? "rtl" : "ltr"; }
+export function textDirection(locale: string): "ltr" | "rtl" { return RTL_LANGUAGE_CODES.has(locale.split("-")[0]) ? "rtl" : "ltr"; }
 
 /** Relative to the emitted release package's own output directory (e.g. "shiplayer-release"). */
 export const MARKETING_PROJECT_ROOT = "screenshots/marketing";
@@ -194,8 +194,8 @@ export function buildMarketingSlideEntries(params: { outputDirectory: string; ra
   return entries;
 }
 
-function escapeHtml(value: string): string { return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;"); }
-function escapeAttr(value: string): string { return escapeHtml(value).replaceAll("'", "&#39;"); }
+export function escapeHtml(value: string): string { return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;"); }
+export function escapeAttr(value: string): string { return escapeHtml(value).replaceAll("'", "&#39;"); }
 
 export function renderSlideHtml(entry: MarketingSlideEntry): string {
   const frame = frameForFamily(entry.family);
@@ -482,7 +482,7 @@ export const EXPORT_MJS = `#!/usr/bin/env node
 // Playwright. This script has no network dependency at render time: every slide references only
 // local files by relative path. Playwright itself is installed from npm by "npm install" (a
 // one-time setup step a human runs; ShipLayer itself never runs it).
-import { access, readFile, writeFile, mkdir } from "node:fs/promises";
+import { access, readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { chromium } from "playwright";
@@ -533,8 +533,12 @@ if (preserveCompleteDecks) {
     if (complete) preservedDecks.add(key);
   }
 }
-
 const pages = new Map();
+// A slide whose page reports that its text does not fit (src/creative-assets.ts sets
+// data-shiplayer-overflow when the headline/subline still overflow the safe area at the minimum
+// font size) is never written: a clipped or spilled headline must fail the run loudly, not ship.
+// Any stale PNG from an earlier render of that slide is removed so check cannot approve it.
+const unfitted = [];
 try {
   for (const slide of manifest.slides) {
     const deckKey = \`\${slide.family}/\${slide.locale}\`;
@@ -573,6 +577,14 @@ try {
       await document.fonts.ready;
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     });
+    const fit = await page.evaluate(() => ({ fitted: document.documentElement.dataset.shiplayerFit === "done", overflow: document.documentElement.dataset.shiplayerOverflow || "" }));
+    if (fit.overflow || (slide.textFit && !fit.fitted)) {
+      await rm(outputPath, { force: true });
+      const reason = fit.overflow || "the page's text-fitting script did not run";
+      unfitted.push(\`\${slide.id} (\${slide.family}/\${slide.locale}): \${reason}\`);
+      console.error(\`\${slide.id} (\${slide.family}/\${slide.locale}) -> NOT written: text does not fit inside the safe area (\${reason})\`);
+      continue;
+    }
     // See strip-alpha.mjs for why the raw Chromium PNG is always re-encoded, unconditionally,
     // before being written to disk: this is the one invariant App Store submission depends on.
     const raw = await page.screenshot({ type: "png", animations: "disabled", caret: "hide" });
@@ -584,13 +596,20 @@ try {
   for (const page of pages.values()) await page.context().close();
   await browser.close();
 }
+if (unfitted.length) {
+  console.error("");
+  console.error(\`\${unfitted.length} slide(s) were not exported because their text does not fit:\`);
+  for (const line of unfitted) console.error(\`  - \${line}\`);
+  console.error("Shorten the headline/subline in shiplayer.yml, run shiplayer prepare again, then re-export.");
+  process.exitCode = 1;
+}
 `;
 
-export function renderSlidesManifestJson(entries: MarketingSlideEntry[]): string {
-  return `${JSON.stringify({ version: 1, slides: entries.map((entry) => ({ id: entry.id, family: entry.family, device: entry.device, locale: entry.locale, width: entry.width, height: entry.height, confirmed: entry.confirmed, html: entry.htmlRelativePath, output: entry.outputRelativePath })) }, null, 2)}\n`;
+export function renderSlidesManifestJson(entries: MarketingSlideEntry[], extraSlides: object[] = []): string {
+  return `${JSON.stringify({ version: 1, slides: [...entries.map((entry) => ({ id: entry.id, family: entry.family, device: entry.device, locale: entry.locale, width: entry.width, height: entry.height, confirmed: entry.confirmed, html: entry.htmlRelativePath, output: entry.outputRelativePath })), ...extraSlides] }, null, 2)}\n`;
 }
 
-export function renderReadme(entries: MarketingSlideEntry[], finalOutputDir: string): string {
+export function renderReadme(entries: MarketingSlideEntry[], finalOutputDir: string, extraSection = ""): string {
   const families = [...new Set(entries.map((entry) => entry.family))].sort();
   const unconfirmed = entries.filter((entry) => !entry.confirmed).length;
   const perSetCounts = new Map<string, number>();
@@ -656,5 +675,5 @@ the browser produced; see export.mjs).
 - \`slides.json\` — the manifest export.mjs reads; do not hand-edit, it is regenerated by \`shiplayer prepare\`.
 - \`export.mjs\` / \`strip-alpha.mjs\` / \`package.json\` — the render step. strip-alpha.mjs has no
   dependency of its own; it re-encodes every rendered PNG without an alpha channel.
-`;
+${extraSection}`;
 }
