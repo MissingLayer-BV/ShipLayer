@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { CreativeAssets, CreativePlacement, CreativeScreenshot } from "./types.js";
+import type { CreativeAssets, CreativePlacement, CreativeScreenshot, ScreenshotFamily } from "./types.js";
 import { escapeAttr, escapeHtml, frameForFamily, MARKETING_PROJECT_ROOT, SLIDE_BACKGROUND_HEX, textDirection } from "./marketing.js";
 
 // App Store creative assets (iOS 27): the product page Header image, the Search results image,
@@ -83,7 +83,7 @@ export interface CreativeSlideEntry {
   outputRelativePath: string;
 }
 
-type Configurations = Array<{ family: "iphone" | "ipad"; locale: string; sourceLocale?: string }>;
+type Configurations = Array<{ family: ScreenshotFamily; locale: string; sourceLocale?: string }>;
 
 /**
  * Repo-relative raw capture a screenshot placement reads for a locale (without extension): the

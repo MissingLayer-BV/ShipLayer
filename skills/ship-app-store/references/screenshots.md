@@ -19,7 +19,7 @@ If the current environment has macOS, Xcode, a compatible simulator runtime, and
 Once PNGs exist locally (from the workflow's downloaded artifact, or a human's local export):
 
 ```
-shiplayer capture <repo> --from <dir> --family iphone|ipad --locale <locale>
+shiplayer capture <repo> --from <dir> --family iphone|ipad|iphone-duo --locale <locale>
 ```
 
 This recursively finds image files under `<dir>`, validates format, rejects an alpha channel, requires a dimension accepted for the configuration's own required display class (a 6.5" capture never satisfies a 6.9"-configured slot), requires every image in one family/locale set to be pixel-identical to what's already ingested, then copies matching files into `screenshots.rawOutputDir/{family}/{locale}/<scenario-id>.png`. It is a real, safe local file operation — it never fabricates a screenshot. `shiplayer check` remains the authoritative gate afterward.
