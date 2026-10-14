@@ -99,3 +99,16 @@ test('leaves App Info alone when none is editable or the locale has no localizat
   // tr has no version localization in the fixture, so the existing guard still rejects it first.
   assert.ok(preview instanceof Error);
 });
+
+test('leaves an undeclared marketing URL alone and still verifies the write', async () => {
+  const f = fixture();
+  delete f.manifest.contacts.marketingUrl;
+  // Apple reports an unset optional URL as null.
+  const english = (await f.client.get('/appStoreVersions/draft/appStoreVersionLocalizations?limit=200')).data[0] as any;
+  english.attributes.marketingUrl = null;
+  const preview = await draftListing(f.manifest, ['en-US'], false, false, f.client);
+  assert.ok(!preview.operations[0].fields.includes('marketingUrl'));
+  const applied = await draftListing(f.manifest, ['en-US'], true, true, f.client);
+  assert.equal(applied.verifiedLocales, 1);
+  assert.ok(!('marketingUrl' in f.writes[0].body.data.attributes));
+});

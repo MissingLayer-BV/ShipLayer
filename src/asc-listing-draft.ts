@@ -13,13 +13,16 @@ function desiredAttributes(manifest: ShipLayerManifest, locale: string): Record<
   if (!copy || copy.confirmation !== 'confirmed') throw new Error(`Confirmed App Store copy is required for ${locale}.`);
   if (!copy.description?.trim() || !copy.promotionalText?.trim()) throw new Error(`Description and promotional text are required for ${locale}.`);
   if (manifest.app.releaseKind === 'update' && !copy.whatsNew?.trim()) throw new Error(`What's New copy is required for ${locale}.`);
+  const marketingUrl = copy.marketingUrl ?? manifest.contacts.marketingUrl;
   return {
     description: copy.description,
     promotionalText: copy.promotionalText,
     ...(manifest.app.releaseKind === 'update' ? { whatsNew: copy.whatsNew! } : {}),
     ...(copy.keywords?.length ? { keywords: copy.keywords.join(',') } : {}),
     supportUrl: copy.supportUrl ?? manifest.contacts.supportUrl!,
-    marketingUrl: copy.marketingUrl ?? manifest.contacts.marketingUrl!,
+    // Optional in App Store Connect: only sync it when the manifest declares one,
+    // otherwise an undefined value reads back as a mismatch against Apple's null.
+    ...(marketingUrl ? { marketingUrl } : {}),
   };
 }
 
